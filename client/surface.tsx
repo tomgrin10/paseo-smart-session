@@ -1,8 +1,8 @@
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import React from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import React, { useEffect, useState } from "react";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 
 import { DailyBars, HourHeatmap, RankedTotals } from "./charts";
 import { refreshPills } from "./pill";
@@ -16,6 +16,7 @@ import {
   setSettings,
   spendSummary,
 } from "../shared/smart-session";
+import { withCompactThreshold } from "../shared/thresholds";
 
 type Theme = PluginSurfaceProps["theme"];
 
@@ -140,6 +141,101 @@ function Toggle({
   );
 }
 
+function CompactThreshold({
+  theme,
+  label,
+  detail,
+  value,
+  disabled,
+  onSave,
+}: {
+  theme: Theme;
+  label: string;
+  detail: string;
+  value: number;
+  disabled: boolean;
+  onSave: (value: number) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setDraft(String(value)), [value]);
+
+  const parsed = Number(draft.trim());
+  const valid = Number.isInteger(parsed) && parsed >= 1 && parsed <= 99;
+  const changed = valid && parsed !== value;
+
+  function save() {
+    if (disabled || !changed || saving) return;
+    setSaving(true);
+    void onSave(parsed).finally(() => setSaving(false));
+  }
+
+  return (
+    <View
+      style={{
+        gap: 8,
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface1,
+        opacity: disabled ? 0.45 : 1,
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <View style={{ flexGrow: 1, flexShrink: 1, gap: 2 }}>
+          <Text style={{ color: theme.colors.foreground, fontWeight: "600" }}>{label}</Text>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{detail}</Text>
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            onSubmitEditing={save}
+            editable={!disabled && !saving}
+            keyboardType="number-pad"
+            maxLength={2}
+            selectTextOnFocus
+            accessibilityLabel={`${label} percentage`}
+            style={{
+              width: 48,
+              paddingVertical: 6,
+              paddingHorizontal: 8,
+              borderRadius: 6,
+              borderWidth: 1,
+              borderColor: valid ? theme.colors.border : theme.colors.statusDanger,
+              backgroundColor: theme.colors.surface0,
+              color: theme.colors.foreground,
+              textAlign: "right",
+              fontVariant: ["tabular-nums"],
+            }}
+          />
+          <Text style={{ color: theme.colors.foregroundMuted }}>%</Text>
+          <Pressable
+            onPress={save}
+            disabled={disabled || !changed || saving}
+            style={{
+              paddingVertical: 7,
+              paddingHorizontal: 10,
+              borderRadius: 6,
+              backgroundColor: changed ? theme.colors.accent : theme.colors.surface2,
+              opacity: disabled || !changed || saving ? 0.5 : 1,
+            }}
+          >
+            <Text style={{ color: changed ? theme.colors.accentForeground : theme.colors.foregroundMuted }}>
+              {saving ? "Saving…" : "Save"}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+      {!valid ? (
+        <Text style={{ color: theme.colors.statusDanger, fontSize: 11 }}>Enter a whole number from 1 to 99.</Text>
+      ) : null}
+    </View>
+  );
+}
+
 export function SmartSessionSurface({ theme, layout }: PluginSurfaceProps) {
   const budget = useRpc(budgetStatus);
   const context = useRpc(contextStatus);
@@ -238,6 +334,26 @@ export function SmartSessionSurface({ theme, layout }: PluginSurfaceProps) {
         return queryClient.invalidateQueries({ queryKey: ["smart-session", "settings"] });
       })
       .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
+  }
+
+  async function saveCompactThreshold(profile: "large" | "small", compact: number): Promise<void> {
+    if (settings === undefined) return;
+    try {
+      const result = await writeSettings({
+        thresholds: {
+          ...settings.thresholds,
+          [profile]: withCompactThreshold(settings.thresholds[profile], compact),
+        },
+      });
+      queryClient.setQueryData(["smart-session", "settings"], {
+        settings: result.settings,
+        enrolledAgents: enrolled,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["smart-session", "context"] });
+      toast.show(`Smart Compact will ask at ${compact}% for ${profile} windows`);
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
   }
 
   const padding = layout.compact ? 12 : 20;
@@ -366,6 +482,26 @@ export function SmartSessionSurface({ theme, layout }: PluginSurfaceProps) {
             }
             onPress={toggleEnabled}
           />
+          <View style={{ marginTop: 8 }}>
+            <CompactThreshold
+              theme={theme}
+              label="Large-window compact threshold"
+              detail={`For context windows of ${formatTokens(settings.thresholds.largeWindowFrom)} or more. Earlier notice bands move down when needed.`}
+              value={settings.thresholds.large.compact}
+              disabled={!settings.enabled}
+              onSave={(value) => saveCompactThreshold("large", value)}
+            />
+          </View>
+          <View style={{ marginTop: 8 }}>
+            <CompactThreshold
+              theme={theme}
+              label="Small-window compact threshold"
+              detail={`For context windows below ${formatTokens(settings.thresholds.largeWindowFrom)}. Earlier notice bands move down when needed.`}
+              value={settings.thresholds.small.compact}
+              disabled={!settings.enabled}
+              onSave={(value) => saveCompactThreshold("small", value)}
+            />
+          </View>
           <View style={{ marginTop: 8 }}>
             <Toggle
               theme={theme}

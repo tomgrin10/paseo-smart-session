@@ -36,7 +36,7 @@ That history remains useful after an individual session ends or a provider cache
 Requires Paseo 0.8.0 or newer with plugins enabled (**Settings → Plugins**).
 
 ```sh
-paseo plugin add tomgrin10/paseo-smart-session --ref v1.1.0
+paseo plugin add tomgrin10/paseo-smart-session --ref v1.2.0
 ```
 
 Omit `--ref` to follow `main`.
@@ -99,11 +99,13 @@ If Smart Compact is disabled globally, the pill is not shown.
 | Setting | Default | Description |
 | --- | --- | --- |
 | **Smart Compact** | On | Enables context notices and agent-requested compaction. |
+| **Large-window compact threshold** | 30% | Sets when Smart Compact asks on context windows of 400k tokens or more. |
+| **Small-window compact threshold** | 85% | Sets when Smart Compact asks on smaller context windows. |
 | **Enrol sessions automatically** | On | Enrols a session after it writes task state. |
 | **Show the pill on every agent** | On | Shows the Smart Compact control in the composer. |
 | **Register the hooks with Claude Code** | On | Keeps the context and compaction hooks installed. |
 
-The last three settings apply only while Smart Compact is enabled.
+The remaining settings apply only while Smart Compact is enabled. Thresholds accept whole percentages from 1% to 99%; lowering one also moves its earlier notice bands down when needed.
 
 ## Usage history and state
 

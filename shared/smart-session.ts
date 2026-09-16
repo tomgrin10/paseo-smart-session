@@ -74,13 +74,13 @@ export const contextStatus = defineRpc({
 
 
 const ThresholdProfileSchema = z.object({
-  notice: z.number(),
-  closing: z.number(),
-  compact: z.number(),
+  notice: z.number().finite().min(1).max(99),
+  closing: z.number().finite().min(1).max(99),
+  compact: z.number().finite().min(1).max(99),
 });
 
 export const ThresholdsSchema = z.object({
-  largeWindowFrom: z.number(),
+  largeWindowFrom: z.number().finite().positive(),
   large: ThresholdProfileSchema,
   small: ThresholdProfileSchema,
 });
