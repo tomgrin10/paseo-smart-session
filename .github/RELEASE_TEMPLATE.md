@@ -14,12 +14,12 @@ One or two sentences describing the release and who benefits.
 ## Install
 
 ```sh
-paseo plugin add tomgrin10/paseo-smart-session --ref vX.Y.Z
+paseo plugin install npm:paseo-smart-session@X.Y.Z
 ```
 
 ## Compatibility
 
-- Requires Paseo 0.8.0 or newer.
+- Requires Paseo 0.9.0 or newer for npm installation.
 
 ## Upgrade notes
 

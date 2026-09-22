@@ -190,13 +190,17 @@ when you have not looked, and never describe a screenshot you did not take.
 - Use SemVer: patch for compatible fixes, minor for backward-compatible features, major for breaking
   behaviour, storage, or compatibility changes. Anything that changes an on-disk shape is major
   unless it migrates.
-- Update the version in `package.json` and its lockfile, and the `--ref` tag in the README install
-  section. Keep badge styles consistent; update the Paseo minimum only when compatibility changes.
-- Release notes must include a short summary, user-visible changes, the `paseo plugin add` install
+- Update the version in `package.json` and its lockfile, plus the pinned npm and Git versions in the
+  README install section. Keep badge styles consistent; update the Paseo minimum only when
+  compatibility changes.
+- Release notes must include a short summary, user-visible changes, the npm install
   command, the minimum Paseo version, and any breaking, migration, security, or upgrade
   considerations. Omit empty sections.
-- Before publishing, require a clean current `main`, verified GitHub ownership, passing checks, a
-  successful plugin reload, clean logs, and a secret audit of the exact release snapshot.
+- Before publishing, require a clean current `main`, verified GitHub and npm ownership, passing
+  checks, `npm pack --dry-run`, a successful plugin reload, clean logs, and a secret audit of the
+  exact release snapshot.
+- Publish the public package with `npm publish --access public`, then verify installation with
+  `paseo plugin install npm:paseo-smart-session@X.Y.Z` on Paseo 0.9 or newer.
 - Tag the exact release commit as `vX.Y.Z`; title the release `paseo-smart-session vX.Y.Z`. After
   publishing, test the public tag-pinned installer and the badge URLs.
 

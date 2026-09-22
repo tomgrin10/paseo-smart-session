@@ -1,6 +1,7 @@
 # paseo-smart-session
 
 [![Paseo](https://img.shields.io/badge/Paseo-%E2%89%A5%200.8.0-8A63D2?style=for-the-badge)](https://paseo.sh)
+[![npm downloads](https://img.shields.io/npm/dm/paseo-smart-session?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/paseo-smart-session)
 [![Release](https://img.shields.io/github/v/release/tomgrin10/paseo-smart-session?display_name=tag&sort=semver&style=for-the-badge&label=release&color=6366f1)](https://github.com/tomgrin10/paseo-smart-session/releases/latest)
 [![License](https://img.shields.io/github/license/tomgrin10/paseo-smart-session?style=for-the-badge&color=2563eb)](LICENSE)
 
@@ -33,13 +34,17 @@ That history remains useful after an individual session ends or a provider cache
 
 ## Install
 
-Requires Paseo 0.8.0 or newer with plugins enabled (**Settings → Plugins**).
+Install from npm on Paseo 0.9.0 or newer:
 
 ```sh
-paseo plugin add tomgrin10/paseo-smart-session --ref v1.2.0
+paseo plugin install npm:paseo-smart-session@1.2.1
 ```
 
-Omit `--ref` to follow `main`.
+Paseo 0.8 can install the same plugin from Git:
+
+```sh
+paseo plugin add tomgrin10/paseo-smart-session --ref v1.2.1
+```
 
 ```sh
 paseo plugin ls                    # confirm it is running

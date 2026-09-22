@@ -55,6 +55,7 @@ const EMPTY: Index = { version: 1, files: {}, buckets: {}, seen: [] };
  * recent history.
  */
 const SEEN_LIMIT = 200_000;
+const MAX_TRANSCRIPT_READ_BYTES = 16 * 1024 * 1024;
 
 function projectsRoot(): string {
   const configDir = process.env.CLAUDE_CONFIG_DIR;
@@ -171,14 +172,19 @@ function bucketKey(bucket: Omit<SpendBucket, keyof Totals>): string {
 type Totals = { input: number; cacheRead: number; cacheWrite: number; output: number; thinking: number; messages: number };
 
 /** Reads one transcript from `offset`, returning complete lines only. */
-async function readFrom(path: string, offset: number, size: number): Promise<string> {
-  if (size <= offset) return "";
+async function readFrom(
+  path: string,
+  offset: number,
+  size: number,
+): Promise<{ text: string; end: number; truncated: boolean }> {
+  if (size <= offset) return { text: "", end: offset, truncated: false };
   const handle = await open(path, "r");
   try {
-    const length = size - offset;
+    const end = Math.min(size, offset + MAX_TRANSCRIPT_READ_BYTES);
+    const length = end - offset;
     const buffer = Buffer.allocUnsafe(length);
     await handle.read(buffer, 0, length, offset);
-    return buffer.toString("utf8");
+    return { text: buffer.toString("utf8"), end, truncated: end < size };
   } finally {
     await handle.close();
   }
@@ -220,19 +226,28 @@ export async function scanSpend(): Promise<ScanResult> {
       const offset = size < previous.size ? 0 : previous.offset;
       if (size === offset) continue;
 
-      let chunk: string;
+      let read: Awaited<ReturnType<typeof readFrom>>;
       try {
-        chunk = await readFrom(path, offset, size);
+        read = await readFrom(path, offset, size);
       } catch {
         continue;
       }
+      const chunk = read.text;
       filesScanned += 1;
       bytesRead += chunk.length;
 
       // The final line may be half-written; leave it for the next scan.
       const lastNewline = chunk.lastIndexOf("\n");
       const complete = lastNewline === -1 ? "" : chunk.slice(0, lastNewline);
-      index.files[path] = { offset: offset + (lastNewline === -1 ? 0 : lastNewline + 1), size };
+      if (lastNewline === -1 && read.truncated) {
+        console.error(
+          `[smart-session] skipped ${read.end - offset} bytes from an overlong transcript line`,
+        );
+      }
+      index.files[path] = {
+        offset: lastNewline === -1 ? (read.truncated ? read.end : offset) : offset + lastNewline + 1,
+        size,
+      };
 
       for (const line of complete.split("\n")) {
         if (line === "" || !line.includes('"usage"')) continue;
