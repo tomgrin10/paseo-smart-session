@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-import { reconcile } from "./server/install.ts";
+import { mcpPointsAtPlugin, reconcile } from "./server/install.ts";
 
 const DIR = "/plugins/paseo-smart-session";
 
@@ -18,6 +18,22 @@ const foreign = { type: "command", command: "/Users/x/.claude/hooks/paseo-hook.s
 function commandsFor(map: ReturnType<typeof reconcile>, event: string): string[] {
   return (map[event] ?? []).flatMap((group) => (group.hooks ?? []).map((hook) => hook.command ?? ""));
 }
+
+test("the MCP registration must point at the current managed install", () => {
+  const current = [
+    "smart-session:",
+    "  Scope: User config (available in all your projects)",
+    "  Status: ✔ Connected",
+    "  Type: stdio",
+    "  Command: node",
+    `  Args: ${DIR}/mcp.mjs`,
+  ].join("\n");
+  const stale = current.replace(`${DIR}/mcp.mjs`, "/old/checkout/mcp.mjs");
+
+  assert.equal(mcpPointsAtPlugin(current, DIR), true);
+  assert.equal(mcpPointsAtPlugin(stale, DIR), false);
+  assert.equal(mcpPointsAtPlugin(current.replace("User config", "Local config"), DIR), false);
+});
 
 test("an empty settings file gains exactly the four managed entries", () => {
   const next = reconcile({}, DIR);

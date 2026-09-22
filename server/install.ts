@@ -78,7 +78,7 @@ export interface InstallReport {
   readonly changed: boolean;
   /** One line per managed event, for the surface to show. */
   readonly hooks: string[];
-  readonly mcp: "present" | "added" | "unavailable" | "skipped";
+  readonly mcp: "present" | "added" | "updated" | "unavailable" | "skipped";
   readonly error: string | null;
 }
 
@@ -204,15 +204,26 @@ async function writeAtomic(path: string, text: string): Promise<void> {
  * `~/.claude.json` is where the MCP list lives, and it is also where credentials
  * live, so this plugin does not write it: `claude mcp add-json` does, which keeps
  * us out of a file we have no business editing. Only ever called when the server is
- * absent, because shelling out on every load would be absurd.
+ * absent or points at an older installation path. Managed npm and Git updates
+ * install into a new directory, so an entry can exist while its script no longer
+ * does.
  */
+export function mcpPointsAtPlugin(output: string, pluginDir: string): boolean {
+  const lines = output.split(/\r?\n/).map((line) => line.trim());
+  return lines.includes("Scope: User config (available in all your projects)")
+    && lines.includes("Command: node")
+    && lines.includes(`Args: ${join(pluginDir, "mcp.mjs")}`);
+}
+
 async function ensureMcp(pluginDir: string): Promise<InstallReport["mcp"]> {
   const run = (args: string[]): Promise<{ stdout: string }> =>
     execFileAsync("claude", args, { timeout: 20_000, maxBuffer: 1024 * 1024 });
 
+  let existing = false;
   try {
-    await run(["mcp", "get", "smart-session"]);
-    return "present";
+    const { stdout } = await run(["mcp", "get", "smart-session"]);
+    if (mcpPointsAtPlugin(stdout, pluginDir)) return "present";
+    existing = true;
   } catch {
     // Absent, or no `claude` on PATH. The add below tells the two apart.
   }
@@ -223,8 +234,9 @@ async function ensureMcp(pluginDir: string): Promise<InstallReport["mcp"]> {
     args: [join(pluginDir, "mcp.mjs")],
   });
   try {
+    if (existing) await run(["mcp", "remove", "smart-session", "--scope", "user"]);
     await run(["mcp", "add-json", "--scope", "user", "smart-session", definition]);
-    return "added";
+    return existing ? "updated" : "added";
   } catch {
     // No `claude` binary on the daemon's PATH is the usual reason, and it is not
     // an error worth failing a plugin load over.

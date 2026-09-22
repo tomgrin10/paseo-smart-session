@@ -25,6 +25,7 @@ void install()
       console.log(`[smart-session] registered ${report.hooks.join(", ")} in ${report.settingsPath}`);
     }
     if (report.mcp === "added") console.log("[smart-session] registered the agent-facing MCP server");
+    if (report.mcp === "updated") console.log("[smart-session] updated the agent-facing MCP server path");
     if (report.mcp === "unavailable") {
       console.error(
         "[smart-session] could not reach the `claude` CLI to register the MCP server; run `claude mcp add-json --scope user smart-session` by hand if the agent tools are missing",

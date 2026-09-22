@@ -1,7 +1,7 @@
 {
   "name": "paseo-smart-session",
   "type": "module",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "license": "MIT",
   "description": "Records Claude plan-usage history and lets a Paseo agent manage its own context.",
   "repository": {

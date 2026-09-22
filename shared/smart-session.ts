@@ -109,7 +109,7 @@ export const InstallReportSchema = z.object({
   settingsPath: z.string(),
   changed: z.boolean(),
   hooks: z.array(z.string()),
-  mcp: z.enum(["present", "added", "unavailable", "skipped"]),
+  mcp: z.enum(["present", "added", "updated", "unavailable", "skipped"]),
   error: z.string().nullable(),
 });
 
