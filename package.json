@@ -1,7 +1,7 @@
 {
   "name": "paseo-smart-session",
   "type": "module",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "license": "MIT",
   "description": "Records Claude plan-usage history and lets a Paseo agent manage its own context.",
   "repository": {
@@ -11,7 +11,13 @@
   "homepage": "https://github.com/tomgrin10/paseo-smart-session#readme",
   "bugs": "https://github.com/tomgrin10/paseo-smart-session/issues",
   "author": "Tom Gringauz",
-  "keywords": ["paseo", "paseo-plugin", "context", "monitoring", "productivity"],
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "context",
+    "monitoring",
+    "productivity"
+  ],
   "files": [
     "paseo-plugin.json",
     "index.client.tsx",
