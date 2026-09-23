@@ -197,9 +197,27 @@ function AutoCompactIcon({
   return <Icon name="FoldVertical" size={size} color={color} />;
 }
 
-/** The lean shape this needs from the agent list, which carries far more. */
+/** The lean shapes this needs from the agent directory, which carries far more. */
+interface ListedAgent {
+  readonly id?: string;
+  readonly workspaceId?: string | null;
+}
+
+interface AgentUpdate {
+  readonly kind: "remove" | "upsert";
+  readonly agentId?: string;
+  readonly agent?: ListedAgent;
+}
+
 interface AgentListing {
-  readonly entries?: readonly { readonly agent?: { id?: string; workspaceId?: string | null } }[];
+  readonly entries?: readonly { readonly agent?: ListedAgent }[];
+  readonly subscription?: {
+    subscribe(observer: {
+      snapshot(listing: AgentListing): void;
+      update(message: { readonly type?: string; readonly payload?: AgentUpdate }): void;
+    }): () => void;
+    release(): Promise<void>;
+  };
 }
 
 /**
@@ -227,6 +245,10 @@ function updatePill(handle: PillHandle, title: string): void {
 export function contributeClient(client: PluginClientContext) {
   /** Every agent this app knows of, and its pill registration while one is up. */
   const tracked = new Map<string, { workspaceId: string; handle: PillHandle | null }>();
+  const lifetime = new AbortController();
+  let stopped = false;
+  let unsubscribeOwnedObservation: (() => void) | null = null;
+  let releaseAgentObservation: (() => Promise<void>) | null = null;
 
   function register(agentId: string, entry: { workspaceId: string; handle: PillHandle | null }): void {
     const toggle = async () => {
@@ -299,42 +321,114 @@ export function contributeClient(client: PluginClientContext) {
     tracked.delete(agentId);
   }
 
+  function applyAgentUpdate(update: AgentUpdate): void {
+    if (update.kind === "remove") {
+      if (typeof update.agentId === "string") forget(update.agentId);
+      return;
+    }
+    const agent = update.agent;
+    if (
+      typeof agent?.id !== "string" ||
+      typeof agent.workspaceId !== "string" ||
+      agent.workspaceId === ""
+    ) return;
+    track(agent.id, agent.workspaceId);
+  }
+
+  function trackAgents(entries: AgentListing["entries"]): Set<string> {
+    const present = new Set<string>();
+    for (const entry of entries ?? []) {
+      const agent = entry.agent;
+      if (
+        typeof agent?.id !== "string" ||
+        typeof agent.workspaceId !== "string" ||
+        agent.workspaceId === ""
+      ) continue;
+      present.add(agent.id);
+      track(agent.id, agent.workspaceId);
+    }
+    return present;
+  }
+
+  /** A restored observation replaces its directory snapshot, including removals. */
+  function replaceAgents(entries: AgentListing["entries"]): void {
+    const present = trackAgents(entries);
+    for (const agentId of [...tracked.keys()]) {
+      if (!present.has(agentId)) forget(agentId);
+    }
+  }
+
   const refresh = () => refreshPills(() => client.rpc(enrolmentState, {}));
 
   const unsubscribeStore = subscribe(sync);
 
-  const unsubscribeAgents = client.paseo.agents.subscribe((update) => {
-    if (update.kind === "remove") {
-      forget(update.agentId);
-      return;
-    }
-    const { id, workspaceId } = update.agent;
-    if (typeof workspaceId !== "string" || workspaceId === "") return;
-    track(id, workspaceId);
+  // v0.8 returns only the listing and emits its subscribed updates through this
+  // local listener. Keep it attached until a newer runtime gives us the owned
+  // observation whose snapshots can reconcile the whole directory on reconnect.
+  let unsubscribeLegacyAgents: (() => void) | null = client.paseo.agents.subscribe((update) => {
+    applyAgentUpdate(update as AgentUpdate);
   });
 
   // The subscription only carries agents that report in from now on, and an idle
   // one may not do that for hours.
   void (async () => {
     try {
-      const listing = (await client.paseo.agents.list()) as unknown as AgentListing;
-      for (const entry of listing.entries ?? []) {
-        const agent = entry.agent;
-        if (typeof agent?.id !== "string" || typeof agent.workspaceId !== "string") continue;
-        track(agent.id, agent.workspaceId);
+      // `agents.subscribe()` listens only to observations already owned by
+      // this API instance. A plain list stopped receiving newly created agents
+      // in Paseo 0.9, which made both plugin pills disappear on new sessions.
+      const listAgents = client.paseo.agents.list as unknown as (options: {
+        subscribe: Record<string, never>;
+        signal: AbortSignal;
+      }) => Promise<AgentListing>;
+      const listing = await listAgents({ subscribe: {}, signal: lifetime.signal });
+      const release = listing.subscription
+        ? () => listing.subscription!.release()
+        : null;
+      if (stopped) {
+        await release?.();
+        return;
+      }
+      releaseAgentObservation = release;
+      // The legacy listener was already live while this snapshot was in flight,
+      // so bootstrap must be additive or it can erase a just-created agent.
+      trackAgents(listing.entries);
+      if (listing.subscription) {
+        unsubscribeOwnedObservation = listing.subscription.subscribe({
+          snapshot(snapshot) {
+            if (!stopped) replaceAgents(snapshot.entries);
+          },
+          update(message) {
+            if (!stopped && message.type === "agent_update" && message.payload) {
+              applyAgentUpdate(message.payload);
+            }
+          },
+        });
+        unsubscribeLegacyAgents?.();
+        unsubscribeLegacyAgents = null;
       }
     } catch {
-      // Not fatal: the subscription still picks up every agent that speaks next.
+      const release = releaseAgentObservation;
+      releaseAgentObservation = null;
+      await release?.().catch(() => undefined);
+      // Not fatal to the rest of the client contribution; a reload can retry.
     }
   })();
 
   void refresh().catch(() => undefined);
   const timer = setInterval(() => void refresh().catch(() => undefined), REFRESH_MS);
 
-  return () => {
+  return async () => {
+    stopped = true;
+    lifetime.abort();
     clearInterval(timer);
-    unsubscribeAgents();
+    unsubscribeLegacyAgents?.();
+    unsubscribeLegacyAgents = null;
+    unsubscribeOwnedObservation?.();
+    unsubscribeOwnedObservation = null;
     unsubscribeStore();
     for (const agentId of [...tracked.keys()]) forget(agentId);
+    const release = releaseAgentObservation;
+    releaseAgentObservation = null;
+    await release?.().catch(() => undefined);
   };
 }

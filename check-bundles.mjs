@@ -38,6 +38,10 @@ async function runClientBundle(code) {
   const surfaces = new Set();
   const sidebarSurfaces = [];
   const registrations = [];
+  let agentListOptions;
+  let agentObserver;
+  let agentObservationUnsubscribed = false;
+  let agentObservationReleaseCount = 0;
   const requireText = (value, what) => {
     if (typeof value !== "string" || value.trim() === "") throw new Error(`Missing ${what}`);
   };
@@ -54,8 +58,27 @@ async function runClientBundle(code) {
     paseo: {
       agents: {
         subscribe() { return removable(); },
-        async list() {
-          return { entries: [{ agent: { id: "agent-1", workspaceId: "workspace-1" } }] };
+        async list(options) {
+          agentListOptions = options;
+          return {
+            entries: [{ agent: {
+              id: "agent-1",
+              workspaceId: "workspace-1",
+              provider: "claude",
+              model: "opus-5.5",
+            } }],
+            subscription: {
+              subscribe(observer) {
+                agentObserver = observer;
+                return () => {
+                  agentObservationUnsubscribed = true;
+                };
+              },
+              async release() {
+                agentObservationReleaseCount += 1;
+              },
+            },
+          };
         },
       },
     },
@@ -111,10 +134,15 @@ async function runClientBundle(code) {
       summary.push(`addComposerPill(${item.id})`);
       let removed = false;
       const registration = {
+        agentId: item.agentId,
+        removed: false,
         update(patch) {
           if (!removed && patch.title !== undefined) requireText(patch.title, "updated pill title");
         },
-        remove() { removed = true; },
+        remove() {
+          removed = true;
+          registration.removed = true;
+        },
       };
       registrations.push(registration);
       return registration;
@@ -125,11 +153,47 @@ async function runClientBundle(code) {
   if (typeof cleanup !== "function") throw new Error("client contribution must return cleanup");
   await Promise.resolve();
   await Promise.resolve();
+  if (agentListOptions?.subscribe === undefined) {
+    throw new Error("composer pills must own an observed agent directory");
+  }
+  if (!agentListOptions.signal || typeof agentListOptions.signal.aborted !== "boolean") {
+    throw new Error("agent observation must share the client contribution lifetime");
+  }
+  if (!agentObserver) throw new Error("owned agent observation was not consumed");
+  agentObserver.update({
+    type: "agent_update",
+    payload: {
+      kind: "upsert",
+      agent: {
+        id: "agent-opus-5-5",
+        workspaceId: "workspace-1",
+        provider: "claude",
+        model: "opus-5.5",
+      },
+    },
+  });
+  if (summary.filter((item) => item === "addComposerPill(smart-compact)").length !== 2) {
+    throw new Error("observed agents must receive composer pills regardless of model");
+  }
+  agentObserver.snapshot({
+    entries: [{ agent: { id: "agent-opus-5-5", workspaceId: "workspace-1" } }],
+  });
+  if (!registrations.find((registration) => registration.agentId === "agent-1")?.removed) {
+    throw new Error("a restored agent snapshot must remove stale composer pills");
+  }
   for (const surface of sidebarSurfaces) {
     if (!surfaces.has(surface)) throw new Error(`Sidebar references missing surface: ${surface}`);
   }
   await cleanup();
+  if (!agentListOptions.signal.aborted) throw new Error("cleanup did not abort the observation");
+  if (!agentObservationUnsubscribed) throw new Error("cleanup did not detach its observer");
+  if (agentObservationReleaseCount !== 1) {
+    throw new Error("cleanup did not release the agent observation exactly once");
+  }
   await cleanup();
+  if (agentObservationReleaseCount !== 1) {
+    throw new Error("repeated cleanup released the agent observation twice");
+  }
   for (const registration of registrations) {
     registration.remove();
     registration.remove();

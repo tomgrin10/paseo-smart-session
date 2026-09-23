@@ -292,6 +292,17 @@ the host's own daemon client at runtime (`daemon.server.ts:9-40`, with an explic
 the host doesn't expose it). That keeps the protocol version identical to the daemon's and avoids
 bundling deps — and it is the known-brittle seam to isolate behind one module.
 
+### 5.1 Agent-directory observations (Paseo 0.9)
+
+`client.paseo.agents.subscribe()` is only a local listener over observations the same API instance
+already owns. A plain `agents.list()` is a snapshot and creates no observation, so it cannot discover
+agents created afterward. A directory-following contribution must call
+`agents.list({ subscribe: {}, signal })`, consume the returned subscription's replacement snapshots
+and updates, and abort or release it at teardown. The pinned v0.8 client returns no owned handle, but
+does emit the subscribed directory through the local listener; keeping that listener until a handle
+is returned preserves compatibility. Source: Paseo's SDK events reference and local-plugin example,
+checked 2026-09-23.
+
 ---
 
 ## 6. Facts that shape the design

@@ -80,7 +80,9 @@
   module-level store because the pill, its press, the Command Center item and the surface toggle are
   all in the one client bundle; that is what makes a toggle redraw immediately instead of waiting out
   a poll. A registration bakes in the workspace and cannot be patched, so an agent that moves
-  workspace needs a new one, and one that closes must be dropped. The pill itself is one icon: state
+  workspace needs a new one, and one that closes must be dropped. Its agent directory must be an
+  owned `agents.list({ subscribe: {}, signal })` observation; bare `agents.subscribe()` only listens
+  locally and does not discover new agents (`RESEARCH.md` §5.1). The pill itself is one icon: state
   in colour, words in a hover tooltip drawn above the track, since the track is one line high and a
   pill that grew on hover would shove Paseo's own pills along.
 - Command Center and sidebar icons go through Paseo's `resolvePluginIcon`, which **throws** on an
