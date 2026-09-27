@@ -71,6 +71,12 @@ const log = (...args) => console.error("[smart-session mcp]", ...args);
  * installed. On a managed Git install the fallback instead finds the `paseo` CLI
  * on `PATH` and resolves the client from its own installed dependencies — the
  * same package the running daemon was built with.
+ *
+ * The desktop app is the exception. Its client lives inside `app.asar`, which
+ * only Electron can read, and its `paseo` is a shell wrapper with no
+ * `node_modules` beside it. `server/install.ts` therefore registers this server
+ * to run on the app's own Electron runtime in node mode, and from there the
+ * client resolves through `process.resourcesPath`.
  */
 let daemonClientModule = null;
 
@@ -78,22 +84,38 @@ const CLIENT_SPECIFIER = ["@getpaseo", "client", "internal", "daemon-client"].jo
 
 async function loadDaemonClient() {
   if (daemonClientModule !== null) return daemonClientModule;
-  try {
-    daemonClientModule = await import(CLIENT_SPECIFIER);
-    return daemonClientModule;
-  } catch (directError) {
-    const cliPath = findPaseoCli();
-    if (cliPath === null) throw directError;
+  const failures = [];
+  for (const { label, resolve } of clientCandidates()) {
     try {
-      const resolved = createRequire(cliPath).resolve(CLIENT_SPECIFIER);
-      daemonClientModule = await import(pathToFileURL(resolved).href);
+      daemonClientModule = await import(resolve());
       return daemonClientModule;
-    } catch (viaCliError) {
-      throw new Error(
-        `Cannot resolve ${CLIENT_SPECIFIER} directly (${directError.message}) or via the paseo CLI at ${cliPath} (${viaCliError.message})`,
-      );
+    } catch (error) {
+      failures.push(`${label} (${error.message})`);
     }
   }
+  throw new Error(`Cannot resolve ${CLIENT_SPECIFIER} ${failures.join(" or ")}${desktopHint()}`);
+}
+
+/** Every place the client can come from, cheapest first. */
+function clientCandidates() {
+  const fromEntry = (entry) => () => pathToFileURL(createRequire(entry).resolve(CLIENT_SPECIFIER)).href;
+  const candidates = [{ label: "directly", resolve: () => CLIENT_SPECIFIER }];
+  // Set only under Electron, where the bundled CLI inside app.asar is readable.
+  if (typeof process.resourcesPath === "string") {
+    const entry = join(process.resourcesPath, "app.asar", "node_modules", "@getpaseo", "cli", "dist", "index.js");
+    candidates.push({ label: `from the Paseo app bundle at ${process.resourcesPath}`, resolve: fromEntry(entry) });
+  }
+  const cliPath = findPaseoCli();
+  if (cliPath !== null) candidates.push({ label: `via the paseo CLI at ${cliPath}`, resolve: fromEntry(cliPath) });
+  return candidates;
+}
+
+/** Explains the one failure a person can fix without reading the code. */
+function desktopHint() {
+  if (process.versions.electron !== undefined) return "";
+  const cliPath = findPaseoCli();
+  if (cliPath === null || !existsSync(join(dirname(cliPath), "..", "app.asar"))) return "";
+  return ". The paseo CLI is the desktop app's, whose client only its own runtime can load: reload the smart-session plugin so it re-registers this MCP server on that runtime, then restart the Claude Code session";
 }
 
 /** Finds `paseo` on PATH and resolves symlinks, the way a shell's `which` would. */

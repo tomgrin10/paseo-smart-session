@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-import { mcpPointsAtPlugin, reconcile } from "./server/install.ts";
+import { mcpDefinition, mcpPointsAtPlugin, reconcile } from "./server/install.ts";
 
 const DIR = "/plugins/paseo-smart-session";
 
@@ -29,10 +29,53 @@ test("the MCP registration must point at the current managed install", () => {
     `  Args: ${DIR}/mcp.mjs`,
   ].join("\n");
   const stale = current.replace(`${DIR}/mcp.mjs`, "/old/checkout/mcp.mjs");
+  const definition = mcpDefinition(DIR, NODE_RUNTIME);
 
-  assert.equal(mcpPointsAtPlugin(current, DIR), true);
-  assert.equal(mcpPointsAtPlugin(stale, DIR), false);
-  assert.equal(mcpPointsAtPlugin(current.replace("User config", "Local config"), DIR), false);
+  assert.equal(mcpPointsAtPlugin(current, definition), true);
+  assert.equal(mcpPointsAtPlugin(stale, definition), false);
+  assert.equal(mcpPointsAtPlugin(current.replace("User config", "Local config"), definition), false);
+});
+
+const NODE_RUNTIME = { electron: undefined, execPath: "/usr/local/bin/node", appImage: undefined };
+const HELPER = "/Applications/Paseo.app/Contents/Frameworks/Paseo Helper.app/Contents/MacOS/Paseo Helper";
+const DESKTOP_RUNTIME = { electron: "44.0.0", execPath: HELPER, appImage: undefined };
+
+test("under plain Node the MCP server runs on node from PATH", () => {
+  assert.deepEqual(mcpDefinition(DIR, NODE_RUNTIME), { type: "stdio", command: "node", args: [`${DIR}/mcp.mjs`] });
+});
+
+test("under the desktop app the MCP server runs on the app's Electron in node mode", () => {
+  // Plain node cannot read app.asar, where the desktop app keeps its daemon client.
+  assert.deepEqual(mcpDefinition(DIR, DESKTOP_RUNTIME), {
+    type: "stdio",
+    command: HELPER,
+    args: [`${DIR}/mcp.mjs`],
+    env: { ELECTRON_RUN_AS_NODE: "1" },
+  });
+  // The mount path of an AppImage changes every launch; $APPIMAGE does not.
+  const appImage = { electron: "44.0.0", execPath: "/tmp/.mount_PaseoAb12/paseo", appImage: "/home/x/Paseo.AppImage" };
+  assert.equal(mcpDefinition(DIR, appImage).command, "/home/x/Paseo.AppImage");
+});
+
+test("a node registration is stale once the plugin runs under the desktop app", () => {
+  const nodeRegistration = [
+    "  Scope: User config (available in all your projects)",
+    "  Command: node",
+    `  Args: ${DIR}/mcp.mjs`,
+  ].join("\n");
+  const desktopRegistration = [
+    "  Scope: User config (available in all your projects)",
+    `  Command: ${HELPER}`,
+    `  Args: ${DIR}/mcp.mjs`,
+    "  Environment:",
+    "    ELECTRON_RUN_AS_NODE=1",
+  ].join("\n");
+  const desktop = mcpDefinition(DIR, DESKTOP_RUNTIME);
+
+  assert.equal(mcpPointsAtPlugin(nodeRegistration, desktop), false);
+  assert.equal(mcpPointsAtPlugin(desktopRegistration, desktop), true);
+  // Without node mode the helper would start the app itself instead of a script.
+  assert.equal(mcpPointsAtPlugin(desktopRegistration.replace("ELECTRON_RUN_AS_NODE=1", ""), desktop), false);
 });
 
 test("an empty settings file gains exactly the four managed entries", () => {

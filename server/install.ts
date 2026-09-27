@@ -198,6 +198,45 @@ async function writeAtomic(path: string, text: string): Promise<void> {
   await rename(temp, path);
 }
 
+export interface McpDefinition {
+  type: "stdio";
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+export interface McpRuntime {
+  electron: string | undefined;
+  execPath: string;
+  appImage: string | undefined;
+}
+
+const currentRuntime = (): McpRuntime => ({
+  electron: process.versions.electron,
+  execPath: process.execPath,
+  appImage: process.env.APPIMAGE,
+});
+
+/**
+ * How Claude Code should launch `mcp.mjs`.
+ *
+ * `node` from `PATH`, except under the desktop app. There the daemon client lives
+ * inside `app.asar`, which plain Node cannot read, so the server runs on the
+ * runtime this plugin is itself running on — Electron in node mode, the same way
+ * the app launches its bundled `paseo` CLI. An AppImage mounts at a fresh path on
+ * every launch, so its stable `$APPIMAGE` stands in for the mounted executable.
+ */
+export function mcpDefinition(pluginDir: string, runtime: McpRuntime = currentRuntime()): McpDefinition {
+  const args = [join(pluginDir, "mcp.mjs")];
+  if (runtime.electron === undefined) return { type: "stdio", command: "node", args };
+  return {
+    type: "stdio",
+    command: runtime.appImage ?? runtime.execPath,
+    args,
+    env: { ELECTRON_RUN_AS_NODE: "1" },
+  };
+}
+
 /**
  * Registers the agent-facing MCP server, through Claude Code's own CLI.
  *
@@ -208,34 +247,31 @@ async function writeAtomic(path: string, text: string): Promise<void> {
  * install into a new directory, so an entry can exist while its script no longer
  * does.
  */
-export function mcpPointsAtPlugin(output: string, pluginDir: string): boolean {
+export function mcpPointsAtPlugin(output: string, definition: McpDefinition): boolean {
   const lines = output.split(/\r?\n/).map((line) => line.trim());
   return lines.includes("Scope: User config (available in all your projects)")
-    && lines.includes("Command: node")
-    && lines.includes(`Args: ${join(pluginDir, "mcp.mjs")}`);
+    && lines.includes(`Command: ${definition.command}`)
+    && lines.includes(`Args: ${definition.args.join(" ")}`)
+    && Object.entries(definition.env ?? {}).every(([key, value]) => lines.includes(`${key}=${value}`));
 }
 
 async function ensureMcp(pluginDir: string): Promise<InstallReport["mcp"]> {
   const run = (args: string[]): Promise<{ stdout: string }> =>
     execFileAsync("claude", args, { timeout: 20_000, maxBuffer: 1024 * 1024 });
+  const definition = mcpDefinition(pluginDir);
 
   let existing = false;
   try {
     const { stdout } = await run(["mcp", "get", "smart-session"]);
-    if (mcpPointsAtPlugin(stdout, pluginDir)) return "present";
+    if (mcpPointsAtPlugin(stdout, definition)) return "present";
     existing = true;
   } catch {
     // Absent, or no `claude` on PATH. The add below tells the two apart.
   }
 
-  const definition = JSON.stringify({
-    type: "stdio",
-    command: "node",
-    args: [join(pluginDir, "mcp.mjs")],
-  });
   try {
     if (existing) await run(["mcp", "remove", "smart-session", "--scope", "user"]);
-    await run(["mcp", "add-json", "--scope", "user", "smart-session", definition]);
+    await run(["mcp", "add-json", "--scope", "user", "smart-session", JSON.stringify(definition)]);
     return existing ? "updated" : "added";
   } catch {
     // No `claude` binary on the daemon's PATH is the usual reason, and it is not

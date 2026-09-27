@@ -51,6 +51,11 @@
   `loadDaemonClient()` falls back to resolving the client from the `paseo` CLI found on `PATH`, since
   that install always has it. `check-mcp-resolve.mjs` proves this against a Git install with no
   `node_modules` of its own — this broke in production on the VM before that check existed.
+- The desktop app keeps `@getpaseo/client` inside `app.asar`, which plain `node` cannot read, and its
+  `paseo` is a shell wrapper with nothing to resolve from. So when the plugin runs under Electron,
+  `server/install.ts` registers `mcp.mjs` on that same executable (`$APPIMAGE` for an AppImage)
+  with `ELECTRON_RUN_AS_NODE=1`, and `mcp.mjs` resolves the client through `process.resourcesPath`.
+  This broke on macOS after an app update; `check-mcp-resolve.mjs` covers that layout too.
 - Keep daemon connections short-lived. A long-lived socket in the plugin subprocess keeps the event
   loop alive and hangs Paseo's "Stopping plugin" step, which wedges reload for the life of the
   daemon. Every timer and resource must be released through `shared/lifecycle.ts`;
@@ -130,7 +135,7 @@ cannot see.
 | `check-bundles.mjs` | The dual-bundle boundary, plus the app's own registration validation, so a contribution Paseo would reject at install time fails here instead. |
 | `check-gitinstall.mjs` | That both bundles still compile with no installed dependencies, which is what `paseo plugin add` does. |
 | `check-teardown.mjs` | That the subprocess actually exits after cleanup. A leaked timer wedges plugin reload. |
-| `check-mcp-resolve.mjs` | That `mcp.mjs` can still reach the daemon client on a managed Git install, where `@getpaseo/client` exists only inside the global `paseo` CLI's own dependencies, not in this checkout's (nonexistent) `node_modules`. |
+| `check-mcp-resolve.mjs` | That `mcp.mjs` can still reach the daemon client on a managed Git install, where `@getpaseo/client` exists only inside the global `paseo` CLI's own dependencies, not in this checkout's (nonexistent) `node_modules` — and inside the desktop app, where it exists only under `app.asar`. |
 
 Hook behaviour is verified against the Claude Code binary *and* a live session, never against the
 public docs — `RESEARCH.md` §3.4 records four answers the schemas alone got wrong. Extract with
