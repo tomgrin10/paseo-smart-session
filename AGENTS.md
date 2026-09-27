@@ -198,9 +198,9 @@ when you have not looked, and never describe a screenshot you did not take.
 - Release notes must include a short summary, user-visible changes, the npm install
   command, the minimum Paseo version, and any breaking, migration, security, or upgrade
   considerations. Omit empty sections.
-- Before publishing, require a clean current `main`, verified GitHub and npm ownership, passing
-  checks, `npm pack --dry-run`, a successful plugin reload, clean logs, and a secret audit of the
-  exact release snapshot.
+- Before pushing the release tag, require a clean current `main`, verified GitHub and npm ownership,
+  passing checks, `npm pack --dry-run`, a successful plugin reload, clean logs, and a secret audit
+  of the exact release snapshot.
 - Tag the exact release commit as `vX.Y.Z` and push the tag. `.github/workflows/publish-npm.yml`
   verifies that the tag matches `package.json`, reruns the release checks, inspects the package,
   and publishes through npm Trusted Publishing; do not run `npm publish` manually except to
