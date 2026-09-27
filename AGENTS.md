@@ -201,9 +201,12 @@ when you have not looked, and never describe a screenshot you did not take.
 - Before publishing, require a clean current `main`, verified GitHub and npm ownership, passing
   checks, `npm pack --dry-run`, a successful plugin reload, clean logs, and a secret audit of the
   exact release snapshot.
-- Publish the public package with `npm publish --access public`, then verify installation with
-  `paseo plugin install npm:paseo-smart-session@X.Y.Z` on Paseo 0.9 or newer.
-- Tag the exact release commit as `vX.Y.Z`; title the release `paseo-smart-session vX.Y.Z`. After
-  publishing, test the public tag-pinned installer and the badge URLs.
+- Tag the exact release commit as `vX.Y.Z` and push the tag. `.github/workflows/publish-npm.yml`
+  verifies that the tag matches `package.json`, reruns the release checks, inspects the package,
+  and publishes through npm Trusted Publishing; do not run `npm publish` manually except to
+  recover from a diagnosed workflow failure.
+- Wait for the publish workflow and npm registry propagation, then verify installation with
+  `paseo plugin install npm:paseo-smart-session@X.Y.Z` on Paseo 0.9 or newer. Title the GitHub
+  release `paseo-smart-session vX.Y.Z`, and test the public tag-pinned installer and badge URLs.
 
 Never move or rewrite a published tag. Ship corrections as a new patch release.
