@@ -37,7 +37,7 @@ That history remains useful after an individual session ends or a provider cache
 Install from npm on Paseo 0.9.0 or newer:
 
 ```sh
-paseo plugin install npm:paseo-smart-session@1.2.6
+paseo plugin install paseo-smart-session@1.2.6
 ```
 
 Paseo 0.8 can install the same plugin from Git:
