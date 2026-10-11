@@ -84,7 +84,7 @@ jobs:
           const packed = run(["pack", "--dry-run", "--json"]);
           if (packed.status !== 0) { process.stderr.write(packed.stderr); process.exit(1); }
           const integrity = JSON.parse(packed.stdout)[0].integrity;
-          const existing = run(["view", spec, "dist.integrity", "--json", "--registry", "https://registry.npmjs.org"]);
+          const existing = run(["view", spec, "dist.integrity", "--json", "--prefer-online", "--registry", "https://registry.npmjs.org"]);
           if (existing.status === 0) {
             if (JSON.parse(existing.stdout) !== integrity) {
               console.error(`::error::${spec} already exists with different contents. Release a new version; do not rewrite the tag.`);
@@ -101,10 +101,10 @@ jobs:
               process.exit(result.status || 1);
             }
             let verified = false;
-            for (let attempt = 0; attempt < 10; attempt++) {
-              const remote = run(["view", spec, "dist.integrity", "--json", "--registry", "https://registry.npmjs.org"]);
+            for (let attempt = 0; attempt < 60; attempt++) {
+              const remote = run(["view", spec, "dist.integrity", "--json", "--prefer-online", "--registry", "https://registry.npmjs.org"]);
               if (remote.status === 0 && JSON.parse(remote.stdout) === integrity) { verified = true; break; }
-              await new Promise(resolve => setTimeout(resolve, 2000));
+              await new Promise(resolve => setTimeout(resolve, 5000));
             }
             if (!verified) { console.error(`::error::Registry verification failed for ${spec}.`); process.exit(1); }
           }
