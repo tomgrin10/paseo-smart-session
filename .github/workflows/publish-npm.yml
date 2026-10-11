@@ -47,6 +47,29 @@ jobs:
         run: |
           package_version="$(node -p "require('./package.json').version")"
           test "$RELEASE_TAG" = "v$package_version"
+      - name: Verify npm trusted publishing authorization
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from "node:fs";
+          const { name } = JSON.parse(readFileSync("package.json", "utf8"));
+          const url = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+          url.searchParams.set("audience", "npm:registry.npmjs.org");
+          const identity = await fetch(url, { headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` }, signal: AbortSignal.timeout(30000) });
+          if (!identity.ok) throw new Error(`GitHub OIDC request failed (${identity.status}).`);
+          const { value: idToken } = await identity.json();
+          console.log(`::add-mask::${idToken}`);
+          const claims = JSON.parse(Buffer.from(idToken.split(".")[1], "base64url"));
+          console.log(JSON.stringify({ package: name, repository: claims.repository, workflow: claims.workflow_ref, subject: claims.sub, environment: claims.environment, event: claims.event_name }));
+          const response = await fetch(`https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${encodeURIComponent(name)}`, { method: "POST", headers: { Authorization: `Bearer ${idToken}` }, signal: AbortSignal.timeout(30000) });
+          const body = await response.json();
+          if (!response.ok) {
+            console.error(`::error::npm rejected trusted publishing for ${name} (${response.status}): ${body.message || "authorization denied"}. Check publisher expiry, repository identity, workflow filename, environment, and allowed actions in npm Settings.`);
+            process.exit(1);
+          }
+          if (!body.token) throw new Error("npm exchange returned no publication token.");
+          console.log(`::add-mask::${body.token}`);
+          console.log(`npm trusted publishing authorization verified for ${name}.`);
+          JS
       - run: npm ci
       - run: npm run verify
       - run: npm pack --dry-run
