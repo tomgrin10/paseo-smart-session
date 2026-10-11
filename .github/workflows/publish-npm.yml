@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to retry (for example v1.2.3)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,20 +28,61 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
       - name: Require the tagged commit to be on main
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - name: Use an npm version with trusted publishing support
         run: npm install --global npm@11.20.0
       - name: Require the tag to match package.json
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           package_version="$(node -p "require('./package.json').version")"
-          test "$GITHUB_REF_NAME" = "v$package_version"
+          test "$RELEASE_TAG" = "v$package_version"
       - run: npm ci
       - run: npm run verify
       - run: npm pack --dry-run
-      - run: npm publish --access public
+      - name: Publish or verify the existing package
+        run: |
+          node --input-type=module <<'JS'
+          import { spawnSync } from "node:child_process";
+          import { readFileSync } from "node:fs";
+          const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+          const spec = `${pkg.name}@${pkg.version}`;
+          const run = args => spawnSync("npm", args, { encoding: "utf8" });
+          const packed = run(["pack", "--dry-run", "--json"]);
+          if (packed.status !== 0) { process.stderr.write(packed.stderr); process.exit(1); }
+          const integrity = JSON.parse(packed.stdout)[0].integrity;
+          const existing = run(["view", spec, "dist.integrity", "--json", "--registry", "https://registry.npmjs.org"]);
+          if (existing.status === 0) {
+            if (JSON.parse(existing.stdout) !== integrity) {
+              console.error(`::error::${spec} already exists with different contents. Release a new version; do not rewrite the tag.`);
+              process.exit(1);
+            }
+            console.log(`${spec} is already published with matching contents; continuing the release.`);
+          } else {
+            let error;
+            try { error = JSON.parse(existing.stdout).error; } catch {}
+            if (error?.code !== "E404") { process.stderr.write(existing.stderr); process.exit(1); }
+            const result = spawnSync("npm", ["publish", "--access", "public", "--registry", "https://registry.npmjs.org"], { stdio: "inherit" });
+            if (result.status !== 0) {
+              console.error("::error::npm publication failed. Check this package's GitHub trusted publisher repository, workflow filename, permissions, and environment in npm Settings.");
+              process.exit(result.status || 1);
+            }
+            let verified = false;
+            for (let attempt = 0; attempt < 10; attempt++) {
+              const remote = run(["view", spec, "dist.integrity", "--json", "--registry", "https://registry.npmjs.org"]);
+              if (remote.status === 0 && JSON.parse(remote.stdout) === integrity) { verified = true; break; }
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            if (!verified) { console.error(`::error::Registry verification failed for ${spec}.`); process.exit(1); }
+          }
+          JS
