@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/paseo-smart-session?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/paseo-smart-session)
 [![npm downloads](https://img.shields.io/npm/dm/paseo-smart-session?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/paseo-smart-session)
-[![Paseo](https://img.shields.io/badge/Paseo-plugin-8A63D2?style=for-the-badge)](https://paseo.sh)
+[![Paseo](https://img.shields.io/badge/Paseo-%E2%89%A5%200.8.0-8A63D2?style=for-the-badge)](https://paseo.sh)
 [![License](https://img.shields.io/github/license/tomgrin10/paseo-smart-session?style=for-the-badge&color=2563eb)](LICENSE)
 
 Give Paseo agents a safe way to manage long-running work.
@@ -10,6 +10,22 @@ Give Paseo agents a safe way to manage long-running work.
 Smart Session lets an agent see how full its context is, save durable task state, and compact itself when it is ready. It also records session and plan-usage statistics, so you can understand where tokens are going and when limits reset.
 
 ![A Smart Session compaction handoff: the requested compact preserves the task state, then the resumed session is told to re-read its state file and continue](docs/screenshots/smart-compact-handoff.png)
+
+## Install
+
+Install from npm using the latest Paseo release:
+
+```sh
+paseo plugin install paseo-smart-session
+```
+
+```sh
+paseo plugin ls                    # confirm it is running
+paseo plugin update smart-session
+paseo plugin remove smart-session
+```
+
+On first load, Smart Session registers its Claude Code hooks and MCP server. It only manages entries that point at its own scripts; other Claude Code configuration is left alone.
 
 ## What it does
 
@@ -31,22 +47,6 @@ Smart Session keeps a local history of:
 - Compaction requests and their before/after context sizes
 
 That history remains useful after an individual session ends or a provider cache changes.
-
-## Install
-
-Install from npm using the latest Paseo release:
-
-```sh
-paseo plugin install paseo-smart-session
-```
-
-```sh
-paseo plugin ls                    # confirm it is running
-paseo plugin update smart-session
-paseo plugin remove smart-session
-```
-
-On first load, Smart Session registers its Claude Code hooks and MCP server. It only manages entries that point at its own scripts; other Claude Code configuration is left alone.
 
 ## How an agent uses it
 
@@ -135,7 +135,7 @@ When the Paseo daemon requires a password, Smart Session resolves it in this ord
 
 The secret is used only to connect to the daemon. It is never written or logged.
 
-## Develop locally
+## Development
 
 ```sh
 git clone https://github.com/tomgrin10/paseo-smart-session.git
@@ -158,15 +158,17 @@ Reloading the plugin is enough. Do not restart the Paseo daemon: that interrupts
 
 Smart Session reads local Claude Code usage information and communicates with the local Paseo daemon. Its usage history, settings, and task state stay under `$PASEO_HOME`. Apart from narrowly maintaining its own Claude Code hook and MCP entries, it does not modify user configuration.
 
-## More Paseo plugins
-
-Also available from [Tom Gringauz](https://github.com/tomgrin10):
-
-- [Defer](https://github.com/tomgrin10/paseo-defer) — Schedule messages to agents for later delivery.
-- [Graphite](https://github.com/tomgrin10/paseo-graphite) — Monitor Graphite stacks and PR action state.
-- [Vitals](https://github.com/tomgrin10/paseo-vitals) — Host, Paseo, agent, and Docker health in one dashboard.
-- [Send to Paseo](https://github.com/tomgrin10/send-to-paseo) — Send GitHub and Graphite PRs to Paseo from Chrome.
-
 ## License
 
 [MIT](LICENSE) © 2026 Tom Gringauz.
+
+## Other plugins
+
+- [Defer](https://github.com/tomgrin10/paseo-defer) — Schedule messages for later delivery.
+- [Graphite](https://github.com/tomgrin10/paseo-graphite) — Graphite stacks and PR status.
+- [Vitals](https://github.com/tomgrin10/paseo-vitals) — Host, agent, and Docker health.
+- [Session Guard](https://github.com/tomgrin10/paseo-session-guard) — Pause at session limits and continue after reset.
+- [Transfer](https://github.com/tomgrin10/paseo-transfer) — Copy or move workspaces between hosts.
+- [Transcript Search](https://github.com/tomgrin10/paseo-transcript-search) — Search conversations across connected hosts.
+- [Send to Paseo](https://github.com/tomgrin10/send-to-paseo) — Send GitHub and Graphite PRs to Paseo from Chrome.
+- [Dispatch](https://github.com/tomgrin10/paseo-dispatch) — Route tasks to existing workspaces (development preview).
