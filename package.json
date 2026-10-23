@@ -33,13 +33,13 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types *.test.ts",
     "check": "node check-bundles.mjs && node check-gitinstall.mjs && node check-teardown.mjs && node check-mcp-resolve.mjs",
-    "verify": "npm run typecheck && npm run test && npm run check"
+    "verify": "npm run typecheck && npm run test && npm run check && node --test button-visibility.test.mjs"
   },
   "devDependencies": {
     "@babel/parser": "^8.0.4",
-    "@getpaseo/client": "0.8.0-beta.1",
-    "@getpaseo/plugin": "0.8.0-beta.1",
-    "@getpaseo/protocol": "0.8.0-beta.1",
+    "@getpaseo/client": "0.11.0",
+    "@getpaseo/plugin": "0.11.0",
+    "@getpaseo/protocol": "0.11.0",
     "@tanstack/react-query": "^5.90.11",
     "@types/node": "^22.10.2",
     "@types/react": "~19.2.0",

@@ -1,3 +1,4 @@
+import { displayPreferences } from "./shared/display";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 
 import { readAgents, withDaemon } from "./server/daemon.ts";
@@ -38,6 +39,7 @@ import { queue } from "./server/governor.ts";
 import "./server/install-on-load.ts";
 
 export default function contribute(server: PluginServerContext) {
+  server.registerSettings(displayPreferences);
   server.handle(budgetStatus, async () => {
     try {
       const since = Date.now() - 14 * 24 * 60 * 60 * 1000;
