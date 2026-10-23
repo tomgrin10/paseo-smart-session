@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/paseo-smart-session?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/paseo-smart-session)
 [![npm downloads](https://img.shields.io/npm/dm/paseo-smart-session?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/paseo-smart-session)
-[![Paseo](https://img.shields.io/badge/Paseo-%E2%89%A5%200.8.0-8A63D2?style=for-the-badge)](https://paseo.sh)
+[![Paseo](https://img.shields.io/badge/Paseo-%E2%89%A5%200.10.1-8A63D2?style=for-the-badge)](https://paseo.sh)
 [![License](https://img.shields.io/github/license/tomgrin10/paseo-smart-session?style=for-the-badge&color=2563eb)](LICENSE)
 
 Give Paseo agents a safe way to manage long-running work.
@@ -162,6 +162,12 @@ Smart Session reads local Claude Code usage information and communicates with th
 
 [MIT](LICENSE) © 2026 Tom Gringauz.
 
+## Navigation and display
+
+Open this plugin from Command-K or its sidebar entry. **Overview** and **Display settings** link the main view and settings directly, without opening the Plugins settings page. Hiding a sidebar entry keeps Command-K available.
+
+Display settings can also hide this plugin's workspace header or composer buttons independently. Hidden buttons stay hidden for newly opened workspaces; restoring them retains the latest button status.
+
 ## Other plugins
 
 - [Defer](https://github.com/tomgrin10/paseo-defer) — Schedule messages for later delivery.
@@ -172,3 +178,5 @@ Smart Session reads local Claude Code usage information and communicates with th
 - [Transcript Search](https://github.com/tomgrin10/paseo-transcript-search) — Search conversations across connected hosts.
 - [Send to Paseo](https://github.com/tomgrin10/send-to-paseo) — Send GitHub and Graphite PRs to Paseo from Chrome.
 - [Dispatch](https://github.com/tomgrin10/paseo-dispatch) — Route tasks to existing workspaces (development preview).
+
+- [Follow-up](https://github.com/tomgrin10/paseo-follow-up) — Track workspace PRs, remaining tasks and completion.

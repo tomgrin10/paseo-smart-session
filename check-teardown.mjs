@@ -33,7 +33,7 @@ const stubSdkModules = {
     );
     build.onResolve({ filter }, (args) => ({ path: args.path, namespace: "sdk-stub" }));
     build.onLoad({ filter: /.*/, namespace: "sdk-stub" }, () => ({
-      contents: "module.exports = { defineRpc: (d) => d, defineAttachmentSource: (d) => d };",
+      contents: "module.exports = { defineSettings: (d) => d, settingsRpc: (id) => ({ read: { name: `settings.${id}.read` } }), defineRpc: (d) => d, defineAttachmentSource: (d) => d };",
       loader: "js",
     }));
   },

@@ -3,7 +3,7 @@
 ## Project
 
 - This is the trusted, unsandboxed Paseo plugin `smart-session` — note the id is `smart-session`
-  while the repository and package are `paseo-smart-session`. Minimum supported Paseo is 0.8.0.
+  while the repository and package are `paseo-smart-session`. Minimum supported Paseo is 0.10.1.
 - It is two halves in one daemon process: a **meter** that records plan-usage history, and a
   **governor** that reads each agent's context occupancy and compacts a session on request.
 - Check the current plugin docs at `https://paseo.sh/docs/plugins.md` and

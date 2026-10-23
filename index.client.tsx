@@ -1,3 +1,6 @@
+import { withButtonVisibility } from "./client/button-visibility";
+import { contributeDisplay } from "./client/display";
+import { withNavigation } from "./client/navigation";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 
 import { contributeClient, refreshPills } from "./client/pill";
@@ -5,9 +8,11 @@ import { SmartSessionSurface } from "./client/surface";
 import { enrolmentState } from "./shared/governor";
 import { getSettings, setSettings } from "./shared/smart-session";
 
-export default function contribute(client: PluginClientContext) {
-  client.addSurface("overview", SmartSessionSurface);
-  client.addSidebarItem({
+export default function contribute(host: PluginClientContext) {
+  const visibility = withButtonVisibility(host);
+  const client = visibility.client;
+  client.addSurface("overview", withNavigation(SmartSessionSurface, client, "overview"));
+  const removeDisplay = contributeDisplay(client, {
     id: "smart-session",
     title: "Smart Session",
     icon: "Gauge",
@@ -38,5 +43,6 @@ export default function contribute(client: PluginClientContext) {
     },
   });
 
-  return contributeClient(client);
+  const removeClient = contributeClient(client);
+  return () => { visibility.dispose(); removeDisplay(); return removeClient(); };
 }

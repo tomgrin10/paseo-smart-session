@@ -9,6 +9,8 @@ const DIR = dirname(fileURLToPath(import.meta.url));
 async function runClientBundle(code) {
   const zod = await import("zod");
   const contracts = {
+    defineSettings: (definition) => definition,
+    settingsRpc: (id) => ({ read: { name: `settings.${id}.read` } }),
     defineRpc: (definition) => definition,
     defineAttachmentSource: (definition) => definition,
   };
@@ -18,6 +20,7 @@ async function runClientBundle(code) {
     "react/jsx-runtime": {},
     "react-native": {},
     "@tanstack/react-query": {},
+    "@getpaseo/plugin/client/ui": { SettingsAction: () => null, SettingsCard: () => null, SettingsSection: () => null, SettingsSwitch: () => null },
     "@getpaseo/plugin": contracts,
     "@getpaseo/plugin/client": { useRpc: () => async () => ({}) },
     "@getpaseo/plugin/client/react-native": {
@@ -83,6 +86,7 @@ async function runClientBundle(code) {
       },
     },
     async rpc(contract) {
+      if (contract?.name === "settings.display.read") return { status: "ready", values: { showSidebar: true }, revision: "1" };
       if (contract?.name === "smart-session.enrolment.state") {
         return {
           showPill: true,
@@ -91,6 +95,10 @@ async function runClientBundle(code) {
         };
       }
       return {};
+    },
+    addSettingsScreen(screen) {
+      if (typeof screen.Component !== "function") throw new Error("Invalid settings screen");
+      return () => {};
     },
     addSurface(id, Component) {
       requireText(id, "surface id");
