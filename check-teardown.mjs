@@ -33,7 +33,7 @@ const stubSdkModules = {
     );
     build.onResolve({ filter }, (args) => ({ path: args.path, namespace: "sdk-stub" }));
     build.onLoad({ filter: /.*/, namespace: "sdk-stub" }, () => ({
-      contents: "module.exports = { defineSettings: (d) => d, settingsRpc: (id) => ({ read: { name: `settings.${id}.read` } }), defineRpc: (d) => d, defineAttachmentSource: (d) => d };",
+      contents: "module.exports = { defineSettings: (d) => d, settingsRpc: (id) => ({ read: { name: `settings.${id}.read` } }), defineRpc: (d) => d, defineAgentTool: (d) => d, defineAttachmentSource: (d) => d };",
       loader: "js",
     }));
   },
@@ -59,7 +59,7 @@ writeFileSync(
   harnessPath,
   `const mod = require(${JSON.stringify(bundlePath)});
 const contribute = mod.default ?? mod;
-const plugin = new Proxy({}, { get: () => () => {} });
+const plugin = new Proxy({}, { get: (_, name) => ["on", "before"].includes(name) ? () => () => {} : () => {} });
 (async () => {
   const cleanup = contribute(plugin);
   if (typeof cleanup !== "function") throw new Error("contribute() must return a cleanup function");

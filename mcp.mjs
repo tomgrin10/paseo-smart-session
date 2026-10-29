@@ -134,11 +134,21 @@ function findPaseoCli() {
   return null;
 }
 
+function daemonUrl() {
+  if (process.env.PASEO_DAEMON_URL) return process.env.PASEO_DAEMON_URL;
+  const home = process.env.PASEO_HOME ?? join(homedir(), ".paseo");
+  try {
+    const config = JSON.parse(readFileSync(join(home, "config.json"), "utf8"));
+    if (typeof config.daemon?.listen === "string") return `ws://${config.daemon.listen}/ws`;
+  } catch { /* Use the documented default when configuration is absent. */ }
+  return "ws://127.0.0.1:6767/ws";
+}
+
 async function callPlugin(method, input) {
   const { DaemonClient } = await loadDaemonClient();
   const password = await resolveDaemonPassword();
   const client = new DaemonClient({
-    url: process.env.PASEO_DAEMON_URL ?? "ws://127.0.0.1:6767/ws",
+    url: daemonUrl(),
     clientId: "smart-session-mcp",
     clientType: "cli",
     reconnect: { enabled: false },

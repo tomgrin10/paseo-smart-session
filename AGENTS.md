@@ -3,11 +3,11 @@
 ## Project
 
 - This is the trusted, unsandboxed Paseo plugin `smart-session` — note the id is `smart-session`
-  while the repository and package are `paseo-smart-session`. Minimum supported Paseo is 0.10.1.
+  while the repository and package are `paseo-smart-session`. Minimum supported Paseo is 0.14.0.
 - It is two halves in one daemon process: a **meter** that records plan-usage history, and a
   **governor** that reads each agent's context occupancy and compacts a session on request.
 - Check the current plugin docs at `https://paseo.sh/docs/plugins.md` and
-  `https://paseo.sh/docs/plugins/v0.8/reference.md` before changing runtime code.
+  `https://paseo.sh/docs/plugins/reference.md` before changing runtime code.
 - `RESEARCH.md` is the evidence base — every capability claim in `PLAN.md` and in the code comments
   points at a section of it. If you discover something that contradicts it, correct it there rather
   than working around it in code.
@@ -64,8 +64,8 @@
   add, update or remove entries whose command points at this checkout's `hooks/*.mjs`; it must never
   write a path it has not confirmed exists, must not write at all when reconciling changes nothing,
   and must leave a malformed file alone rather than rewriting it from a partial parse. MCP
-  registration goes through `claude mcp add-json` — never edit `~/.claude.json`, which holds
-  credentials.
+  attachment goes through `server.before("agent.session_open")`. Global registration is an explicit
+  legacy operation through `claude mcp add-json`; never edit `~/.claude.json`, which holds credentials.
 - The load-time call lives in `server/install-on-load.ts`, not in `server/install.ts`. Importing the
   reconciler must stay free of side effects, or a test that imports it writes to the machine's real
   Claude Code settings — which is not hypothetical; it happened, and `install.test.ts` has the
@@ -219,3 +219,7 @@ Never move or rewrite a published tag. Ship corrections as a new patch release.
 ## Automated publishing recovery
 
 The npm release workflow supports `workflow_dispatch` with an existing `tag` for recovery without rewriting tags. It checks that the checked-out tag is on `main` and matches package versions. Use Node 24 and npm 11.20.0 with GitHub OIDC; do not set `registry-url` on setup-node or configure token-placeholder authentication. Retrying an already-published package requires its registry integrity to match the packed snapshot. A new publish is verified against the registry before downstream release steps continue.
+
+## Paseo 0.14 session tools
+
+`server/session-mcp.ts` attaches the MCP only to interactive Claude/Codex sessions. Preserve the caller identity and other launch contributions. Do not register a global MCP during load. Tests cover history opens, opt-out, disabled settings and all open reasons.

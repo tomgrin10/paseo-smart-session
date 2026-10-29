@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/paseo-smart-session?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/paseo-smart-session)
 [![npm downloads](https://img.shields.io/npm/dm/paseo-smart-session?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/paseo-smart-session)
-[![Paseo](https://img.shields.io/badge/Paseo-%E2%89%A5%200.10.1-8A63D2?style=for-the-badge)](https://paseo.sh)
+[![Paseo](https://img.shields.io/badge/Paseo-%E2%89%A5%200.14.0-8A63D2?style=for-the-badge)](https://paseo.sh)
 [![License](https://img.shields.io/github/license/tomgrin10/paseo-smart-session?style=for-the-badge&color=2563eb)](LICENSE)
 
 Give Paseo agents a safe way to manage long-running work.
@@ -25,7 +25,7 @@ paseo plugin update smart-session
 paseo plugin remove smart-session
 ```
 
-On first load, Smart Session registers its Claude Code hooks and MCP server. It only manages entries that point at its own scripts; other Claude Code configuration is left alone.
+On first load, Smart Session registers its Claude Code hooks. Its MCP server is attached by Paseo when an interactive session opens. It only manages entries that point at its own scripts; other Claude Code configuration is left alone.
 
 ## What it does
 
@@ -156,7 +156,7 @@ Reloading the plugin is enough. Do not restart the Paseo daemon: that interrupts
 
 ## Data and privacy
 
-Smart Session reads local Claude Code usage information and communicates with the local Paseo daemon. Its usage history, settings, and task state stay under `$PASEO_HOME`. Apart from narrowly maintaining its own Claude Code hook and MCP entries, it does not modify user configuration.
+Smart Session reads local Claude Code usage information and communicates with the local Paseo daemon. Its usage history, settings, and task state stay under `$PASEO_HOME`. Apart from narrowly maintaining its own Claude Code hook entries, it does not modify user configuration. MCP attachment is local to each Paseo session.
 
 ## License
 
@@ -167,6 +167,16 @@ Smart Session reads local Claude Code usage information and communicates with th
 Open this plugin from Command-K or its sidebar entry. **Overview** and **Display settings** link the main view and settings directly, without opening the Plugins settings page. Hiding a sidebar entry keeps Command-K available.
 
 Display settings can also hide this plugin's workspace header or composer buttons independently. Hidden buttons stay hidden for newly opened workspaces; restoring them retains the latest button status.
+
+## Paseo 0.14 agent integration
+
+The Smart Session MCP attaches automatically when an interactive Claude or Codex session opens, including resume, refresh and import. Normal plugin startup no longer registers a global Claude MCP. Existing global entries are preserved; usage history and checkpoints remain in place. The bridge also respects a custom daemon listen address.
+
+Requires Paseo **0.14.0 or newer**. Agent tools are scoped to interactive Claude
+and Codex sessions; history-only opens receive none. They become available on
+the next idle session open after install or reload. The agent label
+`plugin-tools/enabled: "false"` opts a session out. Existing plugin data and
+settings are retained.
 
 ## Other plugins
 
