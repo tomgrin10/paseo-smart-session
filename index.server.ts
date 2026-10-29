@@ -1,3 +1,4 @@
+import { contributeSessionMcp } from "./server/session-mcp.ts";
 import { displayPreferences } from "./shared/display";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 
@@ -39,6 +40,7 @@ import { queue } from "./server/governor.ts";
 import "./server/install-on-load.ts";
 
 export default function contribute(server: PluginServerContext) {
+  const removeSessionMcp = contributeSessionMcp(server);
   server.registerSettings(displayPreferences);
   server.handle(budgetStatus, async () => {
     try {
@@ -191,6 +193,7 @@ export default function contribute(server: PluginServerContext) {
   // The recorder and governor register their timers in this shared lifecycle.
   // Paseo waits for this cleanup before stopping the plugin subprocess.
   return async () => {
+    removeSessionMcp();
     const teardowns = lifecycle.teardowns.splice(0);
     for (const teardown of teardowns) await teardown();
   };

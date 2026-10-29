@@ -43,8 +43,8 @@ function writeStubClient(root) {
     // module resolved and its class was reached, not that a daemon is running.
     [
       "export class DaemonClient {",
-      "  constructor() {}",
-      '  async connect() { throw new Error("CHECK_SENTINEL_CONNECT_REACHED"); }',
+      "  constructor(options) { this.url = options.url; }",
+      '  async connect() { throw new Error("CHECK_SENTINEL_CONNECT_REACHED:" + this.url); }',
       "  async close() {}",
       "}",
     ].join("\n"),
@@ -52,13 +52,15 @@ function writeStubClient(root) {
 }
 
 /** Runs `budget_status` through mcp.mjs and returns the tool's text. */
-function callBudget(checkout, { pathDirs, nodeArgs = [] }) {
+function callBudget(checkout, { pathDirs, nodeArgs = [], envOverrides = {} }) {
+  const env = { ...process.env, PASEO_HOME: join(staging, "home"), PATH: [...pathDirs, ...(process.env.PATH ?? "").split(delimiter)].join(delimiter), ...envOverrides };
+  for (const key of ["PASEO_DAEMON_URL", "PASEO_PASSWORD", "PASEO_PASSWORD_FILE"]) if (!(key in envOverrides)) delete env[key];
   const result = execFileSync(process.execPath, [...nodeArgs, join(checkout, "mcp.mjs")], {
     cwd: checkout,
     encoding: "utf8",
     // No ancestor of `staging` has a node_modules with @getpaseo/client, so the
     // bare specifier import can only succeed through a fallback.
-    env: { ...process.env, PATH: [...pathDirs, ...(process.env.PATH ?? "").split(delimiter)].join(delimiter) },
+    env,
     input:
       [
         JSON.stringify({
@@ -98,6 +100,14 @@ try {
     callBudget(checkout, { pathDirs: [join(cli, "bin")] }),
     "mcp.mjs resolves @getpaseo/client via the paseo CLI on PATH with no local node_modules",
   );
+
+  mkdirSync(join(staging, "home"), { recursive: true });
+  writeFileSync(join(staging, "home", "config.json"), JSON.stringify({ daemon: { listen: "127.0.0.1:16767" } }));
+  const customPort = callBudget(checkout, { pathDirs: [join(cli, "bin")] });
+  if (!customPort.includes("CHECK_SENTINEL_CONNECT_REACHED:ws://127.0.0.1:16767/ws")) failures.push("MCP bridge ignored the daemon listen address");
+  const explicitUrl = callBudget(checkout, { pathDirs: [join(cli, "bin")], envOverrides: { PASEO_DAEMON_URL: "ws://127.0.0.1:16768/ws" } });
+  if (!explicitUrl.includes("CHECK_SENTINEL_CONNECT_REACHED:ws://127.0.0.1:16768/ws")) failures.push("MCP bridge ignored the explicit daemon URL");
+  console.log("  ✓ MCP daemon URL follows the active home and explicit overrides");
 
   // The desktop app's layout: `Resources/bin/paseo` is a shell wrapper with no
   // node_modules beside it, and the client exists only under `app.asar`. A plain

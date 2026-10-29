@@ -536,7 +536,7 @@ export function SmartSessionSurface({ theme, layout }: PluginSurfaceProps) {
                     : install.pluginDir === null
                       ? "Not registered. Nothing will ask a session to compact itself."
                       : `Registered: ${install.hooks.join(", ")}. Only entries pointing at this plugin are touched; the MCP server is ${
-                          install.mcp === "unavailable" ? "not registered — the claude CLI was not reachable" : "registered"
+                          install.mcp === "session" ? "attached when a Paseo session opens" : install.mcp === "unavailable" ? "not registered — the claude CLI was not reachable" : "registered"
                         }.`
               }
               onPress={toggleInstallHooks}

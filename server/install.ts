@@ -7,10 +7,10 @@
  * feature was off for anyone who skimmed, and off in a way that looked like it was
  * working — the surface said "on", and nothing ever happened.
  *
- * Paseo cannot do this for us. Its plugin API contributes UI, commands, timeline
- * renderers and RPCs, and explicitly nothing about agent configuration — there is
- * no hook contribution and no way to set an agent's environment. So the plugin
- * reconciles the entries itself, in `~/.claude/settings.json`.
+ * Paseo 0.14 attaches MCP servers at session open. Claude Code's provider hooks
+ * still need reconciliation in `~/.claude/settings.json`; this module owns only
+ * those hooks during normal load. Global MCP registration is an explicit legacy
+ * compatibility operation, never the default.
  *
  * The rules that make that acceptable:
  *
@@ -78,7 +78,7 @@ export interface InstallReport {
   readonly changed: boolean;
   /** One line per managed event, for the surface to show. */
   readonly hooks: string[];
-  readonly mcp: "present" | "added" | "updated" | "unavailable" | "skipped";
+  readonly mcp: "present" | "added" | "updated" | "unavailable" | "skipped" | "session";
   readonly error: string | null;
 }
 
@@ -299,7 +299,7 @@ function serialize<T>(work: () => Promise<T>): Promise<T> {
  * reads two files and writes none.
  */
 export function install(options: { registerMcp?: boolean } = {}): Promise<InstallReport> {
-  const registerMcp = options.registerMcp !== false;
+  const registerMcp = options.registerMcp === true;
   return serialize(async () => {
     const path = settingsPath();
     const settings = await readSettings();
@@ -359,7 +359,7 @@ export function install(options: { registerMcp?: boolean } = {}): Promise<Instal
       settingsPath: path,
       changed,
       hooks: lines,
-      mcp: pluginDir === null || !registerMcp ? "skipped" : await ensureMcp(pluginDir),
+      mcp: pluginDir === null ? "skipped" : !registerMcp ? "session" : await ensureMcp(pluginDir),
       error: null,
     };
   });

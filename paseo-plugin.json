@@ -1,6 +1,6 @@
 {
   "id": "smart-session",
   "requirements": {
-    "paseo": ">=0.10.1"
+    "paseo": ">=0.14.0"
   }
 }

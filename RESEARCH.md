@@ -440,3 +440,16 @@ so this history is shallow and getting shallower — another reason the live rec
 3. Whether long-context (>200k) requests carry a pricing/limit premium on `opus[1m]` —
    `exceeds_200k_tokens` exists as a signal; the economics behind it are unconfirmed. Don't build a
    policy on it until measured against real utilization deltas.
+
+## Paseo 0.14 session-open MCP contributions
+
+Verified against the released `@getpaseo/plugin@0.14.0` server declarations and
+[getpaseo/paseo v0.14.0](https://github.com/getpaseo/paseo/releases/tag/v0.14.0).
+`server.before("agent.session_open", ...)` can return a launch-only `mcpServers`
+map on create, resume, refresh and import. History-only opens do not need tools.
+This supersedes the older claim that MCP registration requires global Claude CLI
+configuration. The plugin now attaches its own MCP to interactive Claude/Codex
+sessions with explicit caller identity and keeps provider-hook reconciliation
+separate. The existing global MCP installer remains an explicit compatibility
+operation; normal load and settings refresh do not call it. Older global entries
+are preserved, and no usage history, enrolment or checkpoints are migrated.
