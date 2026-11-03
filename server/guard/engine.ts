@@ -117,19 +117,35 @@ export class Engine {
   async stop() {
     this.stopped = true; await this.chain;
     // Disabling/unloading a plugin must not strand stopped OS processes.
-    if (this.processes) await this.exclusive(async () => {
+    try { await this.releaseWorkers(); }
+    finally { await this.publishing; }
+  }
+  /**
+   * Releases every suspended worker, keeping confirmed waits on disk.
+   *
+   * Used on unload and when handing the host to another governor. Each pause is
+   * released on its own: one failed SIGCONT must not leave the sessions after it
+   * frozen, nor lose what was already released. Failures are rethrown together once
+   * the state is saved.
+   */
+  releaseWorkers(): Promise<void> {
+    if (!this.processes) return Promise.resolve();
+    return this.exclusive(async () => {
       const state = await this.store.read();
+      let failed = 0;
       for (const pause of state.pauses.filter(p => isPending(p) && p.suspension)) {
-        if (["waiting", "resuming"].includes(pause.phase) && !pause.demo && !pause.manualResume) {
-          // Unload must release OS workers, but the confirmed schedule remains
-          // durable in case the daemon now exits and those workers disappear.
-          await this.processes!.resume(pause.suspension!);
-          pause.releasedForUnload = true;
-        } else await this.cancel(pause, "Suspended workers released because Session Guard stopped.");
+        try {
+          if (["waiting", "resuming"].includes(pause.phase) && !pause.demo && !pause.manualResume) {
+            // Unload must release OS workers, but the confirmed schedule remains
+            // durable in case the daemon now exits and those workers disappear.
+            await this.processes!.resume(pause.suspension!);
+            pause.releasedForUnload = true;
+          } else await this.cancel(pause, "Suspended workers released because Session Guard stopped.");
+        } catch { failed++; }
       }
       await this.save(state);
+      if (failed) throw new Error(`${failed} suspended ${failed === 1 ? "session" : "sessions"} could not be released.`);
     });
-    await this.publishing;
   }
   quotaFailure(agentId: string, message: string, turnId: string | null = null) {
     // Provider rejection can win the race against the usage polling interval.

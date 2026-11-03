@@ -8,12 +8,12 @@ Session Guard is **off by default**. Turn it on with the **Session Guard** switc
 
 ### Moving from the standalone plugin
 
-Both plugins keep their state in `$PASEO_HOME/plugin-data/session-guard/` and take the same `governor.lock` there, so only one of them governs a host at a time and no session is paused twice:
+Smart Session never runs Session Guard while the standalone plugin is configured **and enabled** on the host, even when it could. Released versions of the standalone plugin resume every suspended session in the shared state when they are disabled or removed, whichever plugin paused it, so two enabled copies cannot share a host safely. Both keep their state in `$PASEO_HOME/plugin-data/session-guard/` and take the same `governor.lock` there, so a disabled copy that is still shutting down is waited out too.
 
-- While the standalone plugin is installed and running, Smart Session's Session Guard defers to it. Its settings screen and overview say so, its pill stays hidden, and nothing is paused from Smart Session.
-- Uninstall the standalone plugin (`paseo plugin remove paseo-session-guard`). Smart Session takes over on its next check, about 15 seconds later. Per-session choices and waiting pauses carry over, because they are the same file. The standalone plugin releases native workers when it unloads; if the quota is still full, Smart Session normally pauses that work again on its first check.
+- While the standalone plugin is enabled, Smart Session's Session Guard pauses nothing. Its settings, the paused-sessions list and the overview say so, its pill stays hidden, and pauses in the list are marked as the standalone plugin's, with no controls.
+- **Disable or uninstall Session Guard** (**Settings → Plugins**, `paseo plugin disable paseo-session-guard` or `paseo plugin remove paseo-session-guard`). Smart Session takes over on its next check, about 15 seconds later. Per-session choices and waiting pauses carry over, because they are the same file. The standalone plugin releases native workers when it stops; if the quota is still full, Smart Session normally pauses that work again on its first check.
 - Smart Session's settings start from defaults: the standalone plugin's settings belong to that installation and are deleted with it. Re-apply any custom threshold, timing or continuation message.
-- If Smart Session's Session Guard was on and took the lock first, for example after a daemon restart, the standalone plugin reports that it could not start. Uninstall it.
+- If the standalone plugin is enabled again while Smart Session is protecting the host, Smart Session releases the sessions it suspended, keeps their confirmed waits, gives up the lock and stops. The standalone plugin does not retry its lock, so reload it to let it take over, or disable it again to hand back to Smart Session. Between enabling it and Smart Session's next check (up to the check interval) both are loaded; avoid disabling it again within that window.
 
 Turning Session Guard off releases suspended workers immediately. A message continuation that is still waiting keeps the lock until you cancel it or turn Session Guard back on. With nothing left waiting, Smart Session releases the lock.
 

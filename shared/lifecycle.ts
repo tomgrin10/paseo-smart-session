@@ -15,3 +15,21 @@ export type Teardown = () => void | Promise<void>;
  * exits and the plugin wedges at "Stopping" for the life of the daemon.
  */
 export const lifecycle: { teardowns: Teardown[] } = { teardowns: [] };
+
+/**
+ * Runs every teardown even when one fails, then reports the first failure.
+ *
+ * One feature's cleanup throwing must not leave another's timer running: the
+ * subprocess would never exit and Paseo's stop step would hang.
+ */
+export async function runTeardowns(teardowns: readonly Teardown[]): Promise<void> {
+  let failure: unknown = null;
+  for (const teardown of teardowns) {
+    try {
+      await teardown();
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  if (failure !== null) throw failure;
+}

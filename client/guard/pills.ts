@@ -32,18 +32,40 @@ export function pillPresentation(policy: Policy, enabled: boolean, pause: Pause 
     : `Pause at ${policy.thresholdPct}% session usage; continue manually after reset`, icon: "ShieldCheck" };
 }
 
+/** How often a client re-reads Session Guard status while it is on, and while it is off. */
+const ACTIVE_POLL_MS = 5_000;
+const IDLE_POLL_MS = 60_000;
+
+const wakers = new Set<() => void>();
+/**
+ * Re-reads status now. The settings screens call it whenever the Session Guard
+ * document changes — their `useSettings` hears changes from every client — so pills
+ * follow a switch without polling hard while the feature is off.
+ */
+export function refreshGuardPills(): void {
+  for (const wake of [...wakers]) wake();
+}
+
 export function contributePills(client: PluginClientContext, agents: AgentDirectory, icons: Readonly<Record<string, PluginButtonIcon>> = {}) {
   let stopped = false;
   let running = false;
   let status: Awaited<ReturnType<typeof readStatus>> | null = null;
   const handles = new Map<string, { workspaceId: string; signature: string; registration: ReturnType<PluginClientContext["addComposerPill"]> }>();
   const readStatus = () => client.rpc(statusRpc, {});
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const refresh = async () => {
     if (stopped || running) return;
     running = true;
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
     try { const next = await readStatus(); if (!stopped) { status = next; reconcile(); } }
     catch { /* Keep the last confirmed presentation across a brief disconnect. */ }
-    finally { running = false; }
+    finally {
+      running = false;
+      // Off here and nobody governing from here: nothing to draw, so check rarely.
+      const idle = status !== null && !status.policy.enabled && status.governor === "off";
+      if (!stopped) timer = setTimeout(() => void refresh(), idle ? IDLE_POLL_MS : ACTIVE_POLL_MS);
+    }
   };
   function reconcile() {
     if (stopped || !status) return;
@@ -88,10 +110,12 @@ export function contributePills(client: PluginClientContext, agents: AgentDirect
     }
   }
   const unsubscribe = agents.subscribe(reconcile);
+  const wake = () => void refresh();
+  wakers.add(wake);
   void refresh();
-  const timer = setInterval(() => void refresh(), 5000);
   return () => {
-    stopped = true; clearInterval(timer); unsubscribe();
+    stopped = true; wakers.delete(wake); unsubscribe();
+    if (timer !== null) clearTimeout(timer);
     for (const handle of handles.values()) handle.registration.remove();
     handles.clear();
   };

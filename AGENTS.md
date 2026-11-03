@@ -136,11 +136,21 @@
   `state.json`. Keep `StateSchema`, `PauseSchema`, the lock token format, the notification ids and the
   `quota-pause` timeline kind identical to the standalone plugin's while it can still be installed:
   its Zod parse strips unknown fields on every write.
-- Exactly one process governs. Turned on, `server/guard/index.ts` takes the lock; a `LockHeldError`
-  means another live governor (in practice the standalone plugin) and is a deferral, retried every
-  15 s, never a failure. Turned off, it gives the lock back only once no pause is pending. A
-  deferring process must never call `engine.stop()` or otherwise touch the other governor's pauses or
-  workers.
+- Never govern while the standalone plugin is configured and enabled, even with the lock free
+  (`server/guard/standalone.ts`, matched by id, npm package, Git remote, manifest id or package
+  name). Its released versions call `engine.stop()` on disable or uninstall without checking the
+  lock, which resumes every suspended session in the shared state and rewrites it. A disabled copy
+  has already run that teardown and is safe. If it becomes enabled while this process governs,
+  `handBack()` releases suspended workers (keeping confirmed waits), gives up the lock and defers.
+  If the plugin list cannot be read, do not take the lock.
+- Exactly one process governs. Otherwise `server/guard/index.ts` takes the lock; a `LockHeldError`
+  means another live governor and is a deferral, retried every 15 s, never a failure. Turned off,
+  it gives the lock back only once no pause is pending. A deferring process must never call
+  `engine.stop()` or otherwise touch the other governor's pauses or workers, and the UI must not
+  offer actions on pauses it does not govern.
+- Teardown must always give the lock back and must never stop other features' teardowns:
+  `engine.releaseWorkers()` releases each pause independently, and `index.server.ts` runs every
+  teardown through `runTeardowns`.
 - Session Guard does speak to agents, separately from Smart Compact: it interrupts a turn
   (`cancelAgent`), suspends and resumes provider process trees with `SIGSTOP`/`SIGCONT` on Linux, and
   sends exactly two kinds of message — the configured continuation after a confirmed reset, and the

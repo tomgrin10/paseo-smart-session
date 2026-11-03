@@ -19,7 +19,8 @@ import {
 import { withCompactThreshold } from "../shared/thresholds";
 import { guardPreferences, statusRpc as guardStatus } from "../shared/guard/contracts";
 import { isPending } from "../shared/guard/policy";
-import { pausedSessions, pausePresentation } from "../shared/guard/presentation";
+import { governorNotice, pauseOwnerNote, pausedSessions, pausePresentation } from "../shared/guard/presentation";
+import { refreshGuardPills } from "./guard/pills";
 import { GUARD_SURFACES } from "./guard/surfaces";
 
 type Theme = PluginSurfaceProps["theme"];
@@ -261,6 +262,11 @@ function SessionGuardSection({ theme, openSurface }: { theme: Theme; openSurface
   const toast = useToast();
   const statusQuery = useQuery({ queryKey: ["smart-session", "guard"], queryFn: () => readStatus({}), refetchInterval: 15_000 });
   const status = statusQuery.data;
+  const values = settings.status === "ready" ? settings.values : undefined;
+  // A change made here or on another client moves the pills without waiting out their poll.
+  useEffect(() => {
+    if (values !== undefined) refreshGuardPills();
+  }, [values]);
   if (settings.status !== "ready") return null;
   const policy = settings.values;
   const waiting = status === undefined ? [] : pausedSessions(status.pauses);
@@ -275,17 +281,21 @@ function SessionGuardSection({ theme, openSurface }: { theme: Theme; openSurface
     });
   }
 
+  const owned = status?.governor === "active";
+  const owner = status === undefined ? null : pauseOwnerNote(status);
+  const notice = status === undefined ? null : governorNotice(status);
+  const count = `${waiting.length} paused session${waiting.length === 1 ? "" : "s"}`;
   const detail = !policy.enabled
-    ? waiting.length > 0
-      ? `Off. ${waiting.length} paused session${waiting.length === 1 ? " is" : "s are"} still waiting; release ${waiting.length === 1 ? "it" : "them"} below or turn this back on.`
-      : `Off. Turn on to pause sessions at ${policy.thresholdPct}% of the provider's session window and continue them in the same conversation after it resets.`
-    : status?.governor === "deferred"
-      ? "On, but another plugin — most likely the standalone Session Guard — is already running it on this host, so nothing is paused from here. Uninstall that plugin to hand over."
-      : status?.governor === "error"
-        ? (status.error ?? "Session Guard could not start.")
-        : `On. ${policy.protectByDefault ? "Every session" : "Each session you opt in"} pauses at ${policy.thresholdPct}% of the session window${
-            policy.includeNativeSubagents ? ", native subagents included," : ""
-          } and ${policy.autoResume ? "continues by itself" : "waits for you"} after the reset.`;
+    ? waiting.length > 0 && owned
+      ? `Off. ${count} still ${waiting.length === 1 ? "waits" : "wait"} for the reset; cancel ${waiting.length === 1 ? "it" : "them"} from Paused sessions, or turn this back on.`
+      : waiting.length > 0
+        ? `Off. ${count} below ${waiting.length === 1 ? "was" : "were"} saved by the standalone Session Guard plugin and ${waiting.length === 1 ? "is" : "are"} not managed here.`
+        : `Off. Turn on to pause sessions at ${policy.thresholdPct}% of the provider's session window and continue them in the same conversation after it resets.`
+    : !owned && notice !== null && status?.governor !== "off"
+      ? `On, but not pausing anything here. ${notice.hint}`
+      : `On. ${policy.protectByDefault ? "Every session" : "Each session you opt in"} pauses at ${policy.thresholdPct}% of the session window${
+          policy.includeNativeSubagents ? ", native subagents included," : ""
+        } and ${policy.autoResume ? "continues by itself" : "waits for you"} after the reset.`;
 
   return (
     <Section theme={theme} title="Session Guard">
@@ -295,7 +305,7 @@ function SessionGuardSection({ theme, openSurface }: { theme: Theme; openSurface
         return (
           <View key={pause.id} style={{ paddingVertical: 6, gap: 2 }}>
             <Text style={{ color: pause.phase === "attention" ? theme.colors.statusDanger : theme.colors.foreground }}>{presentation.title}</Text>
-            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{`${presentation.state} · ${presentation.resetLabel}`}</Text>
+            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{`${owner ?? presentation.state} · ${presentation.resetLabel}`}</Text>
           </View>
         );
       })}

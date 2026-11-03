@@ -53,3 +53,33 @@ export function agentGuardSummary(status: {
     ? " and continues it in this same conversation once the window resets — no need to stop early or hand off because of the session limit."
     : "; a person continues it after the reset."}`];
 }
+
+type GovernorView = { governor: "off" | "active" | "deferred" | "error"; standalone: boolean | null; error: string | null };
+
+/**
+ * Why this plugin is not pausing anything, for the top of each Session Guard view.
+ * Null while it is the host's governor.
+ */
+export function governorNotice(status: GovernorView): { title: string; hint: string } | null {
+  if (status.governor === "active") return null;
+  if (status.governor === "off") return { title: "Session Guard is off", hint: "Nothing is paused from Smart Session. Turn it on in Session Guard settings to pause sessions at the provider's session limit." };
+  if (status.governor === "deferred" && status.standalone !== false) {
+    return { title: "The standalone Session Guard plugin is in charge", hint: status.error ?? "Disable or uninstall Session Guard to hand over; its per-session choices and waiting pauses carry over." };
+  }
+  if (status.governor === "deferred") return { title: "Another process is running Session Guard", hint: status.error ?? "Nothing is paused from here until it stops." };
+  return { title: "Session Guard is not running", hint: status.error ?? "It will retry automatically." };
+}
+
+/**
+ * Who a pause in the shared state belongs to, when it is not this plugin.
+ *
+ * Both plugins read one state file, so a list here can show pauses only the other
+ * plugin can act on. Null means this plugin governs and can act on them.
+ */
+export function pauseOwnerNote(status: GovernorView): string | null {
+  if (status.governor === "active") return null;
+  if (status.governor === "off") return "Saved by the standalone Session Guard plugin. Smart Session takes it over once Session Guard is on here and the standalone plugin is disabled or uninstalled.";
+  if (status.governor === "deferred" && status.standalone !== false) return "Managed by the standalone Session Guard plugin; change it there.";
+  if (status.governor === "deferred") return "Managed by another Session Guard process; it can be changed only from there.";
+  return "Session Guard is not running here, so this pause cannot be changed until it recovers.";
+}

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PauseSchema, PolicySchema } from "./shared/guard/policy.ts";
-import { agentGuardSummary, callerProtection, pausedSessions, pausePresentation } from "./shared/guard/presentation.ts";
+import { agentGuardSummary, callerProtection, governorNotice, pauseOwnerNote, pausedSessions, pausePresentation } from "./shared/guard/presentation.ts";
 import { timelinePresentation, type TimelineData } from "./shared/guard/timeline.ts";
 import { timelinePublisher } from "./server/guard/timeline.ts";
 import type { PaseoApi } from "@getpaseo/client";
@@ -66,4 +66,16 @@ test("an agent is told what will happen at the limit, and never offered a way ro
   assert.match(agentGuardSummary({ ...base, governor: "deferred" })[0], /another plugin/);
   assert.match(agentGuardSummary({ ...base, pauses: [{ phase: "resumed", resetsAt: null }] })[0], /^Session Guard: on/);
   assert.match(agentGuardSummary({ ...base, pauses: [{ phase: "waiting", resetsAt: "2026-10-06T18:00:00Z" }] })[0], /paused .* resets 2026-10-06T18:00:00Z/);
+});
+
+test("views say why nothing is paused from here, and whose pauses the shared list shows", () => {
+  const view = (governor: "off" | "active" | "deferred" | "error", standalone: boolean | null = null, error: string | null = null) => ({ governor, standalone, error });
+  assert.equal(governorNotice(view("active")), null);
+  assert.equal(pauseOwnerNote(view("active")), null, "the governor can act on its own pauses");
+  assert.match(governorNotice(view("off"))!.title, /off/);
+  assert.match(pauseOwnerNote(view("off"))!, /saved by the standalone/i);
+  assert.match(governorNotice(view("deferred", true, "Disable or uninstall Session Guard to hand over."))!.title, /standalone/);
+  assert.match(pauseOwnerNote(view("deferred", true))!, /standalone Session Guard plugin; change it there/);
+  assert.match(governorNotice(view("deferred", false))!.title, /Another process/);
+  assert.match(pauseOwnerNote(view("error"))!, /cannot be changed/);
 });

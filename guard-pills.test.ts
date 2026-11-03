@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { observeAgents } from "./client/agents.ts";
-import { contributePills, pillPresentation } from "./client/guard/pills.ts";
+import { contributePills, pillPresentation, refreshGuardPills } from "./client/guard/pills.ts";
 import { PauseSchema, PolicySchema } from "./shared/guard/policy.ts";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 
@@ -64,7 +64,7 @@ test("agent observation, stable menu updates, opt-out, workspace moves, and tear
 });
 
 test("the pill is drawn only while this plugin governs, and for a waiting pause while turning off", async t => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const pause = PauseSchema.parse({ id: "p", agentId: "b", provider: "claude", title: null, windowId: "five_hour", anchorResetsAt: null, pausedAt: "2026-10-06T00:00:00Z", lastUserMessageAt: null, turnId: null, phase: "waiting", note: null, settledAt: null });
   const status = { governor: "deferred", checkedAt: null, error: null, pauses: [pause], overrides: {}, policy: PolicySchema.parse({ enabled: true }), providers: [] };
   let observer: { snapshot(payload: unknown): void } | null = null;
@@ -95,5 +95,31 @@ test("the pill is drawn only while this plugin governs, and for a waiting pause 
     status.policy = PolicySchema.parse({ enabled: false });
     t.mock.timers.tick(5000); await settle();
     assert.deepEqual([...live], ["b"], "turned off, only a session with a pause keeps its pill");
+  } finally { cleanup(); await agents.dispose(); }
+});
+
+test("while Session Guard is off the pills poll rarely, and a settings change re-reads at once", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const status = { governor: "off", checkedAt: null, error: null, pauses: [], overrides: {}, policy: PolicySchema.parse({}), providers: [] };
+  let reads = 0;
+  const context = {
+    rpc: async () => { reads++; return structuredClone(status); },
+    openSurface() {},
+    paseo: { agents: { subscribe: () => () => {}, list: async () => ({ entries: [] }) } },
+    addComposerPill: () => ({ update() {}, remove() {} }),
+  } as unknown as PluginClientContext;
+  const agents = observeAgents(context);
+  const cleanup = contributePills(context, agents);
+  const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+  try {
+    await settle();
+    assert.equal(reads, 1);
+    t.mock.timers.tick(30_000); await settle();
+    assert.equal(reads, 1, "no 5-second polling while the feature is off");
+    status.policy = PolicySchema.parse({ enabled: true });
+    refreshGuardPills(); await settle();
+    assert.equal(reads, 2, "a settings change is read straight away");
+    t.mock.timers.tick(5000); await settle();
+    assert.equal(reads, 3, "and once it is on, polling is brisk again");
   } finally { cleanup(); await agents.dispose(); }
 });

@@ -276,6 +276,21 @@ test("plugin cleanup releases native workers while preserving a confirmed wait a
   assert.deepEqual(f.native.calls.released, [1234]); assert.equal((await f.store.read()).pauses[0].phase, "waiting");
   assert.equal((await f.store.read()).pauses[0].releasedForUnload, true);
 });
+test("one worker that cannot be released does not strand the others on unload", async t => {
+  const f = await nativeFixture(t);
+  f.agents.push({ id: "b", provider: "claude", status: "running", title: "Other", workspaceId: "w", lastUserMessageAt: iso(base - 1000), activeTurn: { turnId: "t2" } });
+  const roots: Record<string, number> = { a: 1234, b: 5678 };
+  f.native.controller.discover = async agent => ({ rootPid: roots[agent.id], processes: [{ pid: roots[agent.id], startTime: "111" }] });
+  await f.engine.tick();
+  assert.deepEqual(f.native.calls.frozen.sort(), [1234, 5678]);
+  const resume = f.native.controller.resume;
+  f.native.controller.resume = async suspension => { if (suspension.rootPid === 1234) throw new Error("signal failed"); await resume(suspension); };
+  await assert.rejects(f.engine.stop(), /1 suspended session could not be released/);
+  assert.deepEqual(f.native.calls.released, [5678], "the later pause is still released");
+  const state = await f.store.read();
+  assert.equal(state.pauses.find(p => p.agentId === "b")!.releasedForUnload, true, "and its release is saved");
+  assert.equal(state.pauses.find(p => p.agentId === "a")!.releasedForUnload, undefined, "the failed one stays journaled for a retry");
+});
 test("native crash windows release partial freezes and safely finish an interrupted SIGCONT", async t => {
   for (const phase of ["pausing", "resuming"] as const) {
     const f = await nativeFixture(t); await f.engine.tick();

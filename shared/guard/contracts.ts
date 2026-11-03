@@ -10,8 +10,8 @@ export const guardPreferences = defineSettings({ id: "session-guard", scope: "ho
  *
  * - `off`: the feature is disabled here, and this plugin holds no lock.
  * - `active`: this plugin is the host's one governor.
- * - `deferred`: another process holds the governor lock — in practice the standalone
- *   `paseo-session-guard` plugin. Nothing is paused from here until it lets go.
+ * - `deferred`: the standalone `paseo-session-guard` plugin is enabled, or another live
+ *   process holds the governor lock. Nothing is paused from here until that changes.
  * - `error`: the saved state or the lock could not be read.
  */
 export const GovernorSchema = z.enum(["off", "active", "deferred", "error"]);
@@ -23,6 +23,8 @@ export const statusRpc = defineRpc({
   name: "smart-session.guard.status", input: z.object({}),
   output: z.object({
     governor: GovernorSchema,
+    /** Whether the standalone plugin is configured and enabled; null when unknown or not checked. */
+    standalone: z.boolean().nullable(),
     checkedAt: z.string().nullable(), error: z.string().nullable(),
     pauses: z.array(PauseSchema), overrides: z.record(z.string(), z.boolean()),
     policy: PolicySchema,

@@ -54,7 +54,7 @@ Session Guard pauses agents at the provider's session limit and continues the sa
 
 On Linux, Claude and Codex sessions pause in place together with their native subagents; elsewhere the turn is interrupted and one continuation is sent after the reset. Each session gets a pill to opt out or release it, and each pause gets a timeline card with **Resume now** and **Dismiss pause**. For Claude, a reset is confirmed from whichever is fresher, Paseo's cached usage or Smart Session's own recorder.
 
-If the standalone plugin is still installed, Smart Session defers to it: both use one lock in `$PASEO_HOME/plugin-data/session-guard/`, so a session is never paused twice. Uninstall it to hand over; per-session choices and waiting pauses carry over. See the [Session Guard guide](docs/session-guard.md) for settings and limits.
+While the standalone plugin is enabled, Smart Session leaves session protection to it, so a session is never paused twice. Disable or uninstall Session Guard to hand over; per-session choices and waiting pauses in `$PASEO_HOME/plugin-data/session-guard/` carry over. See the [Session Guard guide](docs/session-guard.md) for settings and limits.
 
 ## Data and access
 

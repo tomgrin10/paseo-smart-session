@@ -26,7 +26,7 @@ import {
   setEnrolment,
 } from "./shared/governor.ts";
 import { burnRatePctPerHour, projectedExhaustion, segmentBlocks } from "./shared/blocks.ts";
-import { lifecycle } from "./shared/lifecycle.ts";
+import { lifecycle, runTeardowns } from "./shared/lifecycle.ts";
 import { profileFor } from "./shared/thresholds.ts";
 import { effectiveAt } from "./shared/usage.ts";
 
@@ -195,10 +195,5 @@ export default function contribute(server: PluginServerContext) {
 
   // The recorder and governor register their timers in this shared lifecycle.
   // Paseo waits for this cleanup before stopping the plugin subprocess.
-  return async () => {
-    removeSessionMcp();
-    await removeGuard();
-    const teardowns = lifecycle.teardowns.splice(0);
-    for (const teardown of teardowns) await teardown();
-  };
+  return () => runTeardowns([removeSessionMcp, removeGuard, ...lifecycle.teardowns.splice(0)]);
 }

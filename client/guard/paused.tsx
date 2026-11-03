@@ -4,7 +4,7 @@ import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
 import { cancelResumeRpc, statusRpc } from "../../shared/guard/contracts.ts";
-import { pausedSessions, pausePresentation } from "../../shared/guard/presentation.ts";
+import { governorNotice, pauseOwnerNote, pausedSessions, pausePresentation } from "../../shared/guard/presentation.ts";
 
 export function PausedSessions({ theme, host, layout, navigation, openSettings }: PluginSurfaceProps & { openSettings(): void }) {
   const read = useRpc(statusRpc);
@@ -40,13 +40,17 @@ export function PausedSessions({ theme, host, layout, navigation, openSettings }
   const attention = visible.filter(p => p.phase === "attention");
   const waiting = visible.filter(p => p.phase !== "attention");
   const muted = { color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 20 };
+  // Both plugins share one state file: when this one is not governing, the list is
+  // the other plugin's (or a leftover), and its controls would only fail.
+  const notice = status ? governorNotice(status) : null;
+  const owner = status ? pauseOwnerNote(status) : null;
   const row = (pause: typeof all[number]) => {
     const presentation = pausePresentation(pause, status!.policy);
-    const hint = `${pause.provider} · ${pause.agentId.slice(0, 8)} · ${presentation.coverage}\n${presentation.resetLabel}\n${presentation.state}${pause.note ? `\n${pause.note}` : ""}`;
+    const hint = `${pause.provider} · ${pause.agentId.slice(0, 8)} · ${presentation.coverage}\n${presentation.resetLabel}\n${owner ?? presentation.state}${pause.note ? `\n${pause.note}` : ""}`;
     return <View key={pause.id}>
       {navigation ? <SettingsAction label={presentation.title} hint={hint} actionLabel="Open session" onPress={() => navigation.openAgent({ agentId: pause.agentId, serverId: host.id })} />
         : <SettingsRow label={presentation.title} hint={hint} />}
-      <SettingsAction label={busy === pause.agentId ? "Updating this pause…" : "Manual control"} hint={presentation.actionHint} actionLabel={presentation.actionLabel} disabled={busy !== null} onPress={() => void release(pause.agentId)} />
+      {owner === null && <SettingsAction label={busy === pause.agentId ? "Updating this pause…" : "Manual control"} hint={presentation.actionHint} actionLabel={presentation.actionLabel} disabled={busy !== null} onPress={() => void release(pause.agentId)} />}
     </View>;
   };
   return <ScrollView contentContainerStyle={{ padding: layout.compact ? 16 : 24, paddingBottom: 40 }}>
@@ -56,16 +60,18 @@ export function PausedSessions({ theme, host, layout, navigation, openSettings }
         <Text style={muted}>All Session Guard pauses on {host.label}. Native subagents are included with their parent session.</Text>
       </View>
       {!status && !loadError && <ActivityIndicator accessibilityLabel="Loading paused sessions" color={theme.colors.foregroundMuted} />}
-      {status && <SettingsCard><SettingsAction label={`${all.length} ${all.length === 1 ? "session" : "sessions"} in Session Guard${all.some(p => p.phase === "attention") ? " · attention needed" : ""}`} hint={status.checkedAt ? `Last checked ${new Date(status.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · refreshes automatically` : "Waiting for the first usage check"} actionLabel="Refresh" onPress={() => void refresh.current()} /></SettingsCard>}
+      {notice && <SettingsCard><SettingsAction label={notice.title} hint={notice.hint} actionLabel="Settings" onPress={openSettings} /></SettingsCard>}
+      {status && !notice && <SettingsCard><SettingsAction label={`${all.length} ${all.length === 1 ? "session" : "sessions"} in Session Guard${all.some(p => p.phase === "attention") ? " · attention needed" : ""}`} hint={status.checkedAt ? `Last checked ${new Date(status.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · refreshes automatically` : "Waiting for the first usage check"} actionLabel="Refresh" onPress={() => void refresh.current()} /></SettingsCard>}
       {(all.length > 5 || query !== "") && <SettingsCard><SettingsInput label="Find a paused session" placeholder="Title or provider" initialValue="" onChangeText={setQuery} /></SettingsCard>}
-      {status && all.length === 0 && <SettingsCard><SettingsRow label="No sessions are paused" hint="When a protected session reaches its limit, it appears here and receives a timeline entry." /></SettingsCard>}
+      {status && all.length === 0 && !notice && <SettingsCard><SettingsRow label="No sessions are paused" hint="When a protected session reaches its limit, it appears here and receives a timeline entry." /></SettingsCard>}
       {status && all.length > 0 && visible.length === 0 && <SettingsCard><SettingsRow label="No matching paused sessions" hint="Try another title or provider." /></SettingsCard>}
-      {attention.length > 0 && <SettingsSection title={`Needs attention (${attention.length})`}><SettingsCard>{attention.map(row)}</SettingsCard></SettingsSection>}
-      {waiting.length > 0 && <SettingsSection title={`Waiting for reset (${waiting.length})`}><SettingsCard>{waiting.map(row)}</SettingsCard></SettingsSection>}
+      {owner && visible.length > 0 && <SettingsSection title={`Not managed by Smart Session (${visible.length})`}><SettingsCard>{visible.map(row)}</SettingsCard></SettingsSection>}
+      {!owner && attention.length > 0 && <SettingsSection title={`Needs attention (${attention.length})`}><SettingsCard>{attention.map(row)}</SettingsCard></SettingsSection>}
+      {!owner && waiting.length > 0 && <SettingsSection title={`Waiting for reset (${waiting.length})`}><SettingsCard>{waiting.map(row)}</SettingsCard></SettingsSection>}
       <SettingsCard><SettingsAction label="Protection and timing" hint="Configure the default, native subagents, and automatic resume." actionLabel="Settings" onPress={openSettings} /></SettingsCard>
       {loadError && <Text accessibilityRole="alert" style={{ ...muted, color: theme.colors.statusDanger }}>{status ? loadError : "Could not load paused sessions. Retrying automatically."}</Text>}
       {actionError && <Text accessibilityRole="alert" style={{ ...muted, color: theme.colors.statusDanger }}>{actionError}</Text>}
-      {status?.error && <Text accessibilityRole="alert" style={{ ...muted, color: theme.colors.statusDanger }}>{status.error}</Text>}
+      {status?.error && !notice && <Text accessibilityRole="alert" style={{ ...muted, color: theme.colors.statusDanger }}>{status.error}</Text>}
     </View>
   </ScrollView>;
 }

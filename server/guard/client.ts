@@ -1,4 +1,5 @@
 import type { Agent, Usage } from "../../shared/guard/policy.ts";
+import type { ListedPlugin } from "./standalone.ts";
 
 /**
  * The slice of Paseo's daemon client that Session Guard uses, typed.
@@ -17,6 +18,7 @@ export interface GuardClient {
   setWorkspaceLabel?(options: { workspaceId: string; label: { name: string; color: "amber" }; assigned: boolean }): Promise<unknown>;
   invokePluginRpc?(pluginId: string, method: string, input: unknown): Promise<unknown>;
   getDaemonStatus?(): Promise<{ pid: number }>;
+  listPlugins?(): Promise<readonly ListedPlugin[]>;
   listProviderSubagents?(agentId: string): Promise<{ subagents: readonly { status: string }[] }>;
   cancelAgent(agentId: string): Promise<void>;
   sendMessage(agentId: string, text: string, options?: { messageId: string; activeTurnBehavior: "steer" }): Promise<unknown>;

@@ -2,13 +2,16 @@
  * Session Guard's wiring: settings, the governor loop, RPCs and lifecycle hooks.
  *
  * The engine (`./engine.ts`) decides what to pause and when to continue; this file
- * decides whether this process may run it at all. Only one process per host may, and
- * that is settled by `governor.lock` in the shared state directory (`./store.ts`):
+ * decides whether this process may run it at all. Only one process per host may:
  *
  * - With the feature off, nothing here holds the lock or touches a session.
- * - Turned on, it takes the lock. If another process already holds it — in practice
- *   the standalone `paseo-session-guard` plugin — this one defers, retries on every
- *   poll, and takes over the moment that plugin is removed.
+ * - While the standalone `paseo-session-guard` plugin is configured and enabled, this
+ *   one never governs, even if it could take the lock: that plugin's teardown resumes
+ *   every suspended session in the shared state whether or not it owns it
+ *   (`./standalone.ts`). If it becomes enabled while this one governs, this one
+ *   releases its suspended workers, gives the lock back and waits.
+ * - Otherwise it takes `governor.lock` in the shared state directory (`./store.ts`).
+ *   If another live process holds it, this one defers and retries on every poll.
  * - Turned off again, it stops pausing at once, releases suspended workers on its next
  *   pass, and gives the lock back once no pause is left waiting on it.
  */
@@ -34,7 +37,8 @@ import { freshestUsage } from "../store.ts";
 import type { Connect, GuardClient } from "./client.ts";
 import { Engine } from "./engine.ts";
 import { WorkspaceLabels } from "./labels.ts";
-import { LinuxProcessControl } from "./processes.ts";
+import { LinuxProcessControl, type ProcessControl } from "./processes.ts";
+import { standaloneEnabled } from "./standalone.ts";
 import { guardDataDir, LockHeldError, Store } from "./store.ts";
 import { timelinePublisher } from "./timeline.ts";
 import { withRecordedUsage } from "./usage.ts";
@@ -45,12 +49,24 @@ const PLUGIN_ID = "smart-session";
 /** How often to retry the lock while another process holds it. */
 const DEFERRED_RETRY_SECONDS = 15;
 
-const DEFERRED_MESSAGE =
-  "Another plugin is already running Session Guard on this host — most likely the standalone Session Guard plugin. " +
-  "Nothing is paused from here until it stops. Uninstall it to hand over; its per-session choices and waiting pauses carry over.";
+const STANDALONE_MESSAGE =
+  "The standalone Session Guard plugin is enabled on this host, so Smart Session leaves session protection to it and pauses nothing. " +
+  "Disable or uninstall Session Guard to hand over; its per-session choices and waiting pauses carry over.";
+const HANDED_BACK_MESSAGE =
+  "The standalone Session Guard plugin was enabled while Smart Session was protecting this host, so Smart Session released its paused sessions and stopped. " +
+  "Disable or uninstall Session Guard to hand back to Smart Session, or reload Session Guard to let it take over.";
+const LOCK_HELD_MESSAGE =
+  "Another process is already running Session Guard on this host, most likely a second Smart Session install. Nothing is paused from here until it stops.";
+const UNCHECKED_MESSAGE = "Session Guard could not check which plugins are installed, so it is not pausing anything yet. It will retry.";
 const OFF_MESSAGE = "Session Guard is off on this host. Turn it on in Smart Session's Session Guard settings.";
 
-export function contributeGuard(server: PluginServerContext): () => Promise<void> {
+/** The daemon connection and process control, replaceable only by tests. */
+export interface GuardDependencies {
+  connect?: Connect;
+  processes?: ProcessControl;
+}
+
+export function contributeGuard(server: PluginServerContext, options: GuardDependencies = {}): () => Promise<void> {
   const settings = server.registerSettings(guardPreferences);
   let settingsError: string | null = null;
   const readPolicy = async (): Promise<Policy> => {
@@ -63,15 +79,17 @@ export function contributeGuard(server: PluginServerContext): () => Promise<void
   // touching a delivery the compaction governor has in flight on another socket.
   const open = new Set<{ close(): Promise<void> }>();
   let disposed = false;
+  const daemon: Connect = options.connect ?? ((work) => withDaemon((client) => work(client as unknown as GuardClient)));
   const connect: Connect = (work) => {
     if (disposed) return Promise.reject(new Error("Session Guard is stopping."));
-    return withDaemon(async (client) => {
-      open.add(client);
+    return daemon(async (client) => {
+      const closable = client as unknown as { close(): Promise<void> };
+      open.add(closable);
       try {
         // The same Paseo client the recorder uses, read through the guard's typed view.
-        return await work(client as unknown as GuardClient);
+        return await work(client);
       } finally {
-        open.delete(client);
+        open.delete(closable);
       }
     });
   };
@@ -96,7 +114,7 @@ export function contributeGuard(server: PluginServerContext): () => Promise<void
   const store = new Store(guardDataDir());
   const readUsage = async (client: GuardClient): Promise<Usage> =>
     withRecordedUsage(await client.listProviderUsage(), await freshestUsage().catch(() => null));
-  const engine = new Engine(store, readPolicy, connect, Date.now, new LinuxProcessControl(), publish, readUsage);
+  const engine = new Engine(store, readPolicy, connect, Date.now, options.processes ?? new LinuxProcessControl(), publish, readUsage);
   const labels = new WorkspaceLabels(store, (work) => engine.exclusive(work), connect, readPolicy);
 
   let governor: Governor = "off";
@@ -108,7 +126,7 @@ export function contributeGuard(server: PluginServerContext): () => Promise<void
       release = await store.lock();
     } catch (error) {
       governor = error instanceof LockHeldError ? "deferred" : "error";
-      lockError = governor === "deferred" ? DEFERRED_MESSAGE : "Session Guard could not take its lock. Check its saved state and try again.";
+      lockError = governor === "deferred" ? LOCK_HELD_MESSAGE : "Session Guard could not take its lock. Check its saved state and try again.";
       return;
     }
     try {
@@ -139,6 +157,32 @@ export function contributeGuard(server: PluginServerContext): () => Promise<void
     });
   };
 
+  /** True or false from the daemon's plugin list; null when it could not be read. */
+  let standalone: boolean | null = null;
+  const checkStandalone = async () => {
+    try {
+      standalone = await connect(async (client) => (client.listPlugins ? standaloneEnabled(await client.listPlugins()) : false));
+    } catch {
+      standalone = null;
+    }
+  };
+
+  /** Steps aside for an enabled standalone plugin: nothing frozen is left without an owner. */
+  const handBack = async () => {
+    governor = "deferred"; // Refuse new actions before releasing anything.
+    lockError = HANDED_BACK_MESSAGE;
+    try {
+      await engine.releaseWorkers();
+    } catch {
+      lockError = `${HANDED_BACK_MESSAGE} Some paused sessions could not be released; check them.`;
+    }
+    await engine.exclusive(async () => {
+      const unlock = release;
+      release = null;
+      await unlock?.();
+    });
+  };
+
   const pass = async (): Promise<Policy | null> => {
     let policy: Policy | null = null;
     try {
@@ -147,10 +191,28 @@ export function contributeGuard(server: PluginServerContext): () => Promise<void
     } catch {
       settingsError = "Session Guard settings are invalid. Reset them in Session Guard settings.";
     }
-    if (policy?.enabled && governor !== "active") await claim();
     if (!policy?.enabled && governor !== "active") {
       governor = "off";
       lockError = null;
+      return policy;
+    }
+    await checkStandalone();
+    if (governor === "active") {
+      if (standalone === true) {
+        await handBack();
+        return policy;
+      }
+    } else if (standalone === true) {
+      governor = "deferred";
+      // Keep the fuller explanation if this process just handed the host back.
+      if (!lockError?.startsWith(HANDED_BACK_MESSAGE)) lockError = STANDALONE_MESSAGE;
+      return policy;
+    } else if (standalone === null) {
+      governor = "error";
+      lockError = UNCHECKED_MESSAGE;
+      return policy;
+    } else {
+      await claim();
     }
     if (governor !== "active") return policy;
     await engine.tick();
@@ -225,6 +287,7 @@ export function contributeGuard(server: PluginServerContext): () => Promise<void
     const active = governor === "active";
     return {
       governor,
+      standalone: governor === "off" ? null : standalone,
       checkedAt: active ? engine.checkedAt : null,
       error: lockError ?? settingsError ?? stateError ?? (active ? (engine.error ?? engine.timelineError ?? labels.error) : null),
       pauses: state.pauses,
@@ -311,14 +374,22 @@ export function contributeGuard(server: PluginServerContext): () => Promise<void
     disposed = true;
     await Promise.allSettled([...open].map((client) => client.close()));
     await current?.catch(() => undefined);
-    // Only the owner may touch suspended workers: a deferring process must leave the
-    // other governor's pauses exactly as they are.
-    if (governor === "active") {
-      await engine.stop();
-      await labels.stop();
+    try {
+      // Only the owner may touch suspended workers: a deferring process must leave the
+      // other governor's pauses exactly as they are.
+      if (governor === "active") {
+        try {
+          await engine.stop();
+        } finally {
+          await labels.stop();
+        }
+      }
+    } finally {
+      // Always give the lock back, even when a release failed: this process is exiting,
+      // and a held lock would only keep the next governor waiting.
+      const unlock = release;
+      release = null;
+      await unlock?.();
     }
-    const unlock = release;
-    release = null;
-    await unlock?.();
   };
 }

@@ -4,6 +4,8 @@ import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/c
 import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSelect, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import { cancelResumeRpc, guardPreferences, setProtectionRpc, statusRpc } from "../../shared/guard/contracts.ts";
 import { isPending, PolicySchema, type Policy } from "../../shared/guard/policy.ts";
+import { governorNotice, pauseOwnerNote } from "../../shared/guard/presentation.ts";
+import { refreshGuardPills } from "./pills.ts";
 
 type Draft = { thresholdPct: string; pollSeconds: string; resetGraceSeconds: string; resumeSpacingSeconds: string; continuation: string; providerIds: string; windowIds: string };
 function draftOf(policy: Policy): Draft {
@@ -14,6 +16,11 @@ const list = (value: string) => [...new Set(value.split(",").map(s => s.trim()).
 
 export function GuardSettings({ theme, openOverview }: PluginSurfaceProps & { openOverview(): void }) {
   const settings = useSettings(guardPreferences);
+  const values = settings.status === "ready" ? settings.values : undefined;
+  // Pills poll slowly while the feature is off; tell them as soon as it changes.
+  useEffect(() => {
+    if (values !== undefined) refreshGuardPills();
+  }, [values]);
   const readStatus = useRpc(statusRpc);
   const cancelResume = useRpc(cancelResumeRpc);
   const setProtection = useRpc(setProtectionRpc);
@@ -57,9 +64,12 @@ export function GuardSettings({ theme, openOverview }: PluginSurfaceProps & { op
   };
   const text = { color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 20 };
   const waiting = status?.pauses.filter(isPending) ?? [];
+  // A non-governing plugin can show the shared pauses but cannot act on them.
+  const notice = status ? governorNotice(status) : null;
+  const owner = status ? pauseOwnerNote(status) : null;
   return <View style={{ gap: 24 }}>
     <Text style={text}>Pause work at the provider’s session limit, then continue the same conversation after reset. Your workspace and conversation stay in place.</Text>
-    {status?.governor === "deferred" && <SettingsCard><SettingsRow label="Another plugin is running Session Guard" hint="Most likely the standalone Session Guard plugin. It keeps protecting sessions and nothing is paused from here. Uninstall it to hand over; its per-session choices and waiting pauses carry over automatically." /></SettingsCard>}
+    {notice && status?.governor !== "off" && <SettingsCard><SettingsRow label={notice.title} hint={notice.hint} /></SettingsCard>}
     <SettingsSection title="Protection"><SettingsCard>
       <SettingsSwitch label="Enable Session Guard" hint="Off until you turn it on. Runs even when Paseo’s app is closed. Turning it off releases suspended workers; message continuations wait until you turn it back on or cancel them." value={settings.values.enabled} disabled={settings.saving || !!draft} onValueChange={enabled => change({ enabled })} />
       <SettingsSelect label="Default for sessions" hint="Each session’s composer pill can override this default. Existing explicit overrides stay in place." value={settings.values.protectByDefault ? "all" : "opt-in"} options={[{ label: "Protect all sessions", value: "all" }, { label: "Opt in per session", value: "opt-in" }]} disabled={settings.saving || !!draft} onValueChange={value => change({ protectByDefault: value === "all" })} />
@@ -70,11 +80,20 @@ export function GuardSettings({ theme, openOverview }: PluginSurfaceProps & { op
     <SettingsSection title="Waiting for reset"><SettingsCard>
       {!status && <SettingsRow label="Loading session status…" />}
       {status && waiting.length === 0 && <SettingsRow label="No sessions are paused" hint="Protected work will appear here when the session limit is reached." />}
-      {waiting.map(pause => <SettingsAction key={pause.id} label={pause.title ?? "Untitled session"} hint={pause.note ?? `${pause.provider}${pause.suspension ? " · Includes native subagents" : ""} · ${pause.anchorResetsAt ? `Reset ${new Date(pause.anchorResetsAt).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}` : "Waiting for usage to become available"}`} actionLabel={pause.suspension ? "Release and turn off" : "Cancel continuation"} disabled={settings.saving} onPress={() => void action(() => cancelResume({ agentId: pause.agentId }))} />)}
+      {waiting.map(pause => {
+        const hint = pause.note ?? `${pause.provider}${pause.suspension ? " · Includes native subagents" : ""} · ${pause.anchorResetsAt ? `Reset ${new Date(pause.anchorResetsAt).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}` : "Waiting for usage to become available"}`;
+        return owner ? <SettingsRow key={pause.id} label={pause.title ?? "Untitled session"} hint={`${hint}\n${owner}`} />
+          : <SettingsAction key={pause.id} label={pause.title ?? "Untitled session"} hint={hint} actionLabel={pause.suspension ? "Release and turn off" : "Cancel continuation"} disabled={settings.saving} onPress={() => void action(() => cancelResume({ agentId: pause.agentId }))} />;
+      })}
       <SettingsAction label="All paused sessions" hint="Open sessions, check reset times, and manage each pause in one place." actionLabel="Open list" onPress={openOverview} />
     </SettingsCard></SettingsSection>
     {status && Object.keys(status.overrides).length > 0 && <SettingsSection title="Session overrides"><SettingsCard>
-      {Object.entries(status.overrides).map(([agentId, enabled]) => <SettingsAction key={agentId} label={status.pauses.find(p => p.agentId === agentId)?.title ?? `Session ${agentId.slice(0, 8)}`} hint={enabled ? "Explicitly protected" : "Excluded from protection"} actionLabel="Use default" onPress={() => void action(() => setProtection({ agentId, enabled: null }))} />)}
+      {Object.entries(status.overrides).map(([agentId, enabled]) => {
+        const label = status.pauses.find(p => p.agentId === agentId)?.title ?? `Session ${agentId.slice(0, 8)}`;
+        const hint = enabled ? "Explicitly protected" : "Excluded from protection";
+        return status.governor === "active" ? <SettingsAction key={agentId} label={label} hint={hint} actionLabel="Use default" onPress={() => void action(() => setProtection({ agentId, enabled: null }))} />
+          : <SettingsRow key={agentId} label={label} hint={hint} />;
+      })}
     </SettingsCard></SettingsSection>}
     <SettingsSection title="Timing and continuation"><SettingsCard>
       {!draft ? <SettingsAction label={`Pause at ${settings.values.thresholdPct}% session usage`} hint={`Check every ${settings.values.pollSeconds}s · wait ${settings.values.resetGraceSeconds}s after reset · space continuations by ${settings.values.resumeSpacingSeconds}s`} actionLabel="Edit" onPress={() => { setDraft(draftOf(settings.values)); setRevision(settings.revision); }} /> : <>
