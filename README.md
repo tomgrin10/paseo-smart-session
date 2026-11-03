@@ -5,188 +5,76 @@
 [![Paseo](https://img.shields.io/badge/Paseo-%E2%89%A5%200.14.0-8A63D2?style=for-the-badge)](https://paseo.sh)
 [![License](https://img.shields.io/github/license/tomgrin10/paseo-smart-session?style=for-the-badge&color=2563eb)](LICENSE)
 
-Give Paseo agents a safe way to manage long-running work.
-
-Smart Session lets an agent see how full its context is, save durable task state, and compact itself when it is ready. It also records session and plan-usage statistics, so you can understand where tokens are going and when limits reset.
+Let agents manage their own long-running work. Smart Session shows an agent how full its context is, lets it save durable task state, and lets it compact itself at a safe stopping point. It also keeps a history of context, plan usage and token spend.
 
 ![A Smart Session compaction handoff: the requested compact preserves the task state, then the resumed session is told to re-read its state file and continue](docs/screenshots/smart-compact-handoff.png)
 
 ## Install
 
-Install from npm using the latest Paseo release:
-
 ```sh
 paseo plugin install paseo-smart-session
 ```
 
-```sh
-paseo plugin ls                    # confirm it is running
-paseo plugin update smart-session
-paseo plugin remove smart-session
-```
+On first load it registers its Claude Code hooks, touching only entries that point at its own scripts. Paseo attaches its MCP server when an interactive session opens.
 
-On first load, Smart Session registers its Claude Code hooks. Its MCP server is attached by Paseo when an interactive session opens. It only manages entries that point at its own scripts; other Claude Code configuration is left alone.
+## Use
 
-## What it does
-
-### Lets agents compact themselves
-
-An agent can check how much context it has used, checkpoint the work that must survive a reset, and request compaction when it reaches a safe stopping point. The agent also decides whether another turn should start afterwards and can write the exact follow-up message. A completed task can compact and stop; work in progress can resume from its saved state.
-
-The saved state captures the goal, the current step, decisions already made, and approaches that have already failed. That prevents a resumed agent from redoing work or asking a person how to continue.
-
-Smart Session never chooses to compact an agent by itself. It can let an agent know that context is filling, but the agent decides whether to checkpoint, compact, or defer.
-
-### Shows session and plan usage
-
-Smart Session keeps a local history of:
-
-- Context-window usage for each agent session
-- Claude plan usage, burn rate, and reset times
-- Token spend by model, workspace, and main agent versus subagent
-- Compaction requests and their before/after context sizes
-
-That history remains useful after an individual session ends or a provider cache changes.
-
-## How an agent uses it
-
-Smart Session exposes these MCP tools to Paseo agents:
+Agents get these tools:
 
 | Tool | What it does |
 | --- | --- |
-| `context_status` | Shows current context usage, filling rate, and relevant thresholds. |
-| `checkpoint` | Writes durable task state for the current session. |
-| `request_compaction` | Queues compaction and chooses whether and how to continue afterwards. |
-| `defer_compaction` | Defers a compaction request and records why. |
-| `budget_status` | Shows plan usage, burn rate, and reset times. |
+| `context_status` | Current context usage, fill rate and thresholds |
+| `checkpoint` | Save durable task state for this session |
+| `request_compaction` | Queue `/compact`, and choose whether and how to continue afterwards |
+| `defer_compaction` | Put off a compaction and record why |
+| `budget_status` | Plan usage, burn rate and reset times |
 
-The usual flow is:
+The usual flow is `context_status → checkpoint → request_compaction`, then stop or re-read the state and continue. Saved state holds the goal, current step, decisions made and approaches that failed, so a resumed agent neither redoes work nor asks how to continue.
 
-```text
-context_status → checkpoint → request_compaction → stop, or re-read state and continue
-```
+The composer pill shows whether a session is enrolled in **Smart Compact**.
 
-`request_compaction` refuses when the state file is missing or stale. The agent can checkpoint and request again in the same turn.
+## How Smart Compact works
 
-## Smart Compact
+As a session fills, hooks send context notices. At the compact threshold, the agent is asked at the end of its turn whether it wants to compact. Nothing is forced: the agent can compact, defer with a reason, or keep working. A request is delivered only when the agent is idle and its state file is current; `request_compaction` refuses a missing or stale one.
 
-Smart Compact is the session-control feature. As a session fills, hooks can provide context notices at useful thresholds. When the compact threshold is reached at the end of a turn, the agent is asked whether it wants to compact.
+After compaction, the agent chooses to stop (`continue_after_compaction: false`), continue with the default prompt to re-read its state, or continue with its own `continue_message`. A `/compact` typed by a person never gets a plugin continuation.
 
-There is no forced compaction. An agent can compact immediately, defer with a reason, or keep working. A request is delivered only when the agent is idle and its state file is current.
-
-Every request sends the `/compact` command. The agent can also set:
-
-- `continue_after_compaction: false` to finish without starting another turn.
-- `continue_after_compaction: true` to start another turn after compaction.
-- `continue_message` to choose the exact follow-up; when omitted, the default tells the agent to re-read the state file and continue from its **Current step**.
-
-Omitting the new options preserves the earlier behavior: Smart Session continues with the default state-aware prompt. The durable state wins if it disagrees with the automatic summary. A `/compact` entered by a person never receives a plugin continuation.
-
-### The composer pill
-
-The composer pill shows whether the current session is enrolled:
-
-| State | Meaning |
-| --- | --- |
-| **Smart Compact on** | The session can receive context notices and request compaction. |
-| **Smart Compact off** | The session is not enrolled. |
-
-If Smart Compact is disabled globally, the pill is not shown.
-
-## Settings
-
-| Setting | Default | Description |
+| Setting | Default | |
 | --- | --- | --- |
-| **Smart Compact** | On | Enables context notices and agent-requested compaction. |
-| **Large-window compact threshold** | 30% | Sets when Smart Compact asks on context windows of 400k tokens or more. |
-| **Small-window compact threshold** | 85% | Sets when Smart Compact asks on smaller context windows. |
-| **Enrol sessions automatically** | On | Enrols a session after it writes task state. |
-| **Show the pill on every agent** | On | Shows the Smart Compact control in the composer. |
-| **Register the hooks with Claude Code** | On | Keeps the context and compaction hooks installed. |
+| Smart Compact | On | Context notices and agent-requested compaction |
+| Large-window compact threshold | 30% | Context windows of 400k tokens or more |
+| Small-window compact threshold | 85% | Smaller context windows |
+| Enrol sessions automatically | On | Enrol a session once it writes task state |
+| Show the pill on every agent | On | Composer pill visibility |
+| Register the hooks with Claude Code | On | Keep the context and compaction hooks installed |
 
-The remaining settings apply only while Smart Compact is enabled. Thresholds accept whole percentages from 1% to 99%; lowering one also moves its earlier notice bands down when needed.
+## Data and access
 
-## Usage history and state
+Everything lives in `$PASEO_HOME/plugin-data/smart-session/`: monthly usage and context logs, compaction records, an hourly spend index by model, workspace and agent type, and one `state/<agentId>.md` per agent. Logs are append-only, and a damaged line is skipped rather than risking the rest.
 
-Smart Session stores its data under:
-
-```text
-$PASEO_HOME/plugin-data/smart-session/
-```
-
-| File | Contains |
-| --- | --- |
-| `usage-YYYY-MM.jsonl` | Plan-usage observations and reset times. |
-| `context-YYYY-MM.jsonl` | Context-window usage changes. |
-| `compactions.json` | Compaction requests, continuation choices, and context sizes. |
-| `spend-index.json` | Hourly token spend by model, workspace, and agent type. |
-| `state/<agentId>.md` | Durable task state for one agent. |
-| `settings.json`, `enrolment.json` | Plugin settings and per-session enrolment. |
-
-Usage and context observations are append-only. A damaged line is skipped rather than putting the rest of the history at risk. Existing compaction rows are read as “continue with the default prompt,” so upgrading requires no data migration.
-
-## Password-protected daemons
-
-When the Paseo daemon requires a password, Smart Session resolves it in this order:
-
-1. `PASEO_PASSWORD`
-2. The file named by `PASEO_PASSWORD_FILE`
-3. `~/paseo-hub/secrets/daemon-password`
-
-The secret is used only to connect to the daemon. It is never written or logged.
+Paseo plugins run trusted, unsandboxed code on the daemon host. Smart Session reads local Claude Code usage data and talks only to the local daemon. For password-protected daemons it reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`, and never writes or logs it.
 
 ## Development
 
 ```sh
-git clone https://github.com/tomgrin10/paseo-smart-session.git
-cd paseo-smart-session
 npm ci
 npm run verify
-paseo plugin install "$PWD"
+paseo plugin install .
+paseo plugin reload smart-session   # after changes
 ```
-
-After editing:
-
-```sh
-npm run verify
-paseo plugin reload smart-session
-```
-
-Reloading the plugin is enough. Do not restart the Paseo daemon: that interrupts every running agent.
-
-## Data and privacy
-
-Smart Session reads local Claude Code usage information and communicates with the local Paseo daemon. Its usage history, settings, and task state stay under `$PASEO_HOME`. Apart from narrowly maintaining its own Claude Code hook entries, it does not modify user configuration. MCP attachment is local to each Paseo session.
 
 ## License
 
 [MIT](LICENSE) © 2026 Tom Gringauz.
 
-## Navigation and display
-
-Open this plugin from Command-K or its sidebar entry. **Overview** and **Display settings** link the main view and settings directly, without opening the Plugins settings page. Hiding a sidebar entry keeps Command-K available.
-
-Display settings can also hide this plugin's workspace header or composer buttons independently. Hidden buttons stay hidden for newly opened workspaces; restoring them retains the latest button status.
-
-## Paseo 0.14 agent integration
-
-The Smart Session MCP attaches automatically when an interactive Claude or Codex session opens, including resume, refresh and import. Normal plugin startup no longer registers a global Claude MCP. Existing global entries are preserved; usage history and checkpoints remain in place. The bridge also respects a custom daemon listen address.
-
-Requires Paseo **0.14.0 or newer**. Agent tools are scoped to interactive Claude
-and Codex sessions; history-only opens receive none. They become available on
-the next idle session open after install or reload. The agent label
-`plugin-tools/enabled: "false"` opts a session out. Existing plugin data and
-settings are retained.
-
 ## Other plugins
 
 - [Defer](https://github.com/tomgrin10/paseo-defer) — Schedule messages for later delivery.
-- [Graphite](https://github.com/tomgrin10/paseo-graphite) — Graphite stacks and PR status.
-- [Vitals](https://github.com/tomgrin10/paseo-vitals) — Host, agent, and Docker health.
-- [Session Guard](https://github.com/tomgrin10/paseo-session-guard) — Pause at session limits and continue after reset.
-- [Transfer](https://github.com/tomgrin10/paseo-transfer) — Copy or move workspaces between hosts.
-- [Transcript Search](https://github.com/tomgrin10/paseo-transcript-search) — Search conversations across connected hosts.
-- [Send to Paseo](https://github.com/tomgrin10/send-to-paseo) — Send GitHub and Graphite PRs to Paseo from Chrome.
-- [Dispatch](https://github.com/tomgrin10/paseo-dispatch) — Route tasks to existing workspaces (development preview).
-
 - [Follow-up](https://github.com/tomgrin10/paseo-follow-up) — Track workspace PRs, remaining tasks and completion.
+- [Graphite](https://github.com/tomgrin10/paseo-graphite) — Graphite stacks and PR status.
+- [Send to Paseo](https://github.com/tomgrin10/send-to-paseo) — Send GitHub and Graphite PRs to Paseo from Chrome.
+- [Session Guard](https://github.com/tomgrin10/paseo-session-guard) — Pause at session limits and continue after reset.
+- [Transcript Search](https://github.com/tomgrin10/paseo-transcript-search) — Search conversations across connected hosts.
+- [Transfer](https://github.com/tomgrin10/paseo-transfer) — Copy or move workspaces between hosts.
+- [Vitals](https://github.com/tomgrin10/paseo-vitals) — Host, process, agent and Docker monitoring.
+- [Workspace Switcher](https://github.com/tomgrin10/paseo-switcher) — Arc-style Ctrl+Tab between recent workspaces.
