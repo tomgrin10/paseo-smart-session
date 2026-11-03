@@ -59,41 +59,56 @@ writeFileSync(
   harnessPath,
   `const mod = require(${JSON.stringify(bundlePath)});
 const contribute = mod.default ?? mod;
-const plugin = new Proxy({}, { get: (_, name) => ["on", "before"].includes(name) ? () => () => {} : () => {} });
+const [values, settleMs] = [JSON.parse(process.argv[2]), Number(process.argv[3])];
+const settings = { read: async () => ({ status: "ready", revision: "0", values }), subscribe: () => () => {} };
+const plugin = new Proxy({}, { get: (_, name) => ["on", "before"].includes(name) ? () => () => {} : name === "registerSettings" ? () => settings : () => {} });
 (async () => {
   const cleanup = contribute(plugin);
   if (typeof cleanup !== "function") throw new Error("contribute() must return a cleanup function");
+  await new Promise((resolve) => setTimeout(resolve, settleMs));
   await cleanup();
   console.log("CLEANUP_RETURNED");
 })();
 `,
 );
 
-const child = spawn(process.execPath, [harnessPath], {
-  env: { ...process.env, PASEO_HOME: sandbox },
-  stdio: ["ignore", "pipe", "pipe"],
-});
-let out = "";
-child.stdout.on("data", (chunk) => (out += chunk));
-child.stderr.on("data", (chunk) => (out += chunk));
+/**
+ * Two runs: every setting at its default and stopped at once, and with Session Guard
+ * on and given time to take its lock and arm its poll timer — the state a reload
+ * actually finds it in. The daemon URL points at a closed port either way.
+ */
+const scenarios = [
+  { name: "defaults", values: {}, settleMs: 0 },
+  { name: "Session Guard on", values: { enabled: true }, settleMs: 500 },
+];
 
-const exitCode = await new Promise((settle) => {
-  const timer = setTimeout(() => settle(null), EXIT_BUDGET_MS);
-  child.on("exit", (code) => {
-    clearTimeout(timer);
-    settle(code ?? 0);
+for (const scenario of scenarios) {
+  const child = spawn(process.execPath, [harnessPath, JSON.stringify(scenario.values), String(scenario.settleMs)], {
+    env: { ...process.env, PASEO_HOME: sandbox, PASEO_DAEMON_URL: "ws://127.0.0.1:9/ws" },
+    stdio: ["ignore", "pipe", "pipe"],
   });
-});
-if (exitCode === null) child.kill("SIGKILL");
-rmSync(sandbox, { recursive: true, force: true });
+  let out = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (out += chunk));
 
-if (!out.includes("CLEANUP_RETURNED")) {
-  console.error("  ✗ teardown: cleanup never returned");
-  console.error(out.trim().split("\n").slice(-6).map((line) => `      ${line}`).join("\n"));
-  process.exitCode = 1;
-} else if (exitCode === null) {
-  console.error(`  ✗ teardown: still alive ${EXIT_BUDGET_MS}ms after cleanup — Paseo's stop would hang here`);
-  process.exitCode = 1;
-} else {
-  console.log("  ✓ teardown: subprocess exited after cleanup");
+  const exitCode = await new Promise((settle) => {
+    const timer = setTimeout(() => settle(null), EXIT_BUDGET_MS);
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      settle(code ?? 0);
+    });
+  });
+  if (exitCode === null) child.kill("SIGKILL");
+
+  if (!out.includes("CLEANUP_RETURNED")) {
+    console.error(`  ✗ teardown (${scenario.name}): cleanup never returned`);
+    console.error(out.trim().split("\n").slice(-6).map((line) => `      ${line}`).join("\n"));
+    process.exitCode = 1;
+  } else if (exitCode === null) {
+    console.error(`  ✗ teardown (${scenario.name}): still alive ${EXIT_BUDGET_MS}ms after cleanup — Paseo's stop would hang here`);
+    process.exitCode = 1;
+  } else {
+    console.log(`  ✓ teardown (${scenario.name}): subprocess exited after cleanup`);
+  }
 }
+rmSync(sandbox, { recursive: true, force: true });

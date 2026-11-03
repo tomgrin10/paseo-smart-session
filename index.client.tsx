@@ -3,6 +3,8 @@ import { contributeDisplay } from "./client/display";
 import { withNavigation } from "./client/navigation";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 
+import { observeAgents } from "./client/agents";
+import { contributeGuardClient } from "./client/guard/index";
 import { contributeClient, refreshPills } from "./client/pill";
 import { SmartSessionSurface } from "./client/surface";
 import { enrolmentState } from "./shared/governor";
@@ -11,7 +13,7 @@ import { getSettings, setSettings } from "./shared/smart-session";
 export default function contribute(host: PluginClientContext) {
   const visibility = withButtonVisibility(host);
   const client = visibility.client;
-  client.addSurface("overview", withNavigation(SmartSessionSurface, client, "overview"));
+  client.addSurface("overview", withNavigation((props) => <SmartSessionSurface {...props} openSurface={client.openSurface} />, client, "overview"));
   const removeDisplay = contributeDisplay(client, {
     id: "smart-session",
     title: "Smart Session",
@@ -43,6 +45,9 @@ export default function contribute(host: PluginClientContext) {
     },
   });
 
-  const removeClient = contributeClient(client);
-  return () => { visibility.dispose(); removeDisplay(); return removeClient(); };
+  // One agent observation for every pill in this bundle.
+  const agents = observeAgents(client);
+  const removeClient = contributeClient(client, agents);
+  const removeGuard = contributeGuardClient(client, agents, "overview");
+  return () => { removeGuard(); removeClient(); visibility.dispose(); removeDisplay(); return agents.dispose(); };
 }

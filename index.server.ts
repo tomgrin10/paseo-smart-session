@@ -1,3 +1,4 @@
+import { contributeGuard } from "./server/guard/index.ts";
 import { contributeSessionMcp } from "./server/session-mcp.ts";
 import { displayPreferences } from "./shared/display";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
@@ -25,7 +26,7 @@ import {
   setEnrolment,
 } from "./shared/governor.ts";
 import { burnRatePctPerHour, projectedExhaustion, segmentBlocks } from "./shared/blocks.ts";
-import { lifecycle } from "./shared/lifecycle.ts";
+import { lifecycle, runTeardowns } from "./shared/lifecycle.ts";
 import { profileFor } from "./shared/thresholds.ts";
 import { effectiveAt } from "./shared/usage.ts";
 
@@ -42,6 +43,8 @@ import "./server/install-on-load.ts";
 export default function contribute(server: PluginServerContext) {
   const removeSessionMcp = contributeSessionMcp(server);
   server.registerSettings(displayPreferences);
+  // Pauses work at a provider's session limit; off until someone turns it on.
+  const removeGuard = contributeGuard(server);
   server.handle(budgetStatus, async () => {
     try {
       const since = Date.now() - 14 * 24 * 60 * 60 * 1000;
@@ -192,9 +195,5 @@ export default function contribute(server: PluginServerContext) {
 
   // The recorder and governor register their timers in this shared lifecycle.
   // Paseo waits for this cleanup before stopping the plugin subprocess.
-  return async () => {
-    removeSessionMcp();
-    const teardowns = lifecycle.teardowns.splice(0);
-    for (const teardown of teardowns) await teardown();
-  };
+  return () => runTeardowns([removeSessionMcp, removeGuard, ...lifecycle.teardowns.splice(0)]);
 }

@@ -22,6 +22,7 @@ import {
   appendUsage,
   clearCaches,
   newestUsage,
+  noteAcceptedReading,
   noteNewestUsage,
   type ContextSample,
 } from "./store.ts";
@@ -86,6 +87,7 @@ async function record(sample: UsageSample): Promise<boolean> {
   const newest = await newestUsage();
   const verdict = acceptReading(newest, sample);
   if (!verdict.ok) return false;
+  noteAcceptedReading(sample);
   if (!isWorthRecording(newest, sample)) return false;
   await appendUsage(sample);
   noteNewestUsage(sample);

@@ -12,7 +12,7 @@ import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { UsageSample } from "../shared/usage.ts";
+import { effectiveAt, type UsageSample } from "../shared/usage.ts";
 
 const DATA_DIRECTORY = "smart-session";
 const LEGACY_DATA_DIRECTORY = "super-session";
@@ -195,7 +195,31 @@ export function noteNewestUsage(sample: UsageSample): void {
   newestCache = { value: sample };
 }
 
+/**
+ * The newest reading that passed the acceptance gate, whether or not it was written.
+ *
+ * Most readings are refused by `isWorthRecording` only because nothing moved, so the
+ * newest *line* can be minutes older than the newest *fact*. Session Guard wants the
+ * fact — a fresh report below its threshold is what confirms a reset.
+ */
+let latestAccepted: UsageSample | null = null;
+
+export function noteAcceptedReading(sample: UsageSample): void {
+  if (latestAccepted === null || Date.parse(effectiveAt(sample)) >= Date.parse(effectiveAt(latestAccepted))) {
+    latestAccepted = sample;
+  }
+}
+
+/** The freshest Claude plan-usage reading this process knows of, recorded or not. */
+export async function freshestUsage(): Promise<UsageSample | null> {
+  const newest = await newestUsage();
+  if (latestAccepted === null) return newest;
+  if (newest === null) return latestAccepted;
+  return Date.parse(effectiveAt(latestAccepted)) >= Date.parse(effectiveAt(newest)) ? latestAccepted : newest;
+}
+
 /** Drops in-memory state so a reload starts clean. */
 export function clearCaches(): void {
   newestCache = null;
+  latestAccepted = null;
 }

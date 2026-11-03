@@ -87,6 +87,17 @@ async function runClientBundle(code) {
     },
     async rpc(contract) {
       if (contract?.name === "settings.display.read") return { status: "ready", values: { showSidebar: true }, revision: "1" };
+      if (contract?.name === "smart-session.guard.status") {
+        return {
+          governor: "active",
+          checkedAt: null,
+          error: null,
+          pauses: [],
+          overrides: {},
+          policy: { enabled: true, protectByDefault: true, thresholdPct: 100, autoResume: true, includeNativeSubagents: true },
+          providers: [],
+        };
+      }
       if (contract?.name === "smart-session.enrolment.state") {
         return {
           showPill: true,
@@ -124,6 +135,14 @@ async function runClientBundle(code) {
       summary.push(`addCommandCenterItem(${item.id})`);
       return removable();
     },
+    addTimelineRenderer(item) {
+      requireText(item?.kind, "timeline renderer kind");
+      if (!Number.isInteger(item?.version) || item.version < 1) throw new Error("Invalid timeline renderer version");
+      requireFunction(item?.schema?.safeParse, "timeline renderer schema");
+      requireFunction(item?.Component, "timeline renderer component");
+      summary.push(`addTimelineRenderer(${item.kind})`);
+      return removable();
+    },
     addComposerPill(item) {
       requireText(item?.id, "composer pill id");
       requireText(item?.workspaceId, "composer pill workspace");
@@ -131,17 +150,32 @@ async function runClientBundle(code) {
       requireText(item?.button?.title, "composer pill button title");
       requireText(item?.button?.label, "composer pill button label");
       requireFunction(item?.button?.icon, "composer pill button icon");
-      if (item?.button?.behavior?.kind !== "action") {
-        throw new Error("Composer pill must use an action descriptor");
+      if (item.id === "session-guard") {
+        // A menu descriptor: every entry needs an id, and every item an action.
+        const items = item.button.behavior?.kind === "menu" ? item.button.behavior.items : null;
+        if (!Array.isArray(items) || items.length === 0) throw new Error("Session Guard pill must use a menu descriptor");
+        for (const entry of items) {
+          requireText(entry?.id, "menu entry id");
+          if (entry.kind === "item") {
+            requireText(entry.title, `menu item ${entry.id} title`);
+            if (entry.behavior?.kind !== "action") throw new Error(`menu item ${entry.id} must be an action`);
+            requireFunction(entry.behavior.onPress, `menu item ${entry.id} callback`);
+          } else if (entry.kind !== "separator") throw new Error(`unknown menu entry kind: ${entry.kind}`);
+        }
+      } else {
+        if (item?.button?.behavior?.kind !== "action") {
+          throw new Error("Composer pill must use an action descriptor");
+        }
+        requireFunction(item.button.behavior.onPress, "composer pill descriptor callback");
+        // Local 0.8.0-beta.1 still validates these. The hybrid must keep both.
+        requireText(item?.title, "legacy composer pill title");
+        requireFunction(item?.Component, "legacy composer pill component");
+        requireFunction(item?.onPress, "legacy composer pill callback");
       }
-      requireFunction(item.button.behavior.onPress, "composer pill descriptor callback");
-      // Local 0.8.0-beta.1 still validates these. The hybrid must keep both.
-      requireText(item?.title, "legacy composer pill title");
-      requireFunction(item?.Component, "legacy composer pill component");
-      requireFunction(item?.onPress, "legacy composer pill callback");
       summary.push(`addComposerPill(${item.id})`);
       let removed = false;
       const registration = {
+        id: item.id,
         agentId: item.agentId,
         removed: false,
         update(patch) {
@@ -159,8 +193,8 @@ async function runClientBundle(code) {
 
   const cleanup = exported.default(client);
   if (typeof cleanup !== "function") throw new Error("client contribution must return cleanup");
-  await Promise.resolve();
-  await Promise.resolve();
+  // Long enough for the pills' first RPCs to resolve, not for their polls to fire.
+  await new Promise((resolve) => setImmediate(resolve));
   if (agentListOptions?.subscribe === undefined) {
     throw new Error("composer pills must own an observed agent directory");
   }
@@ -180,13 +214,18 @@ async function runClientBundle(code) {
       },
     },
   });
-  if (summary.filter((item) => item === "addComposerPill(smart-compact)").length !== 2) {
-    throw new Error("observed agents must receive composer pills regardless of model");
+  for (const id of ["smart-compact", "session-guard"]) {
+    if (summary.filter((item) => item === `addComposerPill(${id})`).length !== 2) {
+      throw new Error(`observed agents must receive the ${id} pill regardless of model`);
+    }
+  }
+  if (!summary.includes("addTimelineRenderer(quota-pause)")) {
+    throw new Error("Session Guard's timeline cards must have a renderer");
   }
   agentObserver.snapshot({
     entries: [{ agent: { id: "agent-opus-5-5", workspaceId: "workspace-1" } }],
   });
-  if (!registrations.find((registration) => registration.agentId === "agent-1")?.removed) {
+  if (!registrations.filter((registration) => registration.agentId === "agent-1").every((registration) => registration.removed)) {
     throw new Error("a restored agent snapshot must remove stale composer pills");
   }
   for (const surface of sidebarSurfaces) {
