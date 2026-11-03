@@ -27,7 +27,7 @@ Agents get these tools:
 | `checkpoint` | Save durable task state for this session |
 | `request_compaction` | Queue `/compact`, and choose whether and how to continue afterwards |
 | `defer_compaction` | Put off a compaction and record why |
-| `budget_status` | Plan usage, burn rate and reset times |
+| `budget_status` | Plan usage, burn rate and reset times, and whether Session Guard will pause this session |
 
 The usual flow is `context_status → checkpoint → request_compaction`, then stop or re-read the state and continue. Saved state holds the goal, current step, decisions made and approaches that failed, so a resumed agent neither redoes work nor asks how to continue.
 
@@ -47,6 +47,14 @@ After compaction, the agent chooses to stop (`continue_after_compaction: false`)
 | Enrol sessions automatically | On | Enrol a session once it writes task state |
 | Show the pill on every agent | On | Composer pill visibility |
 | Register the hooks with Claude Code | On | Keep the context and compaction hooks installed |
+
+## Session Guard
+
+Session Guard pauses agents at the provider's session limit and continues the same conversations after the reset, even with the app closed. It is the [Session Guard](https://github.com/tomgrin10/paseo-session-guard) plugin folded into Smart Session, and it is **off by default**: turn it on from the overview or **Settings → Plugins → Smart Session → Session Guard**.
+
+On Linux, Claude and Codex sessions pause in place together with their native subagents; elsewhere the turn is interrupted and one continuation is sent after the reset. Each session gets a pill to opt out or release it, and each pause gets a timeline card with **Resume now** and **Dismiss pause**. For Claude, a reset is confirmed from whichever is fresher, Paseo's cached usage or Smart Session's own recorder.
+
+If the standalone plugin is still installed, Smart Session defers to it: both use one lock in `$PASEO_HOME/plugin-data/session-guard/`, so a session is never paused twice. Uninstall it to hand over; per-session choices and waiting pauses carry over. See the [Session Guard guide](docs/session-guard.md) for settings and limits.
 
 ## Data and access
 

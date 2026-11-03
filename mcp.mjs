@@ -254,6 +254,23 @@ function describeRelative(iso) {
   return ms >= 0 ? `in ${text}` : `${text} ago`;
 }
 
+/**
+ * Session Guard's word on this session, for `budget_status`.
+ *
+ * Read-only, and only for the session asking: the plugin resolves it from
+ * `PASEO_AGENT_ID`, never from anything the model passes. A failure here costs the
+ * extra line, not the budget answer.
+ */
+async function guardSummary() {
+  if (AGENT_ID === null) return [];
+  try {
+    const result = await callPlugin("smart-session.guard.agent", { agentId: AGENT_ID });
+    return Array.isArray(result?.summary) ? result.summary.filter((line) => typeof line === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 const TOOLS = {
   context_status: {
     description:
@@ -301,15 +318,16 @@ const TOOLS = {
 
   budget_status: {
     description:
-      "How much of the Claude plan's rolling 5-hour and weekly limits is already consumed, how fast, and when each window resets. Call this before spawning several subagents, before a long autonomous run, or when deciding whether to use a more expensive model.",
+      "How much of the Claude plan's rolling 5-hour and weekly limits is already consumed, how fast, and when each window resets — and, inside Paseo, whether Session Guard will pause this session at the session limit and continue it after the reset. Call this before spawning several subagents, before a long autonomous run, or when deciding whether to use a more expensive model.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     async run() {
       const result = await callPlugin("smart-session.budget", {});
       if (result.error) return `Could not read plan usage: ${result.error}`;
+      const guard = await guardSummary();
       const interesting = (result.windows ?? []).filter(
         (window) => window.id === "five_hour" || window.id === "seven_day" || window.pct > 0,
       );
-      if (interesting.length === 0) return "No plan-usage reading recorded yet.";
+      if (interesting.length === 0) return ["No plan-usage reading recorded yet.", ...guard].join("\n");
 
       const lines = interesting.map((window) => {
         const name = window.id === "five_hour" ? "Session (5h)" : window.id === "seven_day" ? "Week" : window.id;
@@ -328,6 +346,7 @@ const TOOLS = {
           `(Newest reading is ${Math.round(HOURS(recorder.ageSeconds * 1000) * 10) / 10}h old — treat these as a floor, not a current number.)`,
         );
       }
+      lines.push(...guard);
       return lines.join("\n");
     },
   },

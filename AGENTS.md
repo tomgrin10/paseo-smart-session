@@ -4,8 +4,11 @@
 
 - This is the trusted, unsandboxed Paseo plugin `smart-session` — note the id is `smart-session`
   while the repository and package are `paseo-smart-session`. Minimum supported Paseo is 0.14.0.
-- It is two halves in one daemon process: a **meter** that records plan-usage history, and a
-  **governor** that reads each agent's context occupancy and compacts a session on request.
+- It is three parts in one daemon process: a **meter** that records plan-usage history, a
+  **governor** that reads each agent's context occupancy and compacts a session on request, and
+  **Session Guard**, which pauses agents at a provider's session limit and continues them after the
+  reset. Session Guard was folded in from the standalone `paseo-session-guard` plugin; see its
+  section below.
 - Check the current plugin docs at `https://paseo.sh/docs/plugins.md` and
   `https://paseo.sh/docs/plugins/reference.md` before changing runtime code.
 - `RESEARCH.md` is the evidence base — every capability claim in `PLAN.md` and in the code comments
@@ -81,13 +84,15 @@
 - Enrolment is resolved in `server/settings.ts`: an explicit answer in `enrolment.json` outranks the
   state-file inference in both directions. Toggling is read-modify-write over one file, so it goes
   through the serializer — concurrent toggles otherwise lose one another.
-- `client/pill.tsx` owns the composer pill. Pill state lives in a
+- `client/agents.ts` owns the one agent directory every composer pill reads. It must be an owned
+  `agents.list({ subscribe: {}, signal })` observation; bare `agents.subscribe()` only listens
+  locally and does not discover new agents (`RESEARCH.md` §5.1). Do not open a second one for a new
+  pill: `check-bundles.mjs` asserts the observation is released exactly once.
+- `client/pill.tsx` owns the Smart Compact pill. Pill state lives in a
   module-level store because the pill, its press, the Command Center item and the surface toggle are
   all in the one client bundle; that is what makes a toggle redraw immediately instead of waiting out
   a poll. A registration bakes in the workspace and cannot be patched, so an agent that moves
-  workspace needs a new one, and one that closes must be dropped. Its agent directory must be an
-  owned `agents.list({ subscribe: {}, signal })` observation; bare `agents.subscribe()` only listens
-  locally and does not discover new agents (`RESEARCH.md` §5.1). The pill itself is one icon: state
+  workspace needs a new one, and one that closes must be dropped. The pill itself is one icon: state
   in colour, words in a hover tooltip drawn above the track, since the track is one line high and a
   pill that grew on hover would shove Paseo's own pills along.
 - Command Center and sidebar icons go through Paseo's `resolvePluginIcon`, which **throws** on an
@@ -99,11 +104,12 @@
 - **Compaction is always agent-mandated.** Nothing in this plugin may decide that a session should be
   compacted; `queue.add` is reached only from an agent's `request_compaction` or a person. The ask
   lives in `hooks/ask-compact.mjs` on `Stop`, where it rides the agent's own turn.
-- The plugin sends an agent at most two things, and `sendToAgent` has exactly two call sites: the
+- Smart Compact sends an agent at most two things, and `sendToAgent` has exactly two call sites: the
   `/compact` the agent asked for, and, when that agent requests one, a continuation message after it
   lands. Anything else it needs to hear comes from a hook. Adding a third is a design change, not a
   patch — if you think you need one, check `RESEARCH.md` §3.4 first, because it probably records why
-  the hook route you are about to reimplement does not work.
+  the hook route you are about to reimplement does not work. Session Guard's messages are separate
+  and are listed in its own section.
 - The optional continuation exists because no hook can restart a task after a compaction. The agent
   chooses whether to send it and may supply its exact text; omission preserves the state-aware
   default for compatibility. It is sent only for queue-originated compactions, so a `/compact` a
@@ -114,6 +120,42 @@
   while it is off. There is no third pill state — a session is enrolled or it is not, and with the
   feature off the pill is not drawn at all.
 - Do not log secrets, tokens, task-state contents, or message bodies. Credentials are read-only.
+
+## Session Guard
+
+- Code lives in `server/guard/`, `client/guard/` and `shared/guard/`; `server/guard/index.ts` is its
+  wiring, `server/guard/engine.ts` decides what to pause and when to continue. The behaviour guide
+  for users is `docs/session-guard.md`.
+- It is **off by default** (`shared/guard/policy.ts`). Off, it holds no lock, creates no directory,
+  draws no pill and touches no session. Do not change that default: an upgrade must never start
+  freezing processes.
+- Its state deliberately stays in `$PASEO_HOME/plugin-data/session-guard/`, the standalone plugin's
+  directory, not under `plugin-data/smart-session/`. Both plugins take the same `governor.lock` there,
+  which is the only thing that stops a host running both from pausing a session twice; and the
+  standalone plugin's per-session overrides and confirmed waits carry over because they are the same
+  `state.json`. Keep `StateSchema`, `PauseSchema`, the lock token format, the notification ids and the
+  `quota-pause` timeline kind identical to the standalone plugin's while it can still be installed:
+  its Zod parse strips unknown fields on every write.
+- Exactly one process governs. Turned on, `server/guard/index.ts` takes the lock; a `LockHeldError`
+  means another live governor (in practice the standalone plugin) and is a deferral, retried every
+  15 s, never a failure. Turned off, it gives the lock back only once no pause is pending. A
+  deferring process must never call `engine.stop()` or otherwise touch the other governor's pauses or
+  workers.
+- Session Guard does speak to agents, separately from Smart Compact: it interrupts a turn
+  (`cancelAgent`), suspends and resumes provider process trees with `SIGSTOP`/`SIGCONT` on Linux, and
+  sends exactly two kinds of message — the configured continuation after a confirmed reset, and the
+  **Resume now** message a person asked for. It never compacts, never retries an unconfirmed send,
+  and never sends into a session whose user message or turn changed.
+- Process signals are identity-checked by PID birth time and limited to direct children of this
+  daemon carrying the agent's `PASEO_AGENT_ID`. Never widen that.
+- Usage comes from Paseo's `provider.usage.list`, merged for Claude with the recorder's freshest
+  accepted reading (`server/guard/usage.ts`). Only a reading with a provider `fetchedAt` may be
+  merged: `resetReady` relies on it to prove a report is newer than the pause.
+- Its pill is drawn only while this process is the active governor, and while turning off only for a
+  session that still has a pending pause.
+- Agents see it only through `budget_status` in `mcp.mjs`, which asks
+  `smart-session.guard.agent` about the calling `PASEO_AGENT_ID`. It is read-only: no agent-facing
+  path may opt a session out or resume a pause.
 
 ## Verify changes
 
@@ -134,7 +176,7 @@ cannot see.
 | --- | --- |
 | `check-bundles.mjs` | The dual-bundle boundary, plus the app's own registration validation, so a contribution Paseo would reject at install time fails here instead. |
 | `check-gitinstall.mjs` | That both bundles still compile with no installed dependencies, which is what `paseo plugin add` does. |
-| `check-teardown.mjs` | That the subprocess actually exits after cleanup. A leaked timer wedges plugin reload. |
+| `check-teardown.mjs` | That the subprocess actually exits after cleanup, with defaults and with Session Guard on. A leaked timer wedges plugin reload. |
 | `check-mcp-resolve.mjs` | That `mcp.mjs` can still reach the daemon client on a managed Git install, where `@getpaseo/client` exists only inside the global `paseo` CLI's own dependencies, not in this checkout's (nonexistent) `node_modules` — and inside the desktop app, where it exists only under `app.asar`. |
 
 Hook behaviour is verified against the Claude Code binary *and* a live session, never against the
@@ -165,6 +207,7 @@ node probe.mjs rpc smart-session.budget '{}'
 node probe.mjs rpc smart-session.context '{}'
 node probe.mjs rpc smart-session.settings.get '{}'
 node probe.mjs rpc smart-session.enrolment.state '{}'
+node probe.mjs rpc smart-session.guard.status '{}'
 node probe.mjs agents            # id, status and lastUsage for every agent
 ```
 

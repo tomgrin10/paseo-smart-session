@@ -24,6 +24,7 @@ import { Text, View } from "react-native";
 
 import { smartCompactLabel } from "../shared/format";
 import { enrolmentState, setEnrolment, type EnrolmentState } from "../shared/governor";
+import type { AgentDirectory } from "./agents";
 
 /** How often the client re-reads enrolment, for changes made somewhere else. */
 const REFRESH_MS = 20_000;
@@ -197,29 +198,6 @@ function AutoCompactIcon({
   return <Icon name="FoldVertical" size={size} color={color} />;
 }
 
-/** The lean shapes this needs from the agent directory, which carries far more. */
-interface ListedAgent {
-  readonly id?: string;
-  readonly workspaceId?: string | null;
-}
-
-interface AgentUpdate {
-  readonly kind: "remove" | "upsert";
-  readonly agentId?: string;
-  readonly agent?: ListedAgent;
-}
-
-interface AgentListing {
-  readonly entries?: readonly { readonly agent?: ListedAgent }[];
-  readonly subscription?: {
-    subscribe(observer: {
-      snapshot(listing: AgentListing): void;
-      update(message: { readonly type?: string; readonly payload?: AgentUpdate }): void;
-    }): () => void;
-    release(): Promise<void>;
-  };
-}
-
 /**
  * The published 0.8 descriptor API returns this handle. The 0.8.0-beta.1 npm
  * package and app still return the legacy remover function, so registrations
@@ -242,13 +220,9 @@ function updatePill(handle: PillHandle, title: string): void {
   if (typeof handle !== "function") handle.update({ title });
 }
 
-export function contributeClient(client: PluginClientContext) {
+export function contributeClient(client: PluginClientContext, agents: AgentDirectory) {
   /** Every agent this app knows of, and its pill registration while one is up. */
   const tracked = new Map<string, { workspaceId: string; handle: PillHandle | null }>();
-  const lifetime = new AbortController();
-  let stopped = false;
-  let unsubscribeOwnedObservation: (() => void) | null = null;
-  let releaseAgentObservation: (() => Promise<void>) | null = null;
 
   function register(agentId: string, entry: { workspaceId: string; handle: PillHandle | null }): void {
     const toggle = async () => {
@@ -321,114 +295,28 @@ export function contributeClient(client: PluginClientContext) {
     tracked.delete(agentId);
   }
 
-  function applyAgentUpdate(update: AgentUpdate): void {
-    if (update.kind === "remove") {
-      if (typeof update.agentId === "string") forget(update.agentId);
-      return;
+  /** Follows the shared directory: new agents gain a pill, moved or removed ones lose theirs. */
+  function followDirectory(): void {
+    const current = agents.current();
+    for (const [agentId, entry] of [...tracked]) {
+      if (current.get(agentId)?.workspaceId !== entry.workspaceId) forget(agentId);
     }
-    const agent = update.agent;
-    if (
-      typeof agent?.id !== "string" ||
-      typeof agent.workspaceId !== "string" ||
-      agent.workspaceId === ""
-    ) return;
-    track(agent.id, agent.workspaceId);
-  }
-
-  function trackAgents(entries: AgentListing["entries"]): Set<string> {
-    const present = new Set<string>();
-    for (const entry of entries ?? []) {
-      const agent = entry.agent;
-      if (
-        typeof agent?.id !== "string" ||
-        typeof agent.workspaceId !== "string" ||
-        agent.workspaceId === ""
-      ) continue;
-      present.add(agent.id);
-      track(agent.id, agent.workspaceId);
-    }
-    return present;
-  }
-
-  /** A restored observation replaces its directory snapshot, including removals. */
-  function replaceAgents(entries: AgentListing["entries"]): void {
-    const present = trackAgents(entries);
-    for (const agentId of [...tracked.keys()]) {
-      if (!present.has(agentId)) forget(agentId);
-    }
+    for (const [agentId, agent] of current) track(agentId, agent.workspaceId);
   }
 
   const refresh = () => refreshPills(() => client.rpc(enrolmentState, {}));
 
   const unsubscribeStore = subscribe(sync);
-
-  // v0.8 returns only the listing and emits its subscribed updates through this
-  // local listener. Keep it attached until a newer runtime gives us the owned
-  // observation whose snapshots can reconcile the whole directory on reconnect.
-  let unsubscribeLegacyAgents: (() => void) | null = client.paseo.agents.subscribe((update) => {
-    applyAgentUpdate(update as AgentUpdate);
-  });
-
-  // The subscription only carries agents that report in from now on, and an idle
-  // one may not do that for hours.
-  void (async () => {
-    try {
-      // `agents.subscribe()` listens only to observations already owned by
-      // this API instance. A plain list stopped receiving newly created agents
-      // in Paseo 0.9, which made both plugin pills disappear on new sessions.
-      const listAgents = client.paseo.agents.list as unknown as (options: {
-        subscribe: Record<string, never>;
-        signal: AbortSignal;
-      }) => Promise<AgentListing>;
-      const listing = await listAgents({ subscribe: {}, signal: lifetime.signal });
-      const release = listing.subscription
-        ? () => listing.subscription!.release()
-        : null;
-      if (stopped) {
-        await release?.();
-        return;
-      }
-      releaseAgentObservation = release;
-      // The legacy listener was already live while this snapshot was in flight,
-      // so bootstrap must be additive or it can erase a just-created agent.
-      trackAgents(listing.entries);
-      if (listing.subscription) {
-        unsubscribeOwnedObservation = listing.subscription.subscribe({
-          snapshot(snapshot) {
-            if (!stopped) replaceAgents(snapshot.entries);
-          },
-          update(message) {
-            if (!stopped && message.type === "agent_update" && message.payload) {
-              applyAgentUpdate(message.payload);
-            }
-          },
-        });
-        unsubscribeLegacyAgents?.();
-        unsubscribeLegacyAgents = null;
-      }
-    } catch {
-      const release = releaseAgentObservation;
-      releaseAgentObservation = null;
-      await release?.().catch(() => undefined);
-      // Not fatal to the rest of the client contribution; a reload can retry.
-    }
-  })();
+  const unsubscribeAgents = agents.subscribe(followDirectory);
+  followDirectory();
 
   void refresh().catch(() => undefined);
   const timer = setInterval(() => void refresh().catch(() => undefined), REFRESH_MS);
 
-  return async () => {
-    stopped = true;
-    lifetime.abort();
+  return () => {
     clearInterval(timer);
-    unsubscribeLegacyAgents?.();
-    unsubscribeLegacyAgents = null;
-    unsubscribeOwnedObservation?.();
-    unsubscribeOwnedObservation = null;
+    unsubscribeAgents();
     unsubscribeStore();
     for (const agentId of [...tracked.keys()]) forget(agentId);
-    const release = releaseAgentObservation;
-    releaseAgentObservation = null;
-    await release?.().catch(() => undefined);
   };
 }

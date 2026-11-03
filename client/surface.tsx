@@ -1,4 +1,4 @@
-import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
+import { type PluginSurfaceProps, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useEffect, useState } from "react";
@@ -17,6 +17,10 @@ import {
   spendSummary,
 } from "../shared/smart-session";
 import { withCompactThreshold } from "../shared/thresholds";
+import { guardPreferences, statusRpc as guardStatus } from "../shared/guard/contracts";
+import { isPending } from "../shared/guard/policy";
+import { pausedSessions, pausePresentation } from "../shared/guard/presentation";
+import { GUARD_SURFACES } from "./guard/surfaces";
 
 type Theme = PluginSurfaceProps["theme"];
 
@@ -236,7 +240,76 @@ function CompactThreshold({
   );
 }
 
-export function SmartSessionSurface({ theme, layout }: PluginSurfaceProps) {
+/** A quiet text link, for the places this section points to rather than controls. */
+function Link({ theme, label, onPress }: { theme: Theme; label: string; onPress: () => void }) {
+  return (
+    <Pressable accessibilityRole="link" onPress={onPress} style={({ pressed }) => ({ minHeight: 32, justifyContent: "center", opacity: pressed ? 0.6 : 1 })}>
+      <Text style={{ color: theme.colors.foreground, fontSize: 12, textDecorationLine: "underline" }}>{label}</Text>
+    </Pressable>
+  );
+}
+
+/**
+ * Session Guard, in brief: whether it is on, who is running it, and what is paused.
+ *
+ * The full controls live on its own settings screen; this is the switch and the
+ * answer to "is anything waiting for a reset", next to the plan limits that cause it.
+ */
+function SessionGuardSection({ theme, openSurface }: { theme: Theme; openSurface?: (id: string) => void }) {
+  const settings = useSettings(guardPreferences);
+  const readStatus = useRpc(guardStatus);
+  const toast = useToast();
+  const statusQuery = useQuery({ queryKey: ["smart-session", "guard"], queryFn: () => readStatus({}), refetchInterval: 15_000 });
+  const status = statusQuery.data;
+  if (settings.status !== "ready") return null;
+  const policy = settings.values;
+  const waiting = status === undefined ? [] : pausedSessions(status.pauses);
+
+  function toggle() {
+    if (settings.status !== "ready") return;
+    const next = !settings.values.enabled;
+    void settings.save({ ...settings.values, enabled: next }, settings.revision).then((saved) => {
+      if (!saved) return toast.error("Session Guard could not be changed. Try again.");
+      toast.show(next ? "Session Guard on" : "Session Guard off");
+      void statusQuery.refetch();
+    });
+  }
+
+  const detail = !policy.enabled
+    ? waiting.length > 0
+      ? `Off. ${waiting.length} paused session${waiting.length === 1 ? " is" : "s are"} still waiting; release ${waiting.length === 1 ? "it" : "them"} below or turn this back on.`
+      : `Off. Turn on to pause sessions at ${policy.thresholdPct}% of the provider's session window and continue them in the same conversation after it resets.`
+    : status?.governor === "deferred"
+      ? "On, but another plugin — most likely the standalone Session Guard — is already running it on this host, so nothing is paused from here. Uninstall that plugin to hand over."
+      : status?.governor === "error"
+        ? (status.error ?? "Session Guard could not start.")
+        : `On. ${policy.protectByDefault ? "Every session" : "Each session you opt in"} pauses at ${policy.thresholdPct}% of the session window${
+            policy.includeNativeSubagents ? ", native subagents included," : ""
+          } and ${policy.autoResume ? "continues by itself" : "waits for you"} after the reset.`;
+
+  return (
+    <Section theme={theme} title="Session Guard">
+      <Toggle theme={theme} on={policy.enabled} label="Session Guard" detail={detail} onPress={toggle} disabled={settings.saving} />
+      {waiting.map((pause) => {
+        const presentation = pausePresentation(pause, status!.policy);
+        return (
+          <View key={pause.id} style={{ paddingVertical: 6, gap: 2 }}>
+            <Text style={{ color: pause.phase === "attention" ? theme.colors.statusDanger : theme.colors.foreground }}>{presentation.title}</Text>
+            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{`${presentation.state} · ${presentation.resetLabel}`}</Text>
+          </View>
+        );
+      })}
+      {openSurface === undefined ? null : (
+        <View style={{ flexDirection: "row", gap: 16, flexWrap: "wrap", marginTop: 4 }}>
+          {status?.pauses.some(isPending) ? <Link theme={theme} label="Paused sessions" onPress={() => openSurface(GUARD_SURFACES.paused)} /> : null}
+          <Link theme={theme} label="Session Guard settings" onPress={() => openSurface(GUARD_SURFACES.settings)} />
+        </View>
+      )}
+    </Section>
+  );
+}
+
+export function SmartSessionSurface({ theme, layout, openSurface }: PluginSurfaceProps & { openSurface?: (id: string) => void }) {
   const budget = useRpc(budgetStatus);
   const context = useRpc(contextStatus);
   const spend = useRpc(spendSummary);
@@ -554,6 +627,8 @@ export function SmartSessionSurface({ theme, layout }: PluginSurfaceProps) {
           </Text>
         </Section>
       )}
+
+      <SessionGuardSection theme={theme} openSurface={openSurface} />
 
       {recorder === undefined ? null : (
         <Section theme={theme} title="Recorder">

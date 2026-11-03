@@ -1,3 +1,4 @@
+import { contributeGuard } from "./server/guard/index.ts";
 import { contributeSessionMcp } from "./server/session-mcp.ts";
 import { displayPreferences } from "./shared/display";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
@@ -42,6 +43,8 @@ import "./server/install-on-load.ts";
 export default function contribute(server: PluginServerContext) {
   const removeSessionMcp = contributeSessionMcp(server);
   server.registerSettings(displayPreferences);
+  // Pauses work at a provider's session limit; off until someone turns it on.
+  const removeGuard = contributeGuard(server);
   server.handle(budgetStatus, async () => {
     try {
       const since = Date.now() - 14 * 24 * 60 * 60 * 1000;
@@ -194,6 +197,7 @@ export default function contribute(server: PluginServerContext) {
   // Paseo waits for this cleanup before stopping the plugin subprocess.
   return async () => {
     removeSessionMcp();
+    await removeGuard();
     const teardowns = lifecycle.teardowns.splice(0);
     for (const teardown of teardowns) await teardown();
   };
