@@ -2,7 +2,7 @@ import { useRpc, useSettings, type PluginClientContext, type PluginScreenProps }
 import { Icon, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, type ReactNode } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Platform, ScrollView, Text, View } from "react-native";
 
 import { formatCompactTokens, formatDay, formatDuration, formatRelative, isInteresting } from "../shared/format";
 import {
@@ -349,7 +349,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
                 : `Recording since ${recorder.firstSampleAt ? formatDay(recorder.firstSampleAt) : "—"} · ${recorder.samplesHeld.toLocaleString()} readings in the last 14 days · newest ${formatRelative(recorder.newestAt, now)}${recorder.ageSeconds !== null && recorder.ageSeconds > 900 ? " — treat these numbers as a floor" : ""}`}
             </Text>
           </View>
-          <Text selectable numberOfLines={1} style={{ ...t.small, paddingLeft: 18, fontFamily: "monospace" }}>{recorder.dataDir}</Text>
+          <Text selectable numberOfLines={1} style={{ ...t.small, paddingLeft: 18, fontFamily: Platform.OS === "ios" ? "Menlo" : Platform.OS === "android" ? "monospace" : "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{recorder.dataDir}</Text>
         </View>}
       </View>
     </ScrollView>;

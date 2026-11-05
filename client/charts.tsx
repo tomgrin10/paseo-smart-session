@@ -308,12 +308,3 @@ export function RankedTotals({ theme, rows, total, compact }: { theme: Theme; ro
     ))}
   </View>;
 }
-
-/** A stat: value over label. Proportional figures at this size, per the dataviz rules. */
-export function Stat({ theme, value, label }: { theme: Theme; value: string; label: string }) {
-  const c = theme.colors;
-  return <View style={{ minWidth: 96, gap: 2 }}>
-    <Text style={{ color: c.foreground, fontSize: 20, lineHeight: 26, fontWeight: "600" }}>{value}</Text>
-    <Text style={{ color: c.foregroundMuted, fontSize: 11, lineHeight: 15 }}>{label}</Text>
-  </View>;
-}
