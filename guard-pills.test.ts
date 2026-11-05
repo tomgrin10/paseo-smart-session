@@ -28,7 +28,7 @@ test("agent observation, stable menu updates, opt-out, workspace moves, and tear
       return { ok: true };
     },
     openSettings() {},
-    openSurface(id: string) { surfaces.push(id); },
+    openScreen(input: { screenId: string }) { surfaces.push(input.screenId); },
     paseo: { observeEvents() {}, agents: {
       subscribe: () => () => {},
       list: async () => ({ subscription: { subscribe: (next: typeof observer) => { observer = next; return () => {}; }, release: async () => { releases++; } } }),
@@ -71,7 +71,7 @@ test("the pill is drawn only while this plugin governs, and for a waiting pause 
   const live = new Set<string>();
   const context = {
     rpc: async () => structuredClone(status),
-    openSurface() {},
+    openScreen() {},
     paseo: { agents: {
       subscribe: () => () => {},
       list: async () => ({ subscription: { subscribe: (next: typeof observer) => { observer = next; return () => {}; }, release: async () => {} } }),
@@ -104,7 +104,7 @@ test("while Session Guard is off the pills poll rarely, and a settings change re
   let reads = 0;
   const context = {
     rpc: async () => { reads++; return structuredClone(status); },
-    openSurface() {},
+    openScreen() {},
     paseo: { agents: { subscribe: () => () => {}, list: async () => ({ entries: [] }) } },
     addComposerPill: () => ({ update() {}, remove() {} }),
   } as unknown as PluginClientContext;
@@ -122,4 +122,13 @@ test("while Session Guard is off the pills poll rarely, and a settings change re
     t.mock.timers.tick(5000); await settle();
     assert.equal(reads, 3, "and once it is on, polling is brisk again");
   } finally { cleanup(); await agents.dispose(); }
+});
+
+test("a paused pill says the reset is due once its time has passed, never a clock in the past", () => {
+  const policy = PolicySchema.parse({ enabled: true });
+  const base = { id: "p", agentId: "a", provider: "claude", title: null, windowId: "five_hour", pausedAt: "2026-10-06T00:00:00Z", lastUserMessageAt: null, turnId: null, phase: "waiting", note: null, settledAt: null };
+  const past = PauseSchema.parse({ ...base, anchorResetsAt: new Date(Date.now() - 60_000).toISOString() });
+  assert.equal(pillPresentation(policy, true, past).label, "Paused · reset due");
+  const future = PauseSchema.parse({ ...base, anchorResetsAt: new Date(Date.now() + 3_600_000).toISOString() });
+  assert.match(pillPresentation(policy, true, future).label, /^Paused · \d/);
 });

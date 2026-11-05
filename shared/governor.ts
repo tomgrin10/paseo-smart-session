@@ -10,6 +10,7 @@
 
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { ThresholdsSchema } from "./smart-session.ts";
 
 export const CompactionStateSchema = z.enum(["pending", "sending", "sent", "failed", "cancelled"]);
 
@@ -93,6 +94,8 @@ export const EnrolmentStateSchema = z.object({
   enabled: z.boolean(),
   /** Only agents with a state file or an explicit answer. Anyone absent is off. */
   agents: z.array(AgentEnrolmentSchema),
+  /** The compact bands, so a pill can mark where its session will be asked. Optional for older daemons. */
+  thresholds: ThresholdsSchema.optional(),
 });
 export type EnrolmentState = z.infer<typeof EnrolmentStateSchema>;
 

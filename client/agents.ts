@@ -19,12 +19,17 @@ export interface DirectoryAgent {
   readonly workspaceId: string;
   /** Closed or archived: still listed, but no longer a session anyone is working in. */
   readonly closed: boolean;
+  /** Context occupancy as of the agent's last turn, from its snapshot; null until it has run one. */
+  readonly usedTokens: number | null;
+  readonly maxTokens: number | null;
 }
 
 export interface AgentDirectory {
   current(): ReadonlyMap<string, DirectoryAgent>;
   /** Called after every change; read `current()` for the new state. */
   subscribe(listener: () => void): () => void;
+  /** Bumped on every change, for `useSyncExternalStore`. */
+  version(): number;
   /** Releases the observation. Safe to call more than once. */
   dispose(): Promise<void>;
 }
@@ -35,6 +40,7 @@ interface ListedAgent {
   readonly workspaceId?: string | null;
   readonly status?: string;
   readonly archivedAt?: string | null;
+  readonly lastUsage?: { readonly contextWindowUsedTokens?: number; readonly contextWindowMaxTokens?: number } | null;
 }
 
 interface AgentUpdate {
@@ -56,11 +62,18 @@ interface AgentListing {
 
 function entryOf(agent: ListedAgent | undefined): [string, DirectoryAgent] | null {
   if (typeof agent?.id !== "string" || typeof agent.workspaceId !== "string" || agent.workspaceId === "") return null;
-  return [agent.id, { workspaceId: agent.workspaceId, closed: agent.status === "closed" || !!agent.archivedAt }];
+  const used = agent.lastUsage?.contextWindowUsedTokens;
+  const max = agent.lastUsage?.contextWindowMaxTokens;
+  return [agent.id, {
+    workspaceId: agent.workspaceId,
+    closed: agent.status === "closed" || !!agent.archivedAt,
+    usedTokens: typeof used === "number" && Number.isFinite(used) ? used : null,
+    maxTokens: typeof max === "number" && Number.isFinite(max) && max > 0 ? max : null,
+  }];
 }
 
 function same(a: DirectoryAgent | undefined, b: DirectoryAgent): boolean {
-  return a !== undefined && a.workspaceId === b.workspaceId && a.closed === b.closed;
+  return a !== undefined && a.workspaceId === b.workspaceId && a.closed === b.closed && a.usedTokens === b.usedTokens && a.maxTokens === b.maxTokens;
 }
 
 export function observeAgents(client: PluginClientContext): AgentDirectory {
@@ -71,13 +84,21 @@ export function observeAgents(client: PluginClientContext): AgentDirectory {
   let unsubscribeOwnedObservation: (() => void) | null = null;
   let releaseObservation: (() => Promise<void>) | null = null;
 
+  let version = 0;
   const notify = () => {
+    version += 1;
     for (const listener of [...listeners]) listener();
   };
 
   function upsert(agent: ListedAgent | undefined): boolean {
-    const entry = entryOf(agent);
-    if (entry === null || same(agents.get(entry[0]), entry[1])) return false;
+    let entry = entryOf(agent);
+    if (entry === null) return false;
+    // An update that carries no usage is not a reading of zero: keep the last one.
+    const known = agents.get(entry[0]);
+    if (entry[1].usedTokens === null && agent?.lastUsage == null && known !== undefined) {
+      entry = [entry[0], { ...entry[1], usedTokens: known.usedTokens, maxTokens: known.maxTokens }];
+    }
+    if (same(known, entry[1])) return false;
     agents.set(entry[0], entry[1]);
     return true;
   }
@@ -155,6 +176,7 @@ export function observeAgents(client: PluginClientContext): AgentDirectory {
 
   return {
     current: () => agents,
+    version: () => version,
     subscribe(listener) {
       listeners.add(listener);
       return () => {

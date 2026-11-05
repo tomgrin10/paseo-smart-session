@@ -9,7 +9,8 @@
  */
 import type { PluginButtonIcon, PluginClientContext } from "@getpaseo/plugin/client";
 import type { AgentDirectory } from "../agents.ts";
-import { GUARD_SURFACES } from "./surfaces.ts";
+import { GUARD_SCREENS, GUARD_SETTINGS } from "./surfaces.ts";
+import type { Live } from "../live.ts";
 import { cancelResumeRpc, setProtectionRpc, statusRpc } from "../../shared/guard/contracts.ts";
 import { isPending, protects, type Pause, type Policy } from "../../shared/guard/policy.ts";
 
@@ -22,7 +23,8 @@ export function pillPresentation(policy: Policy, enabled: boolean, pause: Pause 
     const date = pause.anchorResetsAt ? new Date(pause.anchorResetsAt) : null;
     const time = date && Number.isFinite(date.getTime()) ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : null;
     const resetDetail = date ? ` Expected reset ${date.toLocaleString([], { dateStyle: "short", timeStyle: "short" })}.` : " Reset time is not available yet.";
-    return { label: time ? `Paused · ${time}` : "Paused · awaiting reset", title: (policy.autoResume
+    const due = date !== null && Number.isFinite(date.getTime()) && date.getTime() <= Date.now();
+    return { label: due ? "Paused · reset due" : time ? `Paused · ${time}` : "Paused · awaiting reset", title: (policy.autoResume
       ? `Paused at the session limit${pause.suspension ? ", including native subagents" : ""}. Automatic continuation is scheduled after reset.`
       : pause.suspension ? "Session and native subagents are paused. Release and turn off to continue manually; automatic continuation is off."
       : "Paused at the session limit. Continue manually after reset; automatic continuation is off.") + resetDetail, icon: "Pause" };
@@ -46,7 +48,7 @@ export function refreshGuardPills(): void {
   for (const wake of [...wakers]) wake();
 }
 
-export function contributePills(client: PluginClientContext, agents: AgentDirectory, icons: Readonly<Record<string, PluginButtonIcon>> = {}) {
+export function contributePills(client: PluginClientContext, agents: AgentDirectory, icons: Readonly<Record<string, PluginButtonIcon>> = {}, live?: Live) {
   let stopped = false;
   let running = false;
   let status: Awaited<ReturnType<typeof readStatus>> | null = null;
@@ -58,7 +60,15 @@ export function contributePills(client: PluginClientContext, agents: AgentDirect
     running = true;
     if (timer !== null) clearTimeout(timer);
     timer = null;
-    try { const next = await readStatus(); if (!stopped) { status = next; reconcile(); } }
+    try {
+      const next = await readStatus();
+      if (!stopped) {
+        status = next; reconcile();
+        // The sidebar row counts pauses only this process can act on.
+        const pending = next.governor === "active" ? next.pauses.filter(isPending) : [];
+        live?.setPaused({ waiting: pending.filter(p => p.phase !== "attention").length, attention: pending.filter(p => p.phase === "attention").length });
+      }
+    }
     catch { /* Keep the last confirmed presentation across a brief disconnect. */ }
     finally {
       running = false;
@@ -100,9 +110,9 @@ export function contributePills(client: PluginClientContext, agents: AgentDirect
             behavior: { kind: "action" as const, onPress: async () => { await client.rpc(cancelResumeRpc, { agentId }); await refresh(); } } },
           { kind: "separator" as const, id: "separator" },
           { kind: "item" as const, id: "paused-sessions", title: "All paused sessions", icon: "Pause",
-            behavior: { kind: "action" as const, onPress: () => { client.openSurface(GUARD_SURFACES.paused); } } },
+            behavior: { kind: "action" as const, onPress: () => { client.openScreen({ screenId: GUARD_SCREENS.paused }); } } },
           { kind: "item" as const, id: "settings", title: "Session Guard settings", icon: "Settings",
-            behavior: { kind: "action" as const, onPress: () => { client.openSurface(GUARD_SURFACES.settings); } } },
+            behavior: { kind: "action" as const, onPress: () => { client.openSettings(GUARD_SETTINGS); } } },
         ] },
       };
       if (handle) { handle.registration.update(button); handle.signature = signature; }

@@ -88,13 +88,31 @@
   `agents.list({ subscribe: {}, signal })` observation; bare `agents.subscribe()` only listens
   locally and does not discover new agents (`RESEARCH.md` §5.1). Do not open a second one for a new
   pill: `check-bundles.mjs` asserts the observation is released exactly once.
-- `client/pill.tsx` owns the Smart Compact pill. Pill state lives in a
-  module-level store because the pill, its press, the Command Center item and the surface toggle are
+- `client/pill.tsx` owns the Smart Compact pill and `client/pill-store.ts` its state. Pill state lives in
+  a module-level store because the pill, its popover, the Command Center item and the screens are
   all in the one client bundle; that is what makes a toggle redraw immediately instead of waiting out
   a poll. A registration bakes in the workspace and cannot be patched, so an agent that moves
-  workspace needs a new one, and one that closes must be dropped. The pill itself is one icon: state
-  in colour, words in a hover tooltip drawn above the track, since the track is one line high and a
-  pill that grew on hover would shove Paseo's own pills along.
+  workspace needs a new one, and one that closes must be dropped. The pill is a context ring (the
+  arc is the session's context, the tick its compact line, muted when the session is not enrolled)
+  with the percentage as its label; context comes from the shared agent directory's `lastUsage`, so
+  it moves every turn without a poll of its own. Pressing it opens `client/popover.tsx`: context,
+  compact line, task state, last compaction and the enrolment switch. Only update `label`/`title`
+  on change; a new `behavior` remounts an open popover.
+- Views are screens, not surfaces: `addScreen("overview")` titled **Smart Session** and
+  `addScreen("paused-sessions")` titled **Paused sessions**, opened with `openScreen`, plus the
+  `addSidebarHeaderItem` row (trailing the session window's use, or the paused count from the Session
+  Guard pills' poll through `client/live.ts`). Settings live in Settings → Plugins (`smart-compact`,
+  `session-guard`, `display`) and open with `openSettings`. `check-bundles.mjs` refuses `addSurface`,
+  whose header shows the raw id.
+- `shared/forecast.ts` turns a window reading into its moment: when it resets, when it runs out at
+  this pace (the last half hour for the session, the window's own average for a week), and the
+  per-hour pace that would last. Every view and `forecast.test.ts` read the same rules. Charts in
+  `client/charts.tsx` are drawn with Views (plugins get no SVG library; the host `Icon` draws the
+  square ring); magnitude is neutral ink, and amber/red mean a limit will bite or did.
+- `client/chat.tsx` turns Smart Session's own MCP calls (`mcp__smart-session__*`, `smart-session.*`)
+  into one-line rows and the messages it sends (the agent's `/compact`, the continuation, Session
+  Guard's continuation and Resume now) into cards. The parsing is in `shared/chat.ts` and tested in
+  `chat.test.ts`; change it with the strings in `shared/governor.ts`, `mcp.mjs` and the guard engine.
 - Command Center and sidebar icons go through Paseo's `resolvePluginIcon`, which **throws** on an
   unknown Lucide name and takes the whole contribution with it. Verify a name exists before using it.
 - User-facing copy calls this **Smart Compact**, never "auto-compact". Claude Code ships a feature by
@@ -240,7 +258,7 @@ whole output on a name outside it.
 
 ### 5. The UI
 
-The surface, the pill and the Command Center items can only be checked by looking. Say so plainly
+The screens, the pills, the chat rows and the Command Center items can only be checked by looking. Say so plainly
 when you have not looked, and never describe a screenshot you did not take.
 
 ## Create a release

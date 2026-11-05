@@ -7,6 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 
 import { dataDir } from "./store.ts";
@@ -128,6 +129,15 @@ function clamp(value: number, low: number, high: number): number {
 /** Where an agent's durable task state lives; mirrors the agent-facing tool. */
 export function statePathFor(agentId: string): string {
   return join(dataDir(), "state", `${agentId}.md`);
+}
+
+/** When an agent last wrote its task state, or null when it never has. */
+export function stateWrittenAt(agentId: string): string | null {
+  try {
+    return new Date(statSync(statePathFor(agentId)).mtimeMs).toISOString();
+  } catch {
+    return null;
+  }
 }
 
 

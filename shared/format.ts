@@ -21,6 +21,42 @@ export function formatRelative(iso: string | null, now = Date.now()): string {
   return ms >= now ? `in ${formatDuration(ms - now)}` : `${formatDuration(now - ms)} ago`;
 }
 
+let cachedHour12: boolean | null = null;
+
+/** Whether this device writes times as "8:50 PM" rather than "20:50". */
+export function uses12HourClock(): boolean {
+  if (cachedHour12 !== null) return cachedHour12;
+  try {
+    const parts = new Intl.DateTimeFormat(undefined, { hour: "numeric" }).formatToParts(new Date(2020, 0, 1, 13, 0, 0));
+    cachedHour12 = parts.some((part) => part.type === "dayPeriod");
+  } catch {
+    cachedHour12 = false;
+  }
+  return cachedHour12;
+}
+
+/** Local wall-clock time in the device's own convention: "20:50" or "8:50 PM". */
+export function formatClock(iso: string | null, hour12: boolean = uses12HourClock()): string {
+  if (iso === null) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  const hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  if (!hour12) return `${String(hours).padStart(2, "0")}:${minutes}`;
+  // A non-breaking space, so "AM" never wraps onto a line of its own.
+  return `${hours % 12 === 0 ? 12 : hours % 12}:${minutes}\u00a0${hours < 12 ? "AM" : "PM"}`;
+}
+
+/** "Oct 22" — a short local date. */
+export function formatDay(iso: string): string {
+  const date = new Date(iso);
+  try {
+    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+  } catch {
+    return iso.slice(5, 10);
+  }
+}
+
 /** "261.7k" — token counts, which are always large and never need units. */
 export function formatTokens(count: number): string {
   if (count < 1000) return String(count);
@@ -28,9 +64,19 @@ export function formatTokens(count: number): string {
   return `${(count / 1_000_000).toFixed(2)}M`;
 }
 
+/** "1M", "200k", "88.6M" — a window size or a total, without trailing zeros. */
+export function formatCompactTokens(count: number): string {
+  if (count >= 1_000_000) {
+    const value = count / 1_000_000;
+    return `${value >= 10 ? Math.round(value) : Number(value.toFixed(1))}M`;
+  }
+  if (count >= 1000) return `${Math.round(count / 1000)}k`;
+  return String(Math.round(count));
+}
+
 /** A window id turned into something worth putting on a row. */
 export function windowLabel(id: string): string {
-  if (id === "five_hour") return "Session (5h)";
+  if (id === "five_hour") return "Session · 5h";
   if (id === "seven_day") return "Week";
   const scoped = /^weekly_(model|surface):(.+)$/.exec(id);
   if (scoped !== null) {

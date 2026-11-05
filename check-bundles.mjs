@@ -18,11 +18,15 @@ async function runClientBundle(code) {
     zod,
     react: {},
     "react/jsx-runtime": {},
-    "react-native": {},
+    "react-native": { Platform: { OS: "web" }, Animated: {}, Easing: {}, AccessibilityInfo: {} },
     "@tanstack/react-query": {},
-    "@getpaseo/plugin/client/ui": { SettingsAction: () => null, SettingsCard: () => null, SettingsSection: () => null, SettingsSwitch: () => null },
+    "@getpaseo/plugin/client/ui": {
+      SettingsAction: () => null, SettingsCard: () => null, SettingsSection: () => null, SettingsSwitch: () => null,
+      SettingsInput: () => null, SettingsRow: () => null, SidebarRow: () => null, Icon: () => null, ScrollView: () => null,
+      useToast: () => ({ show() {}, error() {} }),
+    },
     "@getpaseo/plugin": contracts,
-    "@getpaseo/plugin/client": { useRpc: () => async () => ({}) },
+    "@getpaseo/plugin/client": { useRpc: () => async () => ({}), useSettings: () => ({ status: "loading" }) },
     "@getpaseo/plugin/client/react-native": {
       Icon: () => null,
       Modal: () => null,
@@ -118,6 +122,30 @@ async function runClientBundle(code) {
       summary.push(`addSurface(${id})`);
       return removable();
     },
+    addScreen(screen) {
+      requireText(screen?.id, "screen id");
+      if (typeof screen.title !== "function") requireText(screen?.title, `screen ${screen.id} title`);
+      requireFunction(screen?.Component, `screen ${screen.id}`);
+      surfaces.add(screen.id);
+      summary.push(`addScreen(${screen.id})`);
+      return removable();
+    },
+    addSidebarHeaderItem(item) {
+      requireText(item?.id, "sidebar id");
+      requireText(item?.title, "sidebar title");
+      requireFunction(item?.Component, "sidebar component");
+      summary.push(`addSidebarHeaderItem(${item.id})`);
+      return removable();
+    },
+    addTimelineTransformer(item) {
+      requireText(item?.id, "timeline transformer id");
+      requireText(item?.query?.itemType, "timeline transformer item type");
+      requireFunction(item?.transform, "timeline transformer");
+      summary.push(`addTimelineTransformer(${item.id})`);
+      return removable();
+    },
+    openScreen() {},
+    openSettings() {},
     addSidebarItem(item) {
       requireText(item?.id, "sidebar id");
       requireText(item?.title, "sidebar title");
@@ -163,14 +191,9 @@ async function runClientBundle(code) {
           } else if (entry.kind !== "separator") throw new Error(`unknown menu entry kind: ${entry.kind}`);
         }
       } else {
-        if (item?.button?.behavior?.kind !== "action") {
-          throw new Error("Composer pill must use an action descriptor");
-        }
-        requireFunction(item.button.behavior.onPress, "composer pill descriptor callback");
-        // Local 0.8.0-beta.1 still validates these. The hybrid must keep both.
-        requireText(item?.title, "legacy composer pill title");
-        requireFunction(item?.Component, "legacy composer pill component");
-        requireFunction(item?.onPress, "legacy composer pill callback");
+        // The context pill opens a popover: Paseo positions it, and makes it a sheet on phones.
+        if (item?.button?.behavior?.kind !== "popover") throw new Error("The Smart Compact pill must use a popover descriptor");
+        requireFunction(item.button.behavior.Content, "composer pill popover content");
       }
       summary.push(`addComposerPill(${item.id})`);
       let removed = false;
@@ -221,6 +244,15 @@ async function runClientBundle(code) {
   }
   if (!summary.includes("addTimelineRenderer(quota-pause)")) {
     throw new Error("Session Guard's timeline cards must have a renderer");
+  }
+  for (const id of ["overview", "paused-sessions"]) {
+    if (!summary.includes(`addScreen(${id})`)) throw new Error(`the ${id} view must be a titled screen, not a surface`);
+  }
+  if (summary.some((item) => item.startsWith("addSurface(") || item.startsWith("addSidebarItem("))) {
+    throw new Error("deprecated surfaces show their raw id as the header title; register screens instead");
+  }
+  for (const kind of ["smart-session-tool", "smart-session-prompt"]) {
+    if (!summary.includes(`addTimelineRenderer(${kind})`)) throw new Error(`chat rows of kind ${kind} need a renderer`);
   }
   agentObserver.snapshot({
     entries: [{ agent: { id: "agent-opus-5-5", workspaceId: "workspace-1" } }],

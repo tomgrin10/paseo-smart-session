@@ -206,3 +206,18 @@ export function projectedExhaustion(block: Block, now = new Date()): string | nu
   if (block.resetsAt !== null && at > Date.parse(block.resetsAt)) return null;
   return new Date(at).toISOString();
 }
+
+/**
+ * At most `max` points from a block, for a chart.
+ *
+ * Keeps the first and last points and every turn of the curve a chart can show; drops
+ * the rest evenly. The percentage only climbs within one window, so an even stride
+ * loses nothing a 96-column chart could draw.
+ */
+export function thinPoints(points: readonly BlockPoint[], max: number): BlockPoint[] {
+  if (points.length <= max || max < 2) return [...points];
+  const stride = (points.length - 1) / (max - 1);
+  const out: BlockPoint[] = [];
+  for (let i = 0; i < max; i++) out.push(points[Math.round(i * stride)]!);
+  return out;
+}
