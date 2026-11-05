@@ -333,7 +333,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
               <Text style={{ ...t.meta, flex: 1, color: c.statusWarning }}>{hooksProblem}</Text>
             </View> : null}
           </FeatureRow>
-          <FeatureRow theme={theme} first={false} icon="CirclePause" title="Pause at the limit" line={guardState.line} tone={guardState.tone} on={guardOn} compact={compact} disabled={guardSettings.saving} onToggle={toggleGuard}
+          <FeatureRow theme={theme} first={false} icon="CirclePause" title="Pause at the limit (Session Guard)" line={guardState.line} tone={guardState.tone} on={guardOn} compact={compact} disabled={guardSettings.saving} onToggle={toggleGuard}
             links={<TextLink theme={theme} compact={compact} label="Settings" onPress={() => client.openSettings(SMART_COMPACT_SETTINGS)} />}>
             {guard !== undefined && guardOn ? <Exceptions theme={theme} layout={layout} status={guard} titleOf={titleOf} /> : null}
           </FeatureRow>

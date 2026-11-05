@@ -180,7 +180,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
         const source = protection.override === null ? (protection.byDefault ? "Your default" : "Your default is off") : "Changed for this session";
         return <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <View style={{ flex: 1, gap: 2 }}>
-            <Text style={t.label}>Pause at the limit</Text>
+            <Text style={t.label}>Pause at the limit (Session Guard)</Text>
             <Text style={t.meta}>{meta}</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <Text style={t.small}>{source}</Text>
@@ -191,9 +191,9 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
         </View>;
       }
       // Not running here: one calm line, and where to change it.
-      const line = protection.kind === "off" ? "Pause at the limit is off on this host"
-        : protection.kind === "elsewhere" ? (protection.standalone ? "The standalone Session Guard plugin handles pausing at the limit here" : "Another process handles pausing at the limit here")
-          : (governorNotice(guard!)?.title ?? "Pause at the limit isn't running");
+      const line = protection.kind === "off" ? "Pause at the limit (Session Guard) is off on this host"
+        : protection.kind === "elsewhere" ? (protection.standalone ? "The standalone Session Guard plugin handles pausing at the limit here" : "Another process runs Session Guard here")
+          : `${governorNotice(guard!)?.title ?? "Pause at the limit isn't running"} (Session Guard)`;
       return <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Icon name="CirclePause" size={13} color={c.foregroundMuted} />
         <Text style={{ ...t.meta, flex: 1 }}>{line}</Text>

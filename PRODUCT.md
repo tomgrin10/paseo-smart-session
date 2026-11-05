@@ -22,7 +22,7 @@ context and budget, checkpoint, and ask to be compacted.
 
 Three parts in one plugin. A recorder keeps the only history of plan-usage percentages that exists
 (the provider and Paseo keep none). Smart Compact lets an agent compact itself at a safe stopping
-point, never forced, with its task state on disk first. Pause at the limit (formerly the Session Guard plugin) pauses sessions at the
+point, never forced, with its task state on disk first. Pause at the limit (Session Guard) pauses sessions at the
 provider's session limit and continues the same conversations after the reset. Success is a developer
 who never loses work to a full context or a spent window, and never has to babysit either.
 

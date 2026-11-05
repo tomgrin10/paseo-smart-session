@@ -111,9 +111,12 @@
   `client/live.ts`). Settings are one screen, id `smart-compact` (the old first page's id, so links
   to it still land), titled **Settings**; ids live in `client/screens.ts`. `check-bundles.mjs` refuses
   `addSurface`, whose header shows the raw id, and a second settings screen.
-- In the UI the feature is **Pause at the limit**, part of Smart Session; "Session Guard" names only
-  the standalone plugin (and the code and data paths). Command Center items all start with
-  "Smart Session" (`client/commands.ts`) and keep the old keywords.
+- The feature keeps its name: where it is named as a feature (the settings section and its main
+  switch, the overview's feature row, the popover's protection part, README and docs headings) it is
+  **Pause at the limit (Session Guard)**; tight spots (pill title, chat card, toasts) may say
+  "Pause at the limit", but the popover's protection part always shows "Session Guard". Don't call
+  it "formerly" anything. Command Center items all start with "Smart Session"
+  (`client/commands.ts`) and keep the old keywords ("guard", "session guard").
 - `shared/forecast.ts` turns a window reading into its moment: when it resets, when it runs out at
   this pace (the last half hour for the session, the window's own average for a week), and the
   per-hour pace that would last. Every view and `forecast.test.ts` read the same rules. Charts in

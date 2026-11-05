@@ -59,7 +59,7 @@ After compaction, the agent chooses to stop (`continue_after_compaction: false`)
 
 The forecast uses the last half hour for the session window and the window's own average for a week, so a burst of work doesn't read as "the week runs out tonight".
 
-## Pause at the limit
+## Pause at the limit (Session Guard)
 
 When the provider's session window is spent, Smart Session pauses running sessions instead of letting them fail, and continues the same conversations once the window resets, even with the app closed. It is **off by default**: turn it on from the overview or in settings. It was the standalone [Session Guard](https://github.com/tomgrin10/paseo-session-guard) plugin, and its per-session choices and waiting pauses carry over.
 
@@ -83,7 +83,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | | Enrol sessions automatically | On | Enrol a session once it writes task state |
 | When to ask | Windows of 400k or more | 30% | Where large windows are asked to compact |
 | | Smaller windows | 85% | Where smaller windows are asked to compact |
-| Pause at the limit | Pause at the limit | Off | Pause sessions at the session limit |
+| Pause at the limit (Session Guard) | Pause at the limit (Session Guard) | Off | Pause sessions at the session limit |
 | | Sessions | Every session | Or only the ones you turn on from their pill |
 | | Continue after the reset | On | Off, you continue each one by hand |
 | | Include native subagents | On | Freeze nested workers too (Linux) |
