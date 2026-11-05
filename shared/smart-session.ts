@@ -17,6 +17,18 @@ export const WindowStatusSchema = z.object({
   burnPctPerHour: z.number().nullable(),
   /** When this window hits 100% at that rate, if that happens before it resets. */
   projectedFullAt: z.string().nullable(),
+  /** The window's start, when its length is known. Optional: older daemons omit it. */
+  startAt: z.string().nullable().optional(),
+  /** The open window's recorded readings, oldest first, thinned to a chart's worth. */
+  history: z.array(z.object({ t: z.string(), pct: z.number() })).optional(),
+});
+
+/** A finished 5-hour window: how close it came to the limit. */
+export const PastWindowSchema = z.object({
+  startAt: z.string().nullable(),
+  resetsAt: z.string().nullable(),
+  firstSeenAt: z.string(),
+  peakPct: z.number(),
 });
 
 export const RecorderStatusSchema = z.object({
@@ -39,6 +51,8 @@ export const budgetStatus = defineRpc({
   input: z.object({}),
   output: z.object({
     windows: z.array(WindowStatusSchema),
+    /** Finished session windows from the last 14 days, oldest first. */
+    past: z.array(PastWindowSchema).optional(),
     recorder: RecorderStatusSchema,
     error: z.string().nullable(),
   }),
@@ -60,6 +74,8 @@ export const ContextStatusSchema = z.object({
   projectedFullAt: z.string().nullable(),
   /** The percentage at which this window is considered ready to compact. */
   compactAtPct: z.number(),
+  /** When this agent's task state file was last written; null when it has none. */
+  stateWrittenAt: z.string().nullable().optional(),
 });
 
 /** Context occupancy for one agent, or all of them. */

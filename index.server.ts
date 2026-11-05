@@ -7,7 +7,7 @@ import { readAgents, withDaemon } from "./server/daemon.ts";
 import { contextGrowth, projectFull } from "./server/growth.ts";
 import { install } from "./server/install.ts";
 import { summarizeSpend } from "./server/spend.ts";
-import { countEnrolled, listEnrolment, readSettings, setEnrolled, writeSettings } from "./server/settings.ts";
+import { countEnrolled, listEnrolment, readSettings, setEnrolled, stateWrittenAt, writeSettings } from "./server/settings.ts";
 import { dataDir, newestUsage, readUsage } from "./server/store.ts";
 import {
   budgetStatus,
@@ -25,7 +25,7 @@ import {
   requestCompaction,
   setEnrolment,
 } from "./shared/governor.ts";
-import { burnRatePctPerHour, projectedExhaustion, segmentBlocks } from "./shared/blocks.ts";
+import { burnRatePctPerHour, projectedExhaustion, segmentBlocks, thinPoints } from "./shared/blocks.ts";
 import { lifecycle, runTeardowns } from "./shared/lifecycle.ts";
 import { profileFor } from "./shared/thresholds.ts";
 import { effectiveAt } from "./shared/usage.ts";
@@ -52,8 +52,9 @@ export default function contribute(server: PluginServerContext) {
       const newest = await newestUsage();
 
       // One row per window, taken from its currently open block.
-      const open = new Map<string, ReturnType<typeof segmentBlocks>[number]>();
-      for (const block of segmentBlocks(samples)) open.set(block.windowId, block);
+      const blocks = segmentBlocks(samples);
+      const open = new Map<string, (typeof blocks)[number]>();
+      for (const block of blocks) open.set(block.windowId, block);
 
       const windows = [...open.values()]
         .map((block) => ({
@@ -62,12 +63,19 @@ export default function contribute(server: PluginServerContext) {
           resetsAt: block.resetsAt,
           burnPctPerHour: burnRatePctPerHour(block),
           projectedFullAt: projectedExhaustion(block),
+          startAt: block.startAt,
+          history: thinPoints(block.points, 96),
         }))
         .sort((a, b) => b.pct - a.pct);
+      const current = open.get("five_hour");
+      const past = blocks
+        .filter((block) => block.windowId === "five_hour" && block !== current)
+        .map((block) => ({ startAt: block.startAt, resetsAt: block.resetsAt, firstSeenAt: block.firstSeenAt, peakPct: block.peakPct }));
 
       const newestInstant = newest === null ? null : effectiveAt(newest);
       return {
         windows,
+        past,
         recorder: {
           newestAt: newestInstant,
           ageSeconds:
@@ -116,6 +124,7 @@ export default function contribute(server: PluginServerContext) {
           growthTokensPerHour: growth.get(row.id) ?? null,
           projectedFullAt: projectFull(row.usedTokens!, row.maxTokens!, growth.get(row.id) ?? null, thresholds),
           compactAtPct: profileFor(row.maxTokens!, thresholds).compact,
+          stateWrittenAt: stateWrittenAt(row.id),
         }))
         .sort((a, b) => b.usedPct - a.usedPct);
       return { agents, error: null };
@@ -186,7 +195,7 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(enrolmentState, async () => {
     const settings = await readSettings();
-    return { showPill: settings.showPill, enabled: settings.enabled, agents: await listEnrolment() };
+    return { showPill: settings.showPill, enabled: settings.enabled, agents: await listEnrolment(), thresholds: settings.thresholds };
   });
 
   server.handle(setEnrolment, async ({ agentId, enrolled }) => ({

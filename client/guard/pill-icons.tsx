@@ -3,7 +3,7 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 
 // Like Smart Compact, keep the host's pill chrome and color the icon slot.
 function GuardOnIcon({ theme, size }: PluginButtonIconProps) {
-  return <Icon name="ShieldCheck" size={size} color={theme.colors.statusSuccess} />;
+  return <Icon name="ShieldCheck" size={size} color={theme.colors.foreground} />;
 }
 
 function GuardOffIcon({ theme, size }: PluginButtonIconProps) {

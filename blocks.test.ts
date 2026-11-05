@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { burnRatePctPerHour, projectedExhaustion, segmentBlocks } from "./shared/blocks.ts";
+import { burnRatePctPerHour, projectedExhaustion, segmentBlocks, thinPoints } from "./shared/blocks.ts";
 import type { UsageSample } from "./shared/usage.ts";
 
 function sample(at: string, pct: number, resetsAt: string | null): UsageSample {
@@ -119,4 +119,14 @@ test("a flat block has a rate but no exhaustion", () => {
   ]);
   assert.equal(burnRatePctPerHour(block!), 0);
   assert.equal(projectedExhaustion(block!, new Date("2026-09-05T10:00:00Z")), null);
+});
+
+test("thinPoints keeps the first and last reading and at most the asked number", () => {
+  const points = Array.from({ length: 500 }, (unused, i) => ({ t: new Date(Date.UTC(2026, 10, 4, 12, 0, i)).toISOString(), pct: i / 5 }));
+  const thin = thinPoints(points, 96);
+  assert.equal(thin.length, 96);
+  assert.deepEqual(thin[0], points[0]);
+  assert.deepEqual(thin[95], points[499]);
+  assert.ok(thin.every((point, i) => i === 0 || point.pct >= thin[i - 1]!.pct), "still in order");
+  assert.equal(thinPoints(points.slice(0, 10), 96).length, 10, "short series pass through");
 });

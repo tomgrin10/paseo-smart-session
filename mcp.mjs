@@ -454,7 +454,7 @@ const TOOLS = {
       const agentId = requireAgent();
       const settings = readSettings();
       if (!settings.enabled) {
-        return "Smart Compact is switched off for this Paseo install, so nothing would deliver this request. Compact by hand if you need to, or ask the user to turn Smart Compact on in the Smart Session surface.";
+        return "Smart Compact is switched off for this Paseo install, so nothing would deliver this request. Compact by hand if you need to, or ask the user to turn Smart Compact on in the Smart Session screen or Settings → Plugins → Smart Session.";
       }
 
       // Default to this session's own state file: the whole point is that the
