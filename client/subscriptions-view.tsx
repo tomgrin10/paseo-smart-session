@@ -4,7 +4,7 @@ import { Text, View } from "react-native";
 import { formatDuration } from "../shared/format";
 import { forecastWindow, formatMoment, paceLine } from "../shared/forecast";
 import {
-  familyName, poolHeadline, sessionWindow, subscriptionState, weeklyWindow,
+  accountOutlook, familyName, limitedWindow, poolHeadline, sessionWindow, subscriptionState, weeklyWindow,
   type LaneKind, type PoolForecast, type Subscription, type SubscriptionWindow,
 } from "../shared/subscriptions";
 import { Meter, ink } from "./charts";
@@ -46,16 +46,19 @@ function Runway({ theme, pool, accounts, now, compact }: { theme: Theme; pool: P
   for (const account of accounts) for (const run of pool.lanes[account.id] ?? []) if (run.from < end) kinds.add(run.kind);
   const nameWidth = compact ? 0 : 112;
   const summary = poolHeadline(pool, accounts, now);
+  const dry = pool.runsOutAt !== null && pool.runsOutAt > now && pool.runsOutAt < end ? pool.runsOutAt : null;
+  const near = (ms: number, width: number) => dry !== null && Math.abs(ms - dry) / span < width;
 
   return <View accessible accessibilityRole="image" accessibilityLabel={`${summary.title}. ${summary.detail}`} style={{ gap: 6 }}>
     {accounts.map((account) => <View key={account.id} style={{ flexDirection: compact ? "column" : "row", alignItems: compact ? "stretch" : "center", gap: compact ? 3 : 10 }}>
       <Text numberOfLines={1} style={{ ...t.small, width: compact ? undefined : nameWidth, color: c.foreground }}>{account.name}</Text>
       <View style={{ flex: compact ? undefined : 1, height: 10, borderRadius: 3, overflow: "hidden", backgroundColor: ink(c, 0.04) }}>
         {(pool.lanes[account.id] ?? []).filter((run) => run.from < end).map((run, i) => <View key={i} style={{
-          position: "absolute", top: 0, bottom: 0, left: at(Math.max(run.from, now)) as `${number}%`, width: width(run.from, run.to) as `${number}%`,
-          backgroundColor: laneFill(theme, run.kind),
-          ...(run.kind === "out" ? { borderTopWidth: 1, borderBottomWidth: 1, borderColor: withAlpha(c.border, 0.9) } : {}),
+          position: "absolute", left: at(Math.max(run.from, now)) as `${number}%`, width: width(run.from, run.to) as `${number}%`,
+          ...(run.kind === "out" ? { top: 4.5, bottom: 4.5, backgroundColor: c.border } : { top: 0, bottom: 0, backgroundColor: laneFill(theme, run.kind) }),
         }} />)}
+        {/* The moment the pool runs dry, across every lane. */}
+        {dry !== null ? <View style={{ position: "absolute", top: 0, bottom: 0, left: at(dry) as `${number}%`, width: 1, backgroundColor: c.foreground }} /> : null}
       </View>
     </View>)}
     {/* The clock under the lanes, aligned with them. */}
@@ -63,14 +66,16 @@ function Runway({ theme, pool, accounts, now, compact }: { theme: Theme; pool: P
       {compact ? null : <View style={{ width: nameWidth }} />}
       <View style={{ flex: 1, height: 14 }}>
         <Text style={{ ...t.small, fontSize: 10, lineHeight: 14, position: "absolute", left: 0 }}>Now</Text>
-        {ticks.map((h, i) => (Math.round(h / HOUR) % every === 0 && (h - now) / span > (compact ? 0.13 : 0.08) && (end - h) / span > 0.06)
+        {ticks.map((h, i) => (Math.round(h / HOUR) % every === 0 && (h - now) / span > (compact ? 0.13 : 0.08) && (end - h) / span > (compact ? 0.16 : 0.09) && !near(h, compact ? 0.18 : 0.1))
           ? <Text key={i} style={{ ...t.small, fontSize: 10, lineHeight: 14, position: "absolute", left: at(h) as `${number}%`, transform: [{ translateX: -30 }], width: 60, textAlign: "center" }}>{hourLabel(h, now)}</Text>
           : null)}
+        {dry !== null ? <Text style={{ ...t.small, fontSize: 10, lineHeight: 14, fontWeight: "600", color: c.foreground, position: "absolute", left: at(dry) as `${number}%`, transform: [{ translateX: -40 }], width: 80, textAlign: "center" }}>{`out ${formatMoment(new Date(dry).toISOString(), now)}`}</Text> : null}
+        <Text style={{ ...t.small, fontSize: 10, lineHeight: 14, position: "absolute", right: 0 }}>{near(end, compact ? 0.2 : 0.12) ? "" : formatMoment(new Date(end).toISOString(), now)}</Text>
       </View>
     </View>
     <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 14, rowGap: 4, paddingLeft: compact ? 0 : nameWidth + 10 }}>
       {(["active", "room", "limit", "out"] as LaneKind[]).filter((k) => kinds.has(k)).map((k) => <View key={k} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <View style={{ width: 14, height: 6, borderRadius: 2, backgroundColor: laneFill(theme, k), ...(k === "out" ? { borderWidth: 1, borderColor: c.border } : {}) }} />
+        <View style={{ width: 14, height: k === "out" ? 1 : 6, borderRadius: 2, backgroundColor: k === "out" ? c.border : laneFill(theme, k) }} />
         <Text style={t.small}>{LANE_WORDS[k]}</Text>
       </View>)}
     </View>
@@ -84,14 +89,15 @@ function hourLabel(ms: number, now: number): string {
 }
 
 /** One window of one account: "5h 42%", a thin meter, and its reset. */
-function MiniWindow({ theme, label, w, now, stale }: { theme: Theme; label: string; w: SubscriptionWindow | null; now: number; stale: boolean }) {
+function MiniWindow({ theme, label, w, now, stale, full = false }: { theme: Theme; label: string; w: SubscriptionWindow | null; now: number; stale: boolean; full?: boolean }) {
   const c = theme.colors;
   const t = text(c);
   if (w === null) return <View style={{ flex: 1, minWidth: 130, gap: 2 }}><Text style={t.meta}>{`${label} · not reported`}</Text></View>;
   const reset = w.resetsAt === null ? null : Date.parse(w.resetsAt);
   const rolled = reset !== null && reset <= now;
-  const f = forecastWindow({ ...w, pct: rolled ? 0 : w.pct, burnPctPerHour: stale ? null : w.burnPctPerHour }, now);
-  const pct = rolled ? null : Math.round(w.pct);
+  // A limit the CLI reported is the freshest word on its window: full until it resets.
+  const f = forecastWindow({ ...w, pct: rolled ? 0 : full ? Math.max(100, w.pct) : w.pct, burnPctPerHour: stale ? null : w.burnPctPerHour }, now);
+  const pct = rolled ? null : Math.round(full ? Math.max(100, w.pct) : w.pct);
   return <View style={{ flex: 1, minWidth: 130, gap: 1 }}>
     <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
       <Text style={{ ...t.meta, color: c.foreground }}>{label}</Text>
@@ -103,7 +109,7 @@ function MiniWindow({ theme, label, w, now, stale }: { theme: Theme; label: stri
   </View>;
 }
 
-function AccountRow({ theme, account, now, compact, first, alone }: { theme: Theme; account: Subscription; now: number; compact: boolean; first: boolean; alone: boolean }) {
+function AccountRow({ theme, account, pool, now, compact, first, alone }: { theme: Theme; account: Subscription; pool: PoolForecast; now: number; compact: boolean; first: boolean; alone: boolean }) {
   const c = theme.colors;
   const t = text(c);
   const state = subscriptionState(account, now);
@@ -111,14 +117,19 @@ function AccountRow({ theme, account, now, compact, first, alone }: { theme: The
   const s5 = sessionWindow(account);
   const week = weeklyWindow(account);
   const muted = state.kind === "aside" || state.kind === "signed-out";
-  // The account's own outlook, from its session window at its own pace.
+  // When it runs out comes from the pool's simulation, so the row, the lead and the
+  // popover say the same time; "on pace for" is its own pace when nothing moves onto it.
+  const outlook = state.kind === "room" ? accountOutlook(pool, account, now) : null;
   const f = s5 && !stale && !(s5.resetsAt && Date.parse(s5.resetsAt) <= now) ? forecastWindow(s5, now) : null;
+  const pace: { text: string; tone: "default" | "warning" | "danger" } | null = outlook?.kind === "runs-out"
+    ? { text: `Runs out ~${formatMoment(new Date(outlook.at).toISOString(), now)}`, tone: outlook.at - now <= 30 * 60_000 ? "danger" : "warning" }
+    : outlook?.kind === "lasts" && f && f.state === "ok" ? { text: paceLine(f, now), tone: "default" } : null;
   const facts = [
     account.agents > 0 ? `${account.agents} ${account.agents === 1 ? "session" : "sessions"} on it` : null,
-    f && state.kind === "room" && (f.state === "short" || f.state === "ok") ? paceLine(f, now) : null,
     stale && !muted ? `Reading ${formatDuration(state.staleMs!)} old` : null,
     account.credits ? (account.credits.unlimited ? "Unlimited credits" : account.credits.balance !== null ? `${Math.round(account.credits.balance).toLocaleString()} credits` : null) : null,
   ].filter(Boolean);
+  const limitedId = state.kind === "limit" ? limitedWindow(account, now)?.id ?? null : null;
 
   return <CardRow theme={theme} first={first} style={{ gap: 8, opacity: muted ? 0.62 : 1 }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -129,10 +140,14 @@ function AccountRow({ theme, account, now, compact, first, alone }: { theme: The
       {state.kind === "room" ? null : <Chip theme={theme} icon={state.kind === "limit" ? "OctagonAlert" : undefined} label={state.label} color={toneColor(c, state.tone)} />}
     </View>
     {muted ? null : <View style={{ flexDirection: compact ? "column" : "row", gap: compact ? 8 : 20, paddingLeft: 22 }}>
-      <MiniWindow theme={theme} label="5h" w={s5} now={now} stale={stale} />
-      <MiniWindow theme={theme} label="Week" w={week} now={now} stale={stale} />
+      <MiniWindow theme={theme} label="5h" w={s5} now={now} stale={stale} full={limitedId !== null && limitedId === s5?.id} />
+      <MiniWindow theme={theme} label="Week" w={week} now={now} stale={stale} full={limitedId !== null && limitedId === week?.id} />
     </View>}
-    {facts.length > 0 ? <Text style={{ ...t.meta, paddingLeft: 22, color: f?.state === "short" ? toneColor(c, f.tone) : c.foregroundMuted }}>{facts.join(" · ")}</Text> : null}
+    {facts.length > 0 || pace ? <Text style={{ ...t.meta, paddingLeft: 22 }}>
+      {facts.join(" · ")}{facts.length > 0 && pace ? " · " : ""}
+      {/* Only the clause that is state wears the state colour. */}
+      {pace ? <Text style={{ color: pace.tone === "default" ? c.foregroundMuted : toneColor(c, pace.tone), fontWeight: pace.tone === "default" ? "400" : "600" }}>{pace.text}</Text> : null}
+    </Text> : null}
   </CardRow>;
 }
 
@@ -165,9 +180,14 @@ export function SubscriptionsSection({ theme, compact, accounts, pools, now, aut
           </View>
           {mine.length > 1 ? <Runway theme={theme} pool={pool} accounts={mine} now={now} compact={compact} /> : null}
         </CardRow>
-        {mine.map((account) => <AccountRow key={account.id} theme={theme} account={account} now={now} compact={compact} first={false} alone={mine.length === 1} />)}
+        {mine.map((account) => <AccountRow key={account.id} theme={theme} account={account} pool={pool} now={now} compact={compact} first={false} alone={mine.length === 1} />)}
       </Card>;
     })}
+    {/* What the rows' meters mean, once. */}
+    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 14, rowGap: 4, paddingHorizontal: 2 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}><View style={{ width: 14, height: 5, borderRadius: 3, backgroundColor: ink(c, 0.82) }} /><Text style={t.small}>Used</Text></View>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}><View style={{ width: 14, height: 5, borderRadius: 3, backgroundColor: ink(c, 0.16) }} /><Text style={t.small}>By the reset at its own pace</Text></View>
+    </View>
   </View>;
 }
 

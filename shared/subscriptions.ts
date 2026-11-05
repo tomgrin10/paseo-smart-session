@@ -115,6 +115,28 @@ export interface SubscriptionState {
   readonly staleMs: number | null;
 }
 
+/** How close ZeroSub's recorded limit and a window's reset must be to be the same moment. */
+const SAME_MOMENT_MS = 20 * MINUTE;
+
+/** The window ZeroSub's recorded limit is about: the one resetting when the limit lifts. */
+export function limitedWindow(account: Subscription, now: number): SubscriptionWindow | null {
+  const limited = time(account.limitedUntil);
+  if (limited === null || limited <= now) return null;
+  return account.windows.find((w) => time(w.resetsAt) !== null && Math.abs(time(w.resetsAt)! - limited) <= SAME_MOMENT_MS) ?? null;
+}
+
+/**
+ * When an account at the limit is back: the reset of its full window. ZeroSub's own
+ * limit time stands only when no window explains it (a budget limit, or a later one).
+ */
+export function limitEnd(account: Subscription, now: number): number | null {
+  const limited = time(account.limitedUntil);
+  const full = fullUntil(account, now);
+  const window = limitedWindow(account, now);
+  const zs = limited !== null && limited > now ? (window ? time(window.resetsAt)! : limited) : 0;
+  return Math.max(zs, full ?? 0) || null;
+}
+
 /** When a full window lets go: the soonest future reset among the windows at 100%. */
 function fullUntil(account: Subscription, now: number): number | null | undefined {
   const full = account.windows.filter((w) => w.pct >= 99.5 && !(time(w.resetsAt) !== null && time(w.resetsAt)! <= now));
@@ -128,11 +150,11 @@ export function subscriptionState(account: Subscription, now: number, hour12?: b
   const staleMs = readingAge(account, now);
   const at = (ms: number) => formatMoment(new Date(ms).toISOString(), now, hour12);
   if (account.disabled) return { kind: "aside", label: "Set aside", tone: "muted", until: null, staleMs };
-  if (!account.signedIn) return { kind: "signed-out", label: "Signed out", tone: "warning", until: null, staleMs };
+  if (!account.signedIn) return { kind: "signed-out", label: "Signed out", tone: "muted", until: null, staleMs };
   const limited = time(account.limitedUntil);
   const full = fullUntil(account, now);
   if ((limited !== null && limited > now) || full !== undefined) {
-    const until = Math.max(limited !== null && limited > now ? limited : 0, full ?? 0) || null;
+    const until = limitEnd(account, now);
     return { kind: "limit", label: until === null ? "At the limit" : `At the limit until ${at(until)}`, tone: "danger", until, staleMs };
   }
   if (account.readAt === null || account.windows.length === 0) return { kind: "unknown", label: "No reading yet", tone: "muted", until: null, staleMs };
@@ -149,6 +171,8 @@ export function roomLeft(account: Subscription, now: number): number | null {
 // ---------------------------------------------------------------- the pool
 
 export interface Takeover {
+  /** Where the work was. */
+  readonly from: string;
   readonly accountId: string;
   readonly at: number;
 }
@@ -306,7 +330,7 @@ export function poolForecast(
         continue;
       }
       if (work.stalled) { if (backAt === null) { backAt = t; backAccount = next.a.id; } }
-      else if (runsOutAt === null && t > now) takeovers.push({ accountId: next.a.id, at: t });
+      else if (runsOutAt === null && t > now) takeovers.push({ from: work.on.a.id, accountId: next.a.id, at: t });
       work.on = next;
       work.stalled = false;
     }
@@ -376,13 +400,13 @@ export function poolHeadline(pool: PoolForecast, accounts: readonly Subscription
     const lead = pool.usable <= 1 ? `${fam} runs out around ${at(pool.runsOutAt)}` : `${fam} · ${usable} last until about ${at(pool.runsOutAt)}`;
     const back = pool.backAt !== null ? `first one back at ${at(pool.backAt)}` : null;
     const off = !pool.autoSwitch && pool.total > 1 ? "automatic switching is off in ZeroSub" : null;
-    return { title: lead, detail: join(...moves, off, back, `at ${rounded(pool.pace ?? 0)}%/h`, roughly), tone: soon ? "danger" : "warning" };
+    return { title: lead, detail: join(...moves, off, back, `${rounded(pool.pace ?? 0)}%/h combined`, roughly), tone: soon ? "danger" : "warning" };
   }
   if (pool.pace !== null) {
     const through = `past ${at(pool.horizon)}`;
     return {
-      title: pool.usable <= 1 ? `${fam} lasts at this pace` : `${fam} · ${usable} last at this pace`,
-      detail: join(moves.length > 0 ? moves.join(", ") : `No switch needed ${through}`, `${rounded(pool.pace)}%/h`, roughly),
+      title: pool.usable <= 1 ? `${fam} lasts ${through}` : `${fam} · ${usable} last ${through}`,
+      detail: join(moves.length > 0 ? moves.join(", ") : "No switch needed", `${rounded(pool.pace)}%/h combined`, roughly),
       tone: "default",
     };
   }
@@ -413,8 +437,27 @@ export function leadPool(pools: readonly PoolForecast[], now: number): PoolForec
 }
 
 /**
- * What happens when this session's account hits the limit, for the pill's popover and
- * `budget_status`: ZeroSub moves it, or nothing has room and the pause (when on) holds it.
+ * One account's outlook inside the pool: full now, runs out at a moment (with the
+ * pooled work that moves onto it counted), or lasts to its reset. Read from the
+ * simulation, so a row, the lead and the popover never disagree about a time.
+ */
+export type AccountOutlook = { kind: "full" } | { kind: "runs-out"; at: number } | { kind: "lasts"; reset: number | null } | { kind: "idle" };
+
+export function accountOutlook(pool: PoolForecast, account: Subscription, now: number): AccountOutlook {
+  const lane = pool.lanes[account.id] ?? [];
+  if (lane[0]?.kind === "limit") return { kind: "full" };
+  const reset = time(sessionWindow(account)?.resetsAt);
+  const until = reset !== null && reset > now ? reset : pool.horizon;
+  const active = lane.find((run) => run.kind === "active" && run.from < until);
+  if (!active) return { kind: "idle" };
+  const out = lane.find((run) => run.kind === "limit" && run.from > now && run.from <= until);
+  return out ? { kind: "runs-out", at: out.from } : { kind: "lasts", reset: reset !== null && reset > now ? reset : null };
+}
+
+/**
+ * What happens when this session's account hits the limit, for the pill's popover:
+ * when it runs out at this pace and where ZeroSub moves the work then, or that
+ * nothing has room and the pause (when on) holds it until its own reset.
  */
 export function atTheLimit(
   accounts: readonly Subscription[],
@@ -424,32 +467,44 @@ export function atTheLimit(
 ): { text: string; tone: Tone; target: string | null } {
   const own = accounts.find((a) => a.id === accountId);
   if (!own) return { text: "", tone: "default", target: null };
-  const others = accounts.filter((a) => a.family === own.family && a.id !== own.id);
+  const mine = accounts.filter((a) => a.family === own.family);
+  const others = mine.filter((a) => a.id !== own.id);
+  const pool = poolForecast(mine, own.family, now, { autoSwitch: options.autoSwitch });
+  const at = (ms: number) => formatMoment(new Date(ms).toISOString(), now, options.hour12);
+  const name = (id: string | null) => mine.find((a) => a.id === id)?.name ?? "another account";
+  const outlook = accountOutlook(pool, own, now);
+  const ownReset = (() => {
+    const state = subscriptionState(own, now, options.hour12);
+    if (state.kind === "limit") return state.until;
+    const reset = time(sessionWindow(own)?.resetsAt);
+    return reset !== null && reset > now ? reset : null;
+  })();
+  const pause = `Smart Session pauses it until ${ownReset === null ? "its reset" : `its ${at(ownReset)} reset`}`;
+  const lead = others.length === 0 ? "No other account" : !options.autoSwitch ? "Automatic switching is off" : "No other account has room";
+  // Where the work goes, and how long that account then lasts.
+  const lasting = (id: string) => {
+    const target = mine.find((a) => a.id === id)!;
+    const after = accountOutlook(pool, target, now);
+    return after.kind === "runs-out" ? `, which lasts until about ${at(after.at)}` : "";
+  };
+
+  if (outlook.kind === "full") {
+    const sims = [own, ...others].map((a, i) => simAccount(a, a.isDefault ? -1 : a.kind === "main" ? 0 : i + 1, now));
+    const target = options.autoSwitch ? mostRoom(sims, now, sims[0]) : null;
+    if (target) return { text: `At the limit · ZeroSub moves it to ${target.a.name}${lasting(target.a.id)}`, tone: "default", target: target.a.id };
+    const back = pool.backAt !== null && pool.backAccount !== own.id ? ` until ${at(pool.backAt)} (${name(pool.backAccount)})` : ownReset !== null ? ` until ${at(ownReset)}` : "";
+    return { text: options.protectedHere ? `${lead} · ${pause}` : `${lead} · it waits${back}`, tone: others.length > 0 ? "warning" : "default", target: null };
+  }
+  if (outlook.kind === "runs-out") {
+    const move = pool.takeovers.find((m) => m.from === own.id && Math.abs(m.at - outlook.at) <= 2 * MINUTE);
+    if (move) return { text: `Runs out ~${at(outlook.at)} · ZeroSub moves it to ${name(move.accountId)}${lasting(move.accountId)}`, tone: "warning", target: move.accountId };
+    const back = pool.backAt !== null ? ` until ${at(pool.backAt)}${pool.backAccount !== own.id ? ` (${name(pool.backAccount)})` : ""}` : "";
+    return { text: options.protectedHere ? `Runs out ~${at(outlook.at)} · ${lead.toLowerCase()}, so ${pause}` : `Runs out ~${at(outlook.at)} · ${lead.toLowerCase()}${back}`, tone: "warning", target: null };
+  }
+  if (outlook.kind === "lasts") return { text: outlook.reset === null ? "Lasts at this pace" : `Lasts to its ${at(outlook.reset)} reset at this pace`, tone: "default", target: null };
+  // Not in use: what would happen if it filled.
   const sims = [own, ...others].map((a, i) => simAccount(a, a.isDefault ? -1 : a.kind === "main" ? 0 : i + 1, now));
   const target = options.autoSwitch ? mostRoom(sims, now, sims[0]) : null;
-  if (target) {
-    const left = roomLeft(target.a, now);
-    return { text: `At the limit, ZeroSub moves it to ${target.a.name}${left === null ? "" : ` (${Math.round(left)}% left)`}`, tone: "default", target: target.a.id };
-  }
-  // Nowhere to go: when is the first account back (this one at its reset, or another), and which.
-  const backs = sims.map((s, i) => {
-    const st = subscriptionState(s.a, now, options.hour12);
-    if (st.kind === "limit") return { s, at: st.until };
-    if (st.kind !== "room") return { s, at: null };
-    // An account with room now: this one is back at its own reset; another one is already back.
-    const reset = time(sessionWindow(s.a)?.resetsAt);
-    return { s, at: i === 0 ? (reset !== null && reset > now ? reset : null) : now };
-  }).filter((b): b is { s: SimAccount; at: number } => b.at !== null).sort((x, y) => x.at - y.at);
-  const first = backs[0] ?? null;
-  const when = first === null ? "the reset" : formatMoment(new Date(first.at).toISOString(), now, options.hour12);
-  const which = first !== null && first.s !== sims[0] ? ` (${first.s.a.name})` : "";
-  const fullNow = subscriptionState(own, now, options.hour12).kind === "limit";
-  const lead = others.length === 0 ? "No other account" : !options.autoSwitch ? "Automatic switching is off" : "No other account has room";
-  // A pause continues at this account's own reset (ZeroSub may take it elsewhere sooner, but the pause waits for its own).
-  const own_ = backs.find((b) => b.s === sims[0]) ?? null;
-  const ownWhen = own_ === null ? "its reset" : `its ${formatMoment(new Date(own_.at).toISOString(), now, options.hour12)} reset`;
-  const text = options.protectedHere ? `${lead} · Smart Session pauses it until ${ownWhen}`
-    : fullNow ? `${lead} · it waits until ${when}${which}`
-      : `${lead} · at the limit it stops until ${when}${which}`;
-  return { text, tone: others.length > 0 ? "warning" : "default", target: null };
+  if (target) return { text: `If it fills, ZeroSub moves it to ${target.a.name}`, tone: "default", target: target.a.id };
+  return { text: options.protectedHere ? `If it fills: ${lead.toLowerCase()}, so ${pause}` : `If it fills: ${lead.toLowerCase()}`, tone: "default", target: null };
 }

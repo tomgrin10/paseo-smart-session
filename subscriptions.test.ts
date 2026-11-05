@@ -167,7 +167,7 @@ test("pool: lasting at this pace names the next account and keeps a normal tone"
   const pool = poolForecast(accounts, "claude", NOW, { autoSwitch: true });
   assert.equal(pool.runsOutAt, null);
   const head = poolHeadline(pool, accounts, NOW);
-  assert.equal(head.title, "Claude · 2 subscriptions last at this pace");
+  assert.match(head.title, /^Claude · 2 subscriptions last past /, "a time, even when the pool outlasts the forecast");
   assert.equal(head.tone, "default");
 });
 
@@ -178,17 +178,25 @@ test("lead: the family in trouble leads, Claude on a tie", () => {
   assert.equal(leadPool([claude, poolForecast([account("codex-main", { family: "codex" })], "codex", NOW, { autoSwitch: true })], NOW)?.family, "claude");
 });
 
-test("at the limit: ZeroSub's move, or the pause when nothing has room", () => {
-  const accounts = [account("claude-main", { p5: 60 }), account("work", { p5: 36, name: "Personal" }), account("full", { p5: 100 })];
-  assert.equal(atTheLimit(accounts, "claude-main", NOW, { autoSwitch: true, protectedHere: true }).text, "At the limit, ZeroSub moves it to Personal (64% left)");
-  const none = [account("claude-main", { p5: 60, r5: NOW + 2 * H }), account("full", { p5: 100, r5: NOW + 3 * H })];
-  assert.match(atTheLimit(none, "claude-main", NOW, { autoSwitch: true, protectedHere: true }).text, /^No other account has room · Smart Session pauses it until its .* reset$/);
-  assert.match(atTheLimit(none, "claude-main", NOW, { autoSwitch: true, protectedHere: false }).text, /at the limit it stops until \d\d:\d\d|at the limit it stops until \d+:\d\d/);
-  // Already full: it waits for whichever account is back first, and names it when it is another.
+test("at the limit: when this session runs out and where the work goes, from the same simulation", () => {
+  const opts = { autoSwitch: true, protectedHere: false };
+  // In use, runs out in an hour, Personal takes it.
+  const moving = [account("claude-main", { p5: 80, rate: 20, agents: 1 }), account("work", { p5: 36, name: "Personal" })];
+  const move = atTheLimit(moving, "claude-main", NOW, opts);
+  assert.match(move.text, /^Runs out ~.+ · ZeroSub moves it to Personal$/);
+  assert.equal(move.target, "work");
+  // Lasts to its reset.
+  assert.match(atTheLimit([account("claude-main", { p5: 20, rate: 5, agents: 1 }), account("work")], "claude-main", NOW, opts).text, /^Lasts to its .* reset at this pace$/);
+  // Runs out with nowhere to go: the pause waits for this account's own reset.
+  const none = [account("claude-main", { p5: 90, rate: 20, agents: 1, r5: NOW + 2 * H }), account("full", { p5: 100, r5: NOW + 3 * H })];
+  assert.match(atTheLimit(none, "claude-main", NOW, { autoSwitch: true, protectedHere: true }).text, /^Runs out ~.+ · no other account has room, so Smart Session pauses it until its .* reset$/);
+  // Already full: ZeroSub's move now, or a wait naming whichever account is back first.
+  assert.match(atTheLimit([account("claude-main", { p5: 100 }), account("work", { p5: 36, name: "Personal" })], "claude-main", NOW, opts).text, /^At the limit · ZeroSub moves it to Personal/);
   const both = [account("claude-main", { p5: 100, r5: NOW + 2 * H }), account("work", { p5: 100, r5: NOW + H, name: "Personal" })];
-  const waiting = atTheLimit(both, "claude-main", NOW, { autoSwitch: true, protectedHere: false }).text;
-  assert.match(waiting, /^No other account has room · it waits until .* \(Personal\)$/);
-  assert.match(atTheLimit(accounts, "claude-main", NOW, { autoSwitch: false, protectedHere: false }).text, /^Automatic switching is off/);
+  assert.match(atTheLimit(both, "claude-main", NOW, opts).text, /^No other account has room · it waits until .* \(Personal\)$/);
+  // Not in use.
+  assert.match(atTheLimit([account("claude-main"), account("work", { name: "Personal" })], "claude-main", NOW, opts).text, /^If it fills, ZeroSub moves it to Personal$/);
+  assert.match(atTheLimit([account("claude-main"), account("work")], "claude-main", NOW, { autoSwitch: false, protectedHere: false }).text, /^If it fills: automatic switching is off$/);
 });
 
 test("recorder: keeps each new ZeroSub reading once, keyed by account id, never an email", async () => {

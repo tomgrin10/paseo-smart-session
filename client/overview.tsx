@@ -39,11 +39,12 @@ function toneIcon(tone: Tone, state: WindowForecast["state"] | null): string {
 }
 
 /** A meter row for one plan window: label and percentage, meter, reset and pace. */
-function WindowRow({ theme, f, now, first, children }: { theme: Theme; f: WindowForecast; now: number; first: boolean; children?: ReactNode }) {
+function WindowRow({ theme, f, now, first, children, quiet = false }: { theme: Theme; f: WindowForecast; now: number; first: boolean; children?: ReactNode; quiet?: boolean }) {
   const c = theme.colors;
   const t = text(c);
-  const pace = paceLine(f, now);
-  const budget = f.id === "five_hour" ? budgetLine(f) : null;
+  // Quiet: the Subscriptions section already says when this window runs out.
+  const pace = quiet ? "" : paceLine(f, now);
+  const budget = f.id === "five_hour" && !quiet ? budgetLine(f) : null;
   return <CardRow theme={theme} first={first} style={{ gap: 6 }}>
     <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
       <Text style={{ ...t.label, flex: 1 }}>{f.label}</Text>
@@ -275,11 +276,11 @@ export function makeOverview(client: PluginClientContext, live: Live) {
 
         <View style={{ gap: 8 }}>
           {/* Under ZeroSub these are the CLI login's windows, with the recorder's full history. */}
-          <SectionHead theme={theme} title={multi ? "Plan limits · CLI login" : "Plan limits"} />
+          <SectionHead theme={theme} title={multi ? "CLI login · history" : "Plan limits"} />
           {budgetQuery.data === undefined ? <LoadingCard theme={theme} />
             : forecasts.length === 0 ? <Empty theme={theme} title="No reading yet" detail="Smart Session records Claude's plan usage every minute while Paseo runs. The first reading usually arrives within a few minutes of signing in to Claude on this host." />
               : <Reveal><Card theme={theme}>
-                {forecasts.map((f, i) => <WindowRow key={f.id} theme={theme} f={f} now={now} first={i === 0}>
+                {forecasts.map((f, i) => <WindowRow key={f.id} theme={theme} f={f} now={now} first={i === 0} quiet={multi && (f.id === "five_hour" || f.id === "seven_day")}>
                   {f.id === "five_hour" && session?.history && session.history.length > 0 ? <View style={{ gap: 14, paddingTop: 10 }}>
                     <WindowChart theme={theme} forecast={f} history={session.history} now={now} compact={compact} guardPct={guardPct} />
                     {budgetQuery.data?.past && budgetQuery.data.past.length > 0 ? <View style={{ gap: 2 }}>
