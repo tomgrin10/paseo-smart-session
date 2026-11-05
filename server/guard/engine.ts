@@ -166,6 +166,15 @@ export class Engine {
       this.quotaFailures.set(agentId, { at: new Date(this.now()).toISOString(), turnId });
     }
   }
+  /**
+   * The agent's finished turn ended on the CLI's limit notice (`shared/guard/limit-notice.ts`).
+   * Claude completes such a turn rather than failing it, so this is how a pause is recorded
+   * when the CLI reaches the limit before the guard's reading does. Only reported while
+   * ZeroSub is enabled, whose own detection this mirrors.
+   */
+  limitReached(agentId: string, turnId: string | null) {
+    this.quotaFailures.set(agentId, { at: new Date(this.now()).toISOString(), turnId });
+  }
   private async leftDaemon(suspension: NonNullable<Pause["suspension"]>) {
     return !!this.processes && ((this.processes.alive && !await this.processes.alive(suspension)) ||
       (this.processes.owned && !await this.processes.owned(suspension))) === true;
@@ -327,7 +336,7 @@ export class Engine {
     pause.phase = "cancelled"; pause.note = note; pause.settledAt = new Date(this.now()).toISOString();
   }
   /** A normally completed turn racing cancel must never become a continuation. */
-  async turnEnded(agentId: string, turnId: string | null, outcome: string) {
+  async turnEnded(agentId: string, turnId: string | null, outcome: string, endedOnLimit = false) {
     return this.exclusive(async () => {
       if (!["completed", "canceled"].includes(outcome)) return;
       const state = await this.store.read();
@@ -342,6 +351,12 @@ export class Engine {
         }
         if (outcome !== "completed") continue;
         if (turnId !== null && pause.turnId === turnId) {
+          if (endedOnLimit) {
+            // It completed on the limit notice, not with the work done: the same pause
+            // stands, now as the quota stop it is, rather than a release and a second pause.
+            if (!pause.wasQuotaFailure) { pause.wasQuotaFailure = true; changed = true; }
+            continue;
+          }
           await this.cancel(pause, "The interrupted turn completed before the pause."); changed = true;
         }
       }
@@ -397,6 +412,10 @@ export class Engine {
       this.accounts = accounts;
       const usageOf = (agentId: string, provider: string) => accounts?.usageFor(agentId, provider) ?? usage;
       const failsOver = (agentId: string, provider: string) => accounts?.failsOver(agentId, provider) ?? false;
+      // A pause can continue once its own account resets, or — with ZeroSub — once any
+      // account it can use has room, shown by a reading newer than the pause.
+      const ready = (pause: Pause) => resetReady(pause, usageOf(pause.agentId, pause.provider), policy, this.now()) ||
+        (!!accounts && accounts.roomSince(pause.agentId, pause.provider, timestamp(pause.pausedAt)!) !== null);
       const byId = new Map(agents.map(a => [a.id, a]));
       this.providers = new Map(agents.map(a => [a.id, a.provider]));
       const currentDaemon = await this.processes?.daemonIdentity?.();
@@ -465,7 +484,7 @@ export class Engine {
           if ((agent.activeTurn?.turnId ?? null) !== pause.turnId && !await nativeRunning(agent.id)) {
             await this.cancel(pause, "The suspended turn was stopped or changed outside Session Guard."); changed = true; continue;
           }
-          if (pause.demo || !policy.autoResume || this.now() < this.nextResumeAt || !resetReady(pause, usageOf(pause.agentId, pause.provider), policy, this.now())) continue;
+          if (pause.demo || !policy.autoResume || this.now() < this.nextResumeAt || !ready(pause)) continue;
           const latest = (await client.fetchAgent(pause.agentId))?.agent;
           if (!latest || latest.archivedAt || latest.status === "closed" || latest.provider !== pause.provider ||
             (latest.lastUserMessageAt ?? null) !== pause.lastUserMessageAt ||
@@ -488,8 +507,10 @@ export class Engine {
           await this.cancel(pause, "Work was continued outside Session Guard."); changed = true; continue;
         }
         const canContinue = (candidate: Agent) => candidate.status === "idle" || (pause.closedOnRestart && candidate.status === "closed") || (pause.wasQuotaFailure && candidate.status === "error");
+        // With ZeroSub, room on another account also continues it: the continuation meets the
+        // limit on this account, and ZeroSub fails it over there and carries it on.
         if (!canContinue(agent) || agent.pendingPermissions?.length || !policy.autoResume ||
-          this.now() < this.nextResumeAt || !resetReady(pause, usageOf(pause.agentId, pause.provider), policy, this.now())) continue;
+          this.now() < this.nextResumeAt || !ready(pause)) continue;
         // Re-read just before sending: a person may have continued while usage was fetched.
         const latest = (await client.fetchAgent(pause.agentId))?.agent;
         if (!latest || !canContinue(latest) || latest.archivedAt || latest.pendingPermissions?.length ||
@@ -529,6 +550,9 @@ export class Engine {
         const window = sessionWindow(provider, policy);
         if (!window || (usedPct(window) ?? -1) < policy.thresholdPct) continue;
         if (failsOver(agent.id, agent.provider)) continue;
+        // Past the limit notice it is ZeroSub that switches, by its own rule: leave it be
+        // while that rule has an account to move to.
+        if (quotaFailed && accounts?.switchesAtLimit(agent.id, agent.provider)) continue;
         const fetchedAt = timestamp(provider?.fetchedAt ?? own.fetchedAt);
         const windowEnd = timestamp(window.resetsAt);
         if (windowEnd !== null && windowEnd <= this.now() && (fetchedAt === null || fetchedAt <= windowEnd)) continue;

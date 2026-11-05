@@ -16,7 +16,7 @@
  *   pass, and gives the lock back once no pause is left waiting on it.
  */
 
-import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginHandlerContext, PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
 
 import {
   agentStatusRpc,
@@ -44,6 +44,18 @@ import { timelinePublisher } from "./timeline.ts";
 import { withRecordedUsage } from "./usage.ts";
 import { readZeroSub } from "./zerosub.ts";
 import { accountView } from "../../shared/guard/zerosub.ts";
+import { limitNotice, turnRows, type TurnRow } from "../../shared/guard/limit-notice.ts";
+
+/** How many timeline rows to read back for a finished turn's limit notice (as ZeroSub). */
+const NOTICE_ROWS = 40;
+
+/** Whether a finished turn ended on the CLI's limit notice, read from the agent's timeline tail. */
+async function readLimitNotice(context: PluginHookContext, agentId: string, provider: string, turnId: string): Promise<boolean> {
+  if (provider !== "claude" && provider !== "codex") return false;
+  const page = await context.paseo.agents.ref(agentId).timeline.refetch({ direction: "tail", limit: NOTICE_ROWS });
+  const entries = page.entries as unknown as readonly { item: TurnRow; turnId?: string }[];
+  return limitNotice(provider, turnRows(entries, turnId)) !== null;
+}
 
 /** The install id this plugin's own RPCs are reached through. */
 const PLUGIN_ID = "smart-session";
@@ -366,12 +378,24 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
   const removeTurnStarted = server.on("agent.turn_started", () => {
     if (governor !== "off") void refresh();
   });
-  const removeTurnEnded = server.on("agent.turn_ended", (event) => {
+  const removeTurnEnded = server.on("agent.turn_ended", (event, context) => {
     if (governor !== "active") return;
     // Never await a governor tick inside a lifecycle hook: cancelAgent itself causes
     // turn_ended, and awaiting both would deadlock.
-    if (!stopped) void engine.turnEnded(event.agent.id, event.turnId, event.outcome.kind).catch(() => undefined);
     if (event.outcome.kind === "failed") engine.quotaFailure(event.agent.id, event.outcome.error.message, event.turnId);
+    // Claude completes a turn at the limit with a notice instead of failing it. Under
+    // ZeroSub, when no account has room, that notice is all there is: read it so the
+    // agent is paused and continued after a reset, and so a pause racing it is kept
+    // rather than cancelled as finished work. Without ZeroSub nothing changes.
+    if (event.outcome.kind === "completed" && event.turnId && engine.accounts && !stopped) {
+      const turnId = event.turnId;
+      void readLimitNotice(context, event.agent.id, event.agent.provider, turnId).catch(() => false).then(async (found) => {
+        if (stopped) return;
+        if (found) engine.limitReached(event.agent.id, turnId);
+        await engine.turnEnded(event.agent.id, turnId, "completed", found).catch(() => undefined);
+        void refresh();
+      });
+    } else if (!stopped) void engine.turnEnded(event.agent.id, event.turnId, event.outcome.kind).catch(() => undefined);
     void refresh();
   });
 
