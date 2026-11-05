@@ -17,7 +17,7 @@ import { DailyBars, HourHeatmap, Meter, PastWindows, RankedTotals, Ring, WindowC
 import { Exceptions, PausedSection } from "./guard/paused";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
 import { hasSubscriptions, pools, subscribeSubscriptions, subscriptionsSnapshot } from "./subscriptions";
-import { familyName, leadPool, poolHeadline, poolTrailing } from "../shared/subscriptions";
+import { familyName, leadPool, poolHeadline, poolTrailing, subscriptionState } from "../shared/subscriptions";
 import { SubscriptionsSection } from "./subscriptions-view";
 import { Card, CardRow, Chip, IconButton, SectionHead, StatusGlyph, Switch, TextLink, errorText, text, useNow } from "./kit";
 import type { Live } from "./live";
@@ -39,7 +39,7 @@ function toneIcon(tone: Tone, state: WindowForecast["state"] | null): string {
 }
 
 /** A meter row for one plan window: label and percentage, meter, reset and pace. */
-function WindowRow({ theme, f, now, first, children, quiet = false }: { theme: Theme; f: WindowForecast; now: number; first: boolean; children?: ReactNode; quiet?: boolean }) {
+function WindowRow({ theme, f, now, first, children, quiet = false, note = null }: { theme: Theme; f: WindowForecast; now: number; first: boolean; children?: ReactNode; quiet?: boolean; note?: string | null }) {
   const c = theme.colors;
   const t = text(c);
   // Quiet: the Subscriptions section already says when this window runs out.
@@ -57,6 +57,7 @@ function WindowRow({ theme, f, now, first, children, quiet = false }: { theme: T
       {pace ? <Text style={{ ...t.meta, color: f.state === "short" || f.state === "full" ? toneColor(c, f.tone) : c.foregroundMuted, fontWeight: f.state === "short" ? "600" : "400" }}>{pace}</Text> : null}
       {budget ? <Text style={t.meta}>{budget}</Text> : null}
     </View>
+    {note ? <Text style={{ ...t.meta, color: c.statusDanger }}>{note}</Text> : null}
     {children}
   </CardRow>;
 }
@@ -145,6 +146,10 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const multi = hasSubscriptions(subs);
     const subPools = multi ? pools(subs, now) : [];
     const poolLead = leadPool(subPools.filter((p) => p.total > 1), now);
+    // The CLI's newer limit notice outranks the recorder's last reading; the history row says so.
+    const cliOut = multi ? subs.accounts.find((a) => a.id === "claude-main") : undefined;
+    const cliState = cliOut ? subscriptionState(cliOut, now) : null;
+    const cliOutNote = cliState?.kind === "limit" ? `ZeroSub reports this login ${cliState.label.charAt(0).toLowerCase()}${cliState.label.slice(1)}` : null;
     const poolHead = poolLead === null || !multi ? null : poolHeadline(poolLead, subs.accounts.filter((a) => a.family === poolLead.family), now);
     const focus = params?.focus === "paused" ? "paused" : null;
     const scroller = useRef<ScrollViewType>(null);
@@ -280,7 +285,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
           {budgetQuery.data === undefined ? <LoadingCard theme={theme} />
             : forecasts.length === 0 ? <Empty theme={theme} title="No reading yet" detail="Smart Session records Claude's plan usage every minute while Paseo runs. The first reading usually arrives within a few minutes of signing in to Claude on this host." />
               : <Reveal><Card theme={theme}>
-                {forecasts.map((f, i) => <WindowRow key={f.id} theme={theme} f={f} now={now} first={i === 0} quiet={multi && (f.id === "five_hour" || f.id === "seven_day")}>
+                {forecasts.map((f, i) => <WindowRow key={f.id} theme={theme} f={f} now={now} first={i === 0} quiet={multi && (f.id === "five_hour" || f.id === "seven_day")} note={f.id === "five_hour" ? cliOutNote : null}>
                   {f.id === "five_hour" && session?.history && session.history.length > 0 ? <View style={{ gap: 14, paddingTop: 10 }}>
                     <WindowChart theme={theme} forecast={f} history={session.history} now={now} compact={compact} guardPct={guardPct} />
                     {budgetQuery.data?.past && budgetQuery.data.past.length > 0 ? <View style={{ gap: 2 }}>

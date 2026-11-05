@@ -188,7 +188,7 @@ export function makeSettings(client: PluginClientContext) {
             </SettingsCard>
           </View>
             : <SettingsCard>
-              <SettingsSwitch label="Sidebar row" hint="Smart Session in the sidebar, with the session window's use, or how many sessions are paused."
+              <SettingsSwitch label="Sidebar row" hint="Smart Session in the sidebar, with the session window's use (with ZeroSub, how your subscriptions last), or how many sessions are paused."
                 value={display.values.showSidebar} disabled={display.saving} onValueChange={(showSidebar) => void display.save({ ...display.values, showSidebar }, display.revision)} />
               <SettingsSwitch label="Pill on every session" hint="The context ring above each message box. A paused session keeps its pill either way."
                 value={pillOn} disabled={saving || display.saving} onValueChange={(next) => void setPill(next)} />
