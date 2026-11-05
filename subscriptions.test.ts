@@ -54,7 +54,7 @@ test("pool: the work moves to the account with the most room, in ZeroSub's order
   const accounts = [
     account("claude-main", { p5: 80, rate: 20, agents: 2 }),
     account("work", { p5: 50 }),
-    account("personal", { p5: 10, createdAt: iso(NOW - H) }),
+    account("personal", { p5: 10, r5: NOW + 6 * H, createdAt: iso(NOW - H) }),
   ];
   const pool = poolForecast(accounts, "claude", NOW, { autoSwitch: true });
   assert.equal(pool.current, "claude-main");
@@ -270,4 +270,18 @@ test("runway lanes: each account's run of in use, room and the limit, without ga
     assert.equal(lane[lane.length - 1]!.to, NOW + 3 * H);
     for (let i = 1; i < lane.length; i++) assert.equal(lane[i]!.from, lane[i - 1]!.to);
   }
+});
+
+test("pool: work stays on its own account, so the takeover lands when that account's row says it runs out", () => {
+  const accounts = [
+    account("claude-main", { p5: 77, rate: 19, agents: 3 }),
+    account("personal", { p5: 34, rate: 1, agents: 1 }),
+    account("team", { p5: 8 }),
+  ];
+  const pool = poolForecast(accounts, "claude", NOW, { autoSwitch: true });
+  // 77 → 100 at 19%/h: 72.6 minutes. Personal's own trickle does not speed it up.
+  assert.equal(pool.takeovers[0]!.accountId, "team");
+  assert.ok(Math.abs(pool.takeovers[0]!.at - (NOW + 72.6 * 60_000)) <= 60_000, String((pool.takeovers[0]!.at - NOW) / 60_000));
+  assert.equal(pool.current, "claude-main");
+  assert.equal(pool.lanes.personal![0]!.kind, "active", "the other account's own work keeps running there");
 });

@@ -129,7 +129,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       const next = atTheLimit(subs.accounts, own.id, now, { autoSwitch: subs.autoSwitch, protectedHere: protection.kind === "on" && protection.protected });
       return { value, next, tone: state.kind === "limit" ? "danger" as const : null };
     })();
-    if (account) facts.unshift(["Subscription", account.value]);
+    if (account) facts.push(["Subscription", account.value]);
     const ringColor = head === null ? c.foregroundMuted : head.outlook.tone !== "default" ? toneFill(c, head.outlook.tone) : enrolled ? c.foreground : c.foregroundMuted;
     const part = { gap: 6, paddingTop: 10, borderTopWidth: 1, borderTopColor: c.border } as const;
 

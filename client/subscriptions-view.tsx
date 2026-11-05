@@ -64,7 +64,7 @@ function Runway({ theme, pool, accounts, now, compact }: { theme: Theme; pool: P
       <View style={{ flex: 1, height: 14 }}>
         <Text style={{ ...t.small, fontSize: 10, lineHeight: 14, position: "absolute", left: 0 }}>Now</Text>
         {ticks.map((h, i) => (Math.round(h / HOUR) % every === 0 && (h - now) / span > 0.08 && (end - h) / span > 0.06)
-          ? <Text key={i} style={{ ...t.small, fontSize: 10, lineHeight: 14, position: "absolute", left: at(h) as `${number}%`, transform: [{ translateX: -14 }], width: 28, textAlign: "center" }}>{formatMoment(new Date(h).toISOString(), now).replace(/:00(?= |$)/, "")}</Text>
+          ? <Text key={i} style={{ ...t.small, fontSize: 10, lineHeight: 14, position: "absolute", left: at(h) as `${number}%`, transform: [{ translateX: -30 }], width: 60, textAlign: "center" }}>{hourLabel(h, now)}</Text>
           : null)}
       </View>
     </View>
@@ -75,6 +75,12 @@ function Runway({ theme, pool, accounts, now, compact }: { theme: Theme; pool: P
       </View>)}
     </View>
   </View>;
+}
+
+/** "8 AM" or "20:00": an hour mark on the runway's clock, in the device's convention. */
+function hourLabel(ms: number, now: number): string {
+  const clock = formatMoment(new Date(ms).toISOString(), now);
+  return clock.replace(/:00(?=\s|$)/, "");
 }
 
 /** One window of one account: "5h 42%", a thin meter, and its reset. */
@@ -97,7 +103,7 @@ function MiniWindow({ theme, label, w, now, stale }: { theme: Theme; label: stri
   </View>;
 }
 
-function AccountRow({ theme, account, now, compact, first }: { theme: Theme; account: Subscription; now: number; compact: boolean; first: boolean }) {
+function AccountRow({ theme, account, now, compact, first, alone }: { theme: Theme; account: Subscription; now: number; compact: boolean; first: boolean; alone: boolean }) {
   const c = theme.colors;
   const t = text(c);
   const state = subscriptionState(account, now);
@@ -118,7 +124,7 @@ function AccountRow({ theme, account, now, compact, first }: { theme: Theme; acc
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
       <Icon name={account.kind === "main" ? "Terminal" : "UserRound"} size={14} color={c.foregroundMuted} />
       <Text numberOfLines={1} style={{ ...t.label, flexShrink: 1 }}>{account.name}</Text>
-      {account.isDefault ? <Chip theme={theme} label="Default" /> : null}
+      {account.isDefault && !alone ? <Chip theme={theme} label="Default" /> : null}
       <View style={{ flex: 1 }} />
       {state.kind === "room" ? null : <Chip theme={theme} icon={state.kind === "limit" ? "OctagonAlert" : undefined} label={state.label} color={toneColor(c, state.tone)} />}
     </View>
@@ -134,8 +140,10 @@ function AccountRow({ theme, account, now, compact, first }: { theme: Theme; acc
  * Every ZeroSub subscription, grouped by provider: the pool's runway and headline,
  * then one row per account. ZeroSub manages the accounts; this says when.
  */
-export function SubscriptionsSection({ theme, compact, accounts, pools, now, autoSwitch }: {
+export function SubscriptionsSection({ theme, compact, accounts, pools, now, autoSwitch, leadFamily }: {
   theme: Theme; compact: boolean; accounts: readonly Subscription[]; pools: readonly PoolForecast[]; now: number; autoSwitch: boolean;
+  /** The family the page's headline already speaks for; its card does not repeat it. */
+  leadFamily: string | null;
 }) {
   const c = theme.colors;
   const t = text(c);
@@ -153,11 +161,11 @@ export function SubscriptionsSection({ theme, compact, accounts, pools, now, aut
               <Text style={{ ...t.title }}>{familyName(pool.family)}</Text>
               <Text style={t.meta}>{`${pool.withRoom} of ${pool.total} with room`}</Text>
             </View>
-            {mine.length > 1 ? <Text style={{ ...t.meta, color: head.tone === "default" ? c.foregroundMuted : toneColor(c, head.tone) }}>{headLine(head, pool)}</Text> : null}
+            {mine.length > 1 && pool.family !== leadFamily ? <Text style={{ ...t.meta, color: head.tone === "default" ? c.foregroundMuted : toneColor(c, head.tone) }}>{headLine(head, pool)}</Text> : null}
           </View>
           {mine.length > 1 ? <Runway theme={theme} pool={pool} accounts={mine} now={now} compact={compact} /> : null}
         </CardRow>
-        {mine.map((account) => <AccountRow key={account.id} theme={theme} account={account} now={now} compact={compact} first={false} />)}
+        {mine.map((account) => <AccountRow key={account.id} theme={theme} account={account} now={now} compact={compact} first={false} alone={mine.length === 1} />)}
       </Card>;
     })}
   </View>;

@@ -271,7 +271,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
         {header}
         {error ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{error}</Text> : null}
         {pausedSection}
-        {multi ? <SubscriptionsSection theme={theme} compact={compact} accounts={subs.accounts} pools={subPools} now={now} autoSwitch={subs.autoSwitch} /> : null}
+        {multi ? <SubscriptionsSection theme={theme} compact={compact} accounts={subs.accounts} pools={subPools} now={now} autoSwitch={subs.autoSwitch} leadFamily={pauseLead === null && poolHead !== null ? poolLead?.family ?? null : null} /> : null}
 
         <View style={{ gap: 8 }}>
           {/* Under ZeroSub these are the CLI login's windows, with the recorder's full history. */}

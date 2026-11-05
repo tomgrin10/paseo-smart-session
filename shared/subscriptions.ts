@@ -203,6 +203,8 @@ function simAccount(a: Subscription, rank: number, now: number): SimAccount {
   let p5 = s?.pct ?? 0;
   // A window past its reset has rolled over; the next one starts at the next use.
   if (r5 !== null && r5 <= now) { p5 = 0; r5 = null; }
+  // A reading at 99.5% is the provider's "full" (as in forecast.ts).
+  if (p5 >= 99.5) p5 = 100;
   let wReset = time(w?.resetsAt);
   let weeklyPct = w?.pct ?? 0;
   let weeklyFullAt: number | null = null;
@@ -223,7 +225,7 @@ function simAccount(a: Subscription, rank: number, now: number): SimAccount {
 }
 
 const available = (s: SimAccount, t: number) =>
-  s.usable && !(s.limitedUntil !== null && t < s.limitedUntil) && s.p5 < 99.5 &&
+  s.usable && !(s.limitedUntil !== null && t < s.limitedUntil) && s.p5 < 100 &&
   !(s.weeklyFullAt !== null && t >= s.weeklyFullAt && (s.wReset === null || t < s.wReset));
 
 /** ZeroSub's pick: the least-used usable account; then the default, the CLI login, the oldest. */
@@ -236,12 +238,13 @@ function mostRoom(sims: readonly SimAccount[], t: number, exclude?: SimAccount):
 /**
  * How long one family's subscriptions last together at this pace.
  *
- * The pace is what the accounts in use burn now, in session-window points per hour,
- * and it is treated as one stream of work. It stays on its account until a window
- * there is full (or the week runs out at its own pace). Then it moves where ZeroSub
- * would put it, the usable account with the most room. Resets refill a window, and
- * a session window starts again at the next use. The same work is assumed to cost
- * the same share of any account's window; plans of different sizes make that rough.
+ * Each account in use burns at its own measured pace (session-window points per
+ * hour), and that work stays on it until a window there is full or the week runs
+ * out at its own pace. Then ZeroSub moves it to the usable account with the most
+ * room, where it adds to whatever already runs there. Resets refill a window, and a
+ * session window starts again at the next use. Moved work is assumed to cost the
+ * same share of the new account's window; plans of different sizes make that rough.
+ * "Runs out" is the first moment some work has nowhere to go.
  *
  * A reading older than ZeroSub's refresh adds no pace and is never extrapolated. Its
  * last numbers stand until its reset, and the forecast counts it as stale.
@@ -261,20 +264,14 @@ export function poolForecast(
   const stale = mine.filter((a) => readingAge(a, now) !== null).length;
   const withRoom = sims.filter((s) => available(s, now)).length;
 
-  // The pace: what fresh accounts burn now. The work sits on the busiest one.
-  const rates = sims.map((s) => {
+  // The work in use now: what each fresh account burns, as its own stream.
+  const streams = sims.flatMap((s) => {
     const rate = readingAge(s.a, now) === null ? sessionWindow(s.a)?.burnPctPerHour ?? null : null;
-    return { s, rate: rate !== null && rate >= IDLE_RATE ? rate : 0 };
-  });
-  const pace = rates.reduce((sum, r) => sum + r.rate, 0);
-  const busiest = [...rates].sort((x, y) => y.rate - x.rate || Number(y.s.a.agents > 0) - Number(x.s.a.agents > 0))[0];
+    return rate !== null && rate >= IDLE_RATE ? [{ on: s, rate, stalled: false }] : [];
+  }).sort((x, y) => y.rate - x.rate);
+  const pace = streams.reduce((sum, w) => sum + w.rate, 0);
   const base = { family, total: mine.length, withRoom, autoSwitch: options.autoSwitch, horizon, stale };
 
-  // Where the next work goes: the account in use, else the one ZeroSub would open.
-  let current: SimAccount | null = busiest && (busiest.rate > 0 || busiest.s.a.agents > 0) ? busiest.s : null;
-  if (current === null || !available(current, now)) current = options.autoSwitch || current === null ? mostRoom(sims, now) : current;
-
-  const start = current !== null && available(current, now) ? current.a.id : null;
   const takeovers: Takeover[] = [];
   let runsOutAt: number | null = null;
   let backAt: number | null = null;
@@ -294,30 +291,48 @@ export function poolForecast(
       if (s.r5 !== null && t >= s.r5) { s.p5 = 0; s.r5 = null; }
       if (s.wReset !== null && t >= s.wReset) { s.weeklyPct = 0; s.weeklyFullAt = null; s.wReset += WEEK; }
     }
-    if (current === null || !available(current, t)) {
-      // ZeroSub moves the work; with switching off it waits where it is. Dry, the first back picks it up.
-      const next = options.autoSwitch || current === null || runsOutAt !== null ? mostRoom(sims, t) : null;
-      if (next === null) {
-        if (runsOutAt === null) runsOutAt = t;
-      } else {
-        if (runsOutAt === null && current !== null && next !== current) takeovers.push({ accountId: next.a.id, at: t });
-        current = next;
+    // Each account's work stays on it until it is full; then ZeroSub moves it to the
+    // account with the most room. With nowhere to go it stops until one is back.
+    for (const work of streams) {
+      if (available(work.on, t)) {
+        if (work.stalled) { work.stalled = false; if (backAt === null) { backAt = t; backAccount = work.on.a.id; } }
+        continue;
       }
+      const next = options.autoSwitch ? mostRoom(sims, t) : null;
+      if (next === null) {
+        if (!work.stalled) { work.stalled = true; if (runsOutAt === null) runsOutAt = t; }
+        continue;
+      }
+      if (work.stalled) { if (backAt === null) { backAt = t; backAccount = next.a.id; } }
+      else if (runsOutAt === null && t > now) takeovers.push({ accountId: next.a.id, at: t });
+      work.on = next;
+      work.stalled = false;
     }
-    const working = current !== null && available(current, t) ? current : null;
-    // Dry, the first account back (whichever it is) picks the work up.
-    if (runsOutAt !== null && backAt === null && working !== null) { backAt = t; backAccount = working.a.id; }
-    for (const s of sims) mark(s, t, !s.usable ? "out" : !available(s, t) ? "limit" : s === working && pace > 0 ? "active" : "room");
-    if (working !== null && pace > 0) {
-      if (working.r5 === null) working.r5 = t + FIVE_HOURS;
-      working.p5 += (pace * step) / HOUR;
+    // Nothing in use: only the limits now and their resets.
+    if (streams.length === 0) {
+      const open = mostRoom(sims, t);
+      if (open === null && t === now) runsOutAt = now;
+      else if (open !== null && runsOutAt !== null && backAt === null) { backAt = t; backAccount = open.a.id; }
+    }
+    for (const s of sims) {
+      const busy = streams.some((w) => w.on === s && !w.stalled);
+      mark(s, t, !s.usable ? "out" : !available(s, t) ? "limit" : busy ? "active" : "room");
+    }
+    for (const work of streams) {
+      if (work.stalled) continue;
+      if (work.on.r5 === null) work.on.r5 = t + FIVE_HOURS;
+      work.on.p5 += (work.rate * step) / HOUR;
     }
   }
 
+  // The account carrying the most work now, else the one ZeroSub would open next.
+  const lead = streams.length > 0 ? lanes[streams[0]!.on.a.id] : null;
+  const first = Object.entries(lanes).find(([, lane]) => lane[0]?.kind === "active");
+  const opener = mostRoom(sims.map((s) => simAccount(s.a, s.rank, now)), now);
   return {
     ...base,
     pace: pace > 0 ? pace : null,
-    current: start,
+    current: lead === null ? opener?.a.id ?? null : first?.[0] ?? null,
     takeovers,
     runsOutAt,
     backAt,
