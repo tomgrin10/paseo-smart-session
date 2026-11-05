@@ -35,13 +35,15 @@ import { agentGuardSummary, callerProtection } from "../../shared/guard/presenta
 import { withDaemon } from "../daemon.ts";
 import { freshestUsage } from "../store.ts";
 import type { Connect, GuardClient } from "./client.ts";
-import { Engine } from "./engine.ts";
+import { Engine, type ReadAccounts } from "./engine.ts";
 import { WorkspaceLabels } from "./labels.ts";
 import { LinuxProcessControl, type ProcessControl } from "./processes.ts";
 import { standaloneEnabled } from "./standalone.ts";
 import { guardDataDir, LockHeldError, Store } from "./store.ts";
 import { timelinePublisher } from "./timeline.ts";
 import { withRecordedUsage } from "./usage.ts";
+import { readZeroSub } from "./zerosub.ts";
+import { accountView } from "../../shared/guard/zerosub.ts";
 
 /** The install id this plugin's own RPCs are reached through. */
 const PLUGIN_ID = "smart-session";
@@ -64,6 +66,7 @@ const OFF_MESSAGE = "Session Guard is off on this host. Turn it on in Smart Sess
 export interface GuardDependencies {
   connect?: Connect;
   processes?: ProcessControl;
+  readAccounts?: ReadAccounts;
 }
 
 export function contributeGuard(server: PluginServerContext, options: GuardDependencies = {}): () => Promise<void> {
@@ -114,7 +117,12 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
   const store = new Store(guardDataDir());
   const readUsage = async (client: GuardClient): Promise<Usage> =>
     withRecordedUsage(await client.listProviderUsage(), await freshestUsage().catch(() => null));
-  const engine = new Engine(store, readPolicy, connect, Date.now, options.processes ?? new LinuxProcessControl(), publish, readUsage);
+  // With ZeroSub enabled, agents are measured on their own accounts (`shared/guard/zerosub.ts`).
+  const readAccounts = options.readAccounts ?? (async (usage: Usage, policy: Policy) => {
+    const snapshot = await readZeroSub();
+    return snapshot ? accountView(snapshot, usage, policy, Date.now()) : null;
+  });
+  const engine = new Engine(store, readPolicy, connect, Date.now, options.processes ?? new LinuxProcessControl(), publish, readUsage, readAccounts);
   const labels = new WorkspaceLabels(store, (work) => engine.exclusive(work), connect, readPolicy);
 
   let governor: Governor = "off";
@@ -264,8 +272,10 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
   const readState = async (): Promise<State> => (governor === "active" ? engine.exclusive(() => store.read()) : store.read());
   const readPolicyOrDefaults = () => readPolicy().catch(() => PolicySchema.parse({}));
   const emptyState = (): State => ({ version: 1, overrides: {}, pauses: [] });
-  const providerRows = (policy: Policy) =>
-    (governor === "active" ? (engine.usage?.providers ?? []) : []).map((provider) => {
+  const providerRows = (policy: Policy, agentId?: string) =>
+    (governor === "active" ? (engine.usage?.providers ?? []) : []).map((listed) => {
+      // An agent sees its own account's numbers, which under ZeroSub may not be the CLI login's.
+      const provider = (agentId !== undefined && engine.accounts?.usageFor(agentId, listed.providerId).providers.find((p) => p.providerId === listed.providerId)) || listed;
       const window = sessionWindow(provider, policy);
       return { providerId: provider.providerId, usedPct: window ? usedPct(window) : null, resetsAt: window?.resetsAt ?? null };
     });
@@ -301,6 +311,8 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     const policy = await readPolicyOrDefaults();
     const state = await readState().catch(emptyState);
     const protection = callerProtection(governor === "active" && policy.enabled, policy.protectByDefault, state.overrides[agentId]);
+    const agentProvider = engine.providers.get(agentId);
+    const failsOver = governor === "active" && agentProvider !== undefined && (engine.accounts?.failsOver(agentId, agentProvider) ?? false);
     const pauses = state.pauses
       .filter((pause) => pause.agentId === agentId)
       .map((pause) => ({ id: pause.id, phase: pause.phase, provider: pause.provider, resetsAt: pause.anchorResetsAt }));
@@ -310,8 +322,9 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
       thresholdPct: policy.thresholdPct,
       autoResume: policy.autoResume,
       pauses,
-      providers: providerRows(policy),
-      summary: agentGuardSummary({ governor, protected: protection.protected, thresholdPct: policy.thresholdPct, autoResume: policy.autoResume, pauses }),
+      providers: providerRows(policy, agentId),
+      summary: agentGuardSummary({ governor, protected: protection.protected, thresholdPct: policy.thresholdPct, autoResume: policy.autoResume, pauses, failsOver }),
+      ...(failsOver ? { failsOver } : {}),
     };
   });
 

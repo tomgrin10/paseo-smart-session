@@ -1,4 +1,5 @@
 import { contributeGuard } from "./server/guard/index.ts";
+import { zerosubBudgetAccount } from "./server/guard/zerosub.ts";
 import { contributeSessionMcp } from "./server/session-mcp.ts";
 import { displayPreferences } from "./shared/display";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
@@ -45,7 +46,7 @@ export default function contribute(server: PluginServerContext) {
   server.registerSettings(displayPreferences);
   // Pauses work at a provider's session limit; off until someone turns it on.
   const removeGuard = contributeGuard(server);
-  server.handle(budgetStatus, async () => {
+  server.handle(budgetStatus, async ({ agentId }) => {
     try {
       const since = Date.now() - 14 * 24 * 60 * 60 * 1000;
       const samples = await readUsage({ sinceMs: since });
@@ -73,8 +74,11 @@ export default function contribute(server: PluginServerContext) {
         .map((block) => ({ startAt: block.startAt, resetsAt: block.resetsAt, firstSeenAt: block.firstSeenAt, peakPct: block.peakPct }));
 
       const newestInstant = newest === null ? null : effectiveAt(newest);
+      // Under ZeroSub the agent may run on another account than the one recorded.
+      const account = agentId === undefined ? null : await zerosubBudgetAccount(agentId).catch(() => null);
       return {
-        windows,
+        windows: account?.windows ?? windows,
+        ...(account ? { account: account.account } : {}),
         past,
         recorder: {
           newestAt: newestInstant,

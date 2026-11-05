@@ -41,6 +41,8 @@ export const agentStatusRpc = defineRpc({
     pauses: z.array(z.object({ id: z.string(), phase: PauseSchema.shape.phase, provider: z.string(), resetsAt: z.string().nullable() })),
     providers: z.array(ProviderSchema),
     summary: z.array(z.string()),
+    /** ZeroSub moves this session to another account with room at the limit, so Session Guard leaves it to it. */
+    failsOver: z.boolean().optional(),
   }),
 });
 export const setProtectionRpc = defineRpc({

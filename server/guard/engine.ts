@@ -9,6 +9,12 @@ import type { PublishTimeline } from "./timeline.ts";
  * passes one that also consults Smart Session's recorder (see `./usage.ts`).
  */
 export type ReadUsage = (client: GuardClient) => Promise<Usage>;
+/**
+ * Which account each agent runs on, when an account switcher (ZeroSub) is enabled;
+ * null otherwise. See `shared/guard/zerosub.ts`.
+ */
+export type ReadAccounts = (usage: Usage, policy: Policy) => Promise<AccountView | null>;
+import type { AccountView } from "../../shared/guard/zerosub.ts";
 import {
   isPending, protects, resetReady, sessionWindow, timestamp, usedPct,
   type Agent, type Pause, type Policy, type State, type Usage,
@@ -23,6 +29,10 @@ export class Engine {
   error: string | null = null;
   timelineError: string | null = null;
   usage: Usage | null = null;
+  /** The account view from the last pass, for the agent-facing status. */
+  accounts: AccountView | null = null;
+  /** Each agent's provider from the last pass. */
+  providers = new Map<string, string>();
   private store: Store;
   private policy: () => Promise<Policy>;
   private connect: Connect;
@@ -31,12 +41,14 @@ export class Engine {
   private publish?: PublishTimeline;
   private publishing: Promise<void> | null = null;
   private readUsage: ReadUsage;
+  private readAccounts: ReadAccounts;
   constructor(store: Store, policy: () => Promise<Policy>, connect: Connect, now: () => number = Date.now, processes?: ProcessControl, publish?: PublishTimeline,
-    readUsage: ReadUsage = client => client.listProviderUsage()) {
+    readUsage: ReadUsage = client => client.listProviderUsage(), readAccounts: ReadAccounts = async () => null) {
     this.store = store; this.policy = policy; this.connect = connect; this.now = now;
     this.processes = processes;
     this.publish = publish;
     this.readUsage = readUsage;
+    this.readAccounts = readAccounts;
   }
 
   private async save(state: State) {
@@ -378,7 +390,15 @@ export class Engine {
       const usage = await this.readUsage(client);
       this.usage = usage;
       this.checkedAt = new Date(this.now()).toISOString();
+      // With ZeroSub, each agent is measured on its own account, and an agent it can
+      // move to an account with room is left to it: pausing first would stop the CLI
+      // from reporting the limit ZeroSub fails over on. A failed read is "no ZeroSub".
+      const accounts = await this.readAccounts(usage, policy).catch(() => null);
+      this.accounts = accounts;
+      const usageOf = (agentId: string, provider: string) => accounts?.usageFor(agentId, provider) ?? usage;
+      const failsOver = (agentId: string, provider: string) => accounts?.failsOver(agentId, provider) ?? false;
       const byId = new Map(agents.map(a => [a.id, a]));
+      this.providers = new Map(agents.map(a => [a.id, a.provider]));
       const currentDaemon = await this.processes?.daemonIdentity?.();
       let daemonPid: number | null = null;
       const nativeRunning = async (id: string) => client.listProviderSubagents
@@ -417,6 +437,16 @@ export class Engine {
           await this.cancel(pause, "Session changed, was closed, or protection was turned off."); changed = true; continue;
         }
         if (pause.phase !== "waiting") continue;
+        if (!pause.demo && !pause.manualResume && accounts) {
+          if (pause.wasQuotaFailure && !pause.suspension && accounts.continuedElsewhere(pause.agentId)) {
+            // ZeroSub carried this Codex task on in another tab; continuing here too would run it twice.
+            await this.cancel(pause, "ZeroSub continued this task on another account, so Session Guard will not continue it here."); changed = true; continue;
+          }
+          if (pause.suspension && failsOver(pause.agentId, pause.provider)) {
+            // Let the turn reach the limit, so ZeroSub moves it to the account with room.
+            await this.cancel(pause, "Released for ZeroSub: another account has room, so it switches this session there at the limit."); changed = true; continue;
+          }
+        }
         if (pause.suspension) {
           if (!this.processes) throw new Error("Native worker protection is unavailable.");
           const workerEnded = await this.leftDaemon(pause.suspension);
@@ -435,7 +465,7 @@ export class Engine {
           if ((agent.activeTurn?.turnId ?? null) !== pause.turnId && !await nativeRunning(agent.id)) {
             await this.cancel(pause, "The suspended turn was stopped or changed outside Session Guard."); changed = true; continue;
           }
-          if (pause.demo || !policy.autoResume || this.now() < this.nextResumeAt || !resetReady(pause, usage, policy, this.now())) continue;
+          if (pause.demo || !policy.autoResume || this.now() < this.nextResumeAt || !resetReady(pause, usageOf(pause.agentId, pause.provider), policy, this.now())) continue;
           const latest = (await client.fetchAgent(pause.agentId))?.agent;
           if (!latest || latest.archivedAt || latest.status === "closed" || latest.provider !== pause.provider ||
             (latest.lastUserMessageAt ?? null) !== pause.lastUserMessageAt ||
@@ -459,7 +489,7 @@ export class Engine {
         }
         const canContinue = (candidate: Agent) => candidate.status === "idle" || (pause.closedOnRestart && candidate.status === "closed") || (pause.wasQuotaFailure && candidate.status === "error");
         if (!canContinue(agent) || agent.pendingPermissions?.length || !policy.autoResume ||
-          this.now() < this.nextResumeAt || !resetReady(pause, usage, policy, this.now())) continue;
+          this.now() < this.nextResumeAt || !resetReady(pause, usageOf(pause.agentId, pause.provider), policy, this.now())) continue;
         // Re-read just before sending: a person may have continued while usage was fetched.
         const latest = (await client.fetchAgent(pause.agentId))?.agent;
         if (!latest || !canContinue(latest) || latest.archivedAt || latest.pendingPermissions?.length ||
@@ -494,10 +524,12 @@ export class Engine {
           agent.labels?.internal === "true" || !protects(policy, state.overrides, agent.id) ||
           (policy.providerIds.length > 0 && !policy.providerIds.includes(agent.provider)) ||
           state.pauses.some(p => p.agentId === agent.id && isPending(p))) continue;
-        const provider = usage.providers.find(p => p.providerId === agent.provider);
+        const own = usageOf(agent.id, agent.provider);
+        const provider = own.providers.find(p => p.providerId === agent.provider);
         const window = sessionWindow(provider, policy);
         if (!window || (usedPct(window) ?? -1) < policy.thresholdPct) continue;
-        const fetchedAt = timestamp(provider?.fetchedAt ?? usage.fetchedAt);
+        if (failsOver(agent.id, agent.provider)) continue;
+        const fetchedAt = timestamp(provider?.fetchedAt ?? own.fetchedAt);
         const windowEnd = timestamp(window.resetsAt);
         if (windowEnd !== null && windowEnd <= this.now() && (fetchedAt === null || fetchedAt <= windowEnd)) continue;
         const hasBackground = nativeEnabled && agent.status !== "running" && await nativeRunning(agent.id);

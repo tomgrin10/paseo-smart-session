@@ -48,9 +48,24 @@ export const RecorderStatusSchema = z.object({
  */
 export const budgetStatus = defineRpc({
   name: "smart-session.budget",
-  input: z.object({}),
+  /** The asking agent, so the answer can describe the account it runs on. Optional: panels omit it. */
+  input: z.object({ agentId: z.string().min(1).optional() }),
   output: z.object({
     windows: z.array(WindowStatusSchema),
+    /**
+     * Which Claude account `windows` describe, when ZeroSub runs agents on several. Absent
+     * without ZeroSub, or without an agent: then it is always the CLI's own login.
+     */
+    account: z
+      .object({
+        kind: z.enum(["main", "managed"]),
+        label: z.string().nullable(),
+        otherAccountsWithRoom: z.number(),
+        autoSwitch: z.boolean(),
+        /** When ZeroSub took the reading `windows` come from; null when they are the recorder's. */
+        readAt: z.string().nullable(),
+      })
+      .optional(),
     /** Finished session windows from the last 14 days, oldest first. */
     past: z.array(PastWindowSchema).optional(),
     recorder: RecorderStatusSchema,
