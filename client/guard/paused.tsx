@@ -69,7 +69,7 @@ export function PausedSection({ theme, layout, host, navigation, status, shared:
     // The lead says when a shared reset lands and what happens then; a row adds only what differs.
     const facts = [after, providerName(pause.provider), presentation.coverage.toLowerCase()].filter(Boolean).join(" · ");
     const actions = owner !== null ? null : pause.phase === "waiting" ? <>
-      <Button theme={theme} small compact={compact} icon={compact ? undefined : PAUSE_ACTIONS.resume.icon} title={busy === `${pause.agentId}:resume` ? PAUSE_ACTIONS.resume.busy : PAUSE_ACTIONS.resume.label} disabled={busy !== null}
+      <Button theme={theme} small compact={compact} icon={PAUSE_ACTIONS.resume.icon} title={busy === `${pause.agentId}:resume` ? PAUSE_ACTIONS.resume.busy : PAUSE_ACTIONS.resume.label} disabled={busy !== null}
         accessibilityHint={PAUSE_ACTIONS.resume.hint} onPress={() => void act(pause, "resume")} />
       <Button theme={theme} small compact={compact} kind="ghost" title={busy === `${pause.agentId}:dismiss` ? PAUSE_ACTIONS.dismiss.busy : PAUSE_ACTIONS.dismiss.label} disabled={busy !== null}
         accessibilityHint={PAUSE_ACTIONS.dismiss.hint} onPress={() => void act(pause, "dismiss")} />
