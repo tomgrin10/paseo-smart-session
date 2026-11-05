@@ -253,3 +253,21 @@ test("recorder: keeps each new ZeroSub reading once, keyed by account id, never 
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test("runway lanes: each account's run of in use, room and the limit, without gaps", () => {
+  const accounts = [
+    account("claude-main", { p5: 90, r5: NOW + 4 * H, rate: 30, agents: 1 }),
+    account("work", { p5: 85, r5: NOW + 2 * H }),
+    account("aside", { disabled: true }),
+  ];
+  const pool = poolForecast(accounts, "claude", NOW, { autoSwitch: true, horizonMs: 3 * H });
+  const kinds = (id: string) => pool.lanes[id]!.map((s) => s.kind);
+  assert.deepEqual(kinds("claude-main").slice(0, 2), ["active", "limit"]);
+  assert.deepEqual(kinds("work").slice(0, 4), ["room", "active", "limit", "active"], "used, full, then back after its reset and picks the work up");
+  assert.deepEqual(kinds("aside"), ["out"]);
+  for (const lane of Object.values(pool.lanes)) {
+    assert.equal(lane[0]!.from, NOW);
+    assert.equal(lane[lane.length - 1]!.to, NOW + 3 * H);
+    for (let i = 1; i < lane.length; i++) assert.equal(lane[i]!.from, lane[i - 1]!.to);
+  }
+});

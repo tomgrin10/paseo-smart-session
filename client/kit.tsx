@@ -85,10 +85,10 @@ export function CardRow({ theme, onPress, accessibilityLabel, children, style, f
 }
 
 /** A count or status tag in its own hue at 12–16%. */
-export function Chip({ theme, label, color, icon }: { theme: Theme; label: string; color?: string; icon?: string }) {
+export function Chip({ theme, label, color, icon, accessibilityLabel }: { theme: Theme; label: string; color?: string; icon?: string; accessibilityLabel?: string }) {
   const c = theme.colors;
   const hue = color ?? c.foregroundMuted;
-  return <View style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 1, borderRadius: 999, backgroundColor: tint(hue, c), alignSelf: "center" }}>
+  return <View accessible={accessibilityLabel !== undefined} accessibilityLabel={accessibilityLabel} style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 1, borderRadius: 999, backgroundColor: tint(hue, c), alignSelf: "center" }}>
     {icon ? <Icon name={icon} size={11} color={hue} /> : null}
     <Text numberOfLines={1} style={{ color: hue, fontSize: 11, lineHeight: 16, fontWeight: "600", ...tabular }}>{label}</Text>
   </View>;

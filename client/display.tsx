@@ -30,8 +30,8 @@ export function contributeDisplay(client: PluginClientContext, live: Live) {
         active={currentScreen?.screenId === OVERVIEW_SCREEN || currentScreen?.screenId === "paused-sessions"}
         onPress={() => openScreen({ screenId: OVERVIEW_SCREEN })}
         trailing={trailing === null ? undefined : trailing.tone === "muted"
-          ? <Text accessibilityLabel={`Session window ${trailing.label} used`} numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 16, ...tabular }}>{trailing.label}</Text>
-          : <Chip theme={theme} icon={trailing.label.endsWith("paused") ? "Pause" : undefined} label={trailing.label} color={toneColor(c, trailing.tone)} />}
+          ? <Text accessibilityLabel={trailing.a11y} numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 16, ...tabular }}>{trailing.label}</Text>
+          : <Chip theme={theme} icon={trailing.label.endsWith("paused") ? "Pause" : undefined} label={trailing.label} color={toneColor(c, trailing.tone)} accessibilityLabel={trailing.a11y} />}
       />
     );
   }

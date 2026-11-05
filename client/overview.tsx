@@ -16,6 +16,8 @@ import { budgetStatus, contextStatus, getSettings, installStatus, setSettings, s
 import { DailyBars, HourHeatmap, Meter, PastWindows, RankedTotals, Ring, WindowChart, ink, toneFill } from "./charts";
 import { Exceptions, PausedSection } from "./guard/paused";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
+import { hasSubscriptions, pools, subscribeSubscriptions, subscriptionsSnapshot } from "./subscriptions";
+import { familyName, leadPool, poolHeadline, poolTrailing } from "../shared/subscriptions";
 import { Card, CardRow, Chip, IconButton, SectionHead, StatusGlyph, Switch, TextLink, errorText, text, useNow } from "./kit";
 import type { Live } from "./live";
 import { Reveal, Skeleton } from "./motion";
@@ -363,18 +365,29 @@ export function makeOverview(client: PluginClientContext, live: Live) {
   };
 }
 
-/** The sidebar row's right slot: what is paused, else the session window. */
-export function sidebarTrailing(live: Live, now: number): { label: string; tone: Tone | "muted" } | null {
+/** The sidebar row's right slot: what is paused, else the pool of subscriptions, else the session window. */
+export function sidebarTrailing(live: Live, now: number): { label: string; tone: Tone | "muted"; a11y: string } | null {
   const paused = live.paused();
-  if (paused.attention > 0) return { label: `${paused.attention + paused.waiting} paused`, tone: "danger" };
-  if (paused.waiting > 0) return { label: `${paused.waiting} paused`, tone: "warning" };
+  if (paused.attention > 0) return { label: `${paused.attention + paused.waiting} paused`, tone: "danger", a11y: `${paused.attention + paused.waiting} sessions paused` };
+  if (paused.waiting > 0) return { label: `${paused.waiting} paused`, tone: "warning", a11y: `${paused.waiting} sessions paused` };
+  // Under ZeroSub one login is not the story: the row speaks for the pool, and is
+  // amber or red only when the pool, not a single account, runs short.
+  const subs = live.subscriptions();
+  if (hasSubscriptions(subs)) {
+    const pool = leadPool(pools(subs, now), now);
+    if (pool !== null && pool.total > 1) {
+      const slot = poolTrailing(pool, now);
+      const fam = familyName(pool.family);
+      const a11y = slot.tone === "muted" ? `${fam}: ${pool.withRoom} of ${pool.total} subscriptions with room` : `${fam} subscriptions: ${slot.label}`;
+      return { ...slot, a11y };
+    }
+  }
   const windows = live.budget()?.windows ?? [];
   const session = windows.find((w) => w.id === "five_hour");
   if (session === undefined) return null;
   const f = forecastWindow(session, now);
   // Usage is a time: when the window runs out first, the row says when.
-  if (f.state === "short" && f.runsOutAt) return { label: `out ${formatMoment(f.runsOutAt, now)}`, tone: f.tone };
-  if (f.state === "full") return { label: "at limit", tone: "danger" };
-  return { label: `${Math.round(f.pct)}%`, tone: "muted" };
+  if (f.state === "short" && f.runsOutAt) return { label: `out ${formatMoment(f.runsOutAt, now)}`, tone: f.tone, a11y: `Session window runs out ${formatMoment(f.runsOutAt, now)}` };
+  if (f.state === "full") return { label: "at limit", tone: "danger", a11y: "Session window at the limit" };
+  return { label: `${Math.round(f.pct)}%`, tone: "muted", a11y: `Session window ${Math.round(f.pct)}% used` };
 }
-

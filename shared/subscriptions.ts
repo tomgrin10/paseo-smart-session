@@ -175,7 +175,12 @@ export interface PoolForecast {
   readonly autoSwitch: boolean;
   /** Some account's numbers are older than ZeroSub's refresh: the forecast is rough. */
   readonly stale: number;
+  /** Each account's state over the forecast, as runs: in use, room, at the limit, out. */
+  readonly lanes: Readonly<Record<string, readonly LaneSegment[]>>;
 }
+
+export type LaneKind = "active" | "room" | "limit" | "out";
+export interface LaneSegment { from: number; to: number; kind: LaneKind }
 
 interface SimAccount {
   readonly a: Subscription;
@@ -275,33 +280,38 @@ export function poolForecast(
   let backAt: number | null = null;
   let backAccount: string | null = null;
 
-  for (let t = now; t <= horizon; t += step) {
+  // Each account's lane over the forecast, for the runway chart.
+  const lanes: Record<string, LaneSegment[]> = Object.fromEntries(sims.map((s) => [s.a.id, []]));
+  const mark = (s: SimAccount, t: number, kind: LaneKind) => {
+    const lane = lanes[s.a.id]!;
+    const last = lane[lane.length - 1];
+    if (last && last.kind === kind && last.to === t) last.to = t + step;
+    else lane.push({ from: t, to: t + step, kind });
+  };
+
+  for (let t = now; t < horizon; t += step) {
     for (const s of sims) {
       if (s.r5 !== null && t >= s.r5) { s.p5 = 0; s.r5 = null; }
       if (s.wReset !== null && t >= s.wReset) { s.weeklyPct = 0; s.weeklyFullAt = null; s.wReset += WEEK; }
     }
-    if (runsOutAt !== null) {
-      // Dry: the first account back ends the search.
-      const back = mostRoom(sims, t);
-      if (back) { backAt = t; backAccount = back.a.id; break; }
-      continue;
-    }
     if (current === null || !available(current, t)) {
-      const next = options.autoSwitch || current === null ? mostRoom(sims, t) : null;
+      // ZeroSub moves the work; with switching off it waits where it is. Dry, the first back picks it up.
+      const next = options.autoSwitch || current === null || runsOutAt !== null ? mostRoom(sims, t) : null;
       if (next === null) {
-        runsOutAt = t;
-        if (pace === 0 && t > now) break;
-        const back = mostRoom(sims, t);
-        if (back) { backAt = t; backAccount = back.a.id; break; }
-        continue;
+        if (runsOutAt === null) runsOutAt = t;
+      } else {
+        if (runsOutAt === null && current !== null && next !== current) takeovers.push({ accountId: next.a.id, at: t });
+        current = next;
       }
-      if (current !== null && next !== current) takeovers.push({ accountId: next.a.id, at: t });
-      current = next;
     }
-    // Nothing in use: the state now is the whole answer.
-    if (pace === 0) break;
-    if (current.r5 === null) current.r5 = t + FIVE_HOURS;
-    current.p5 += (pace * step) / HOUR;
+    const working = current !== null && available(current, t) ? current : null;
+    // Dry, the first account back (whichever it is) picks the work up.
+    if (runsOutAt !== null && backAt === null && working !== null) { backAt = t; backAccount = working.a.id; }
+    for (const s of sims) mark(s, t, !s.usable ? "out" : !available(s, t) ? "limit" : s === working && pace > 0 ? "active" : "room");
+    if (working !== null && pace > 0) {
+      if (working.r5 === null) working.r5 = t + FIVE_HOURS;
+      working.p5 += (pace * step) / HOUR;
+    }
   }
 
   return {
@@ -312,6 +322,7 @@ export function poolForecast(
     runsOutAt,
     backAt,
     backAccount,
+    lanes,
   };
 }
 
