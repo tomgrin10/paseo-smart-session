@@ -255,6 +255,32 @@ function describeRelative(iso) {
 }
 
 /**
+ * Which account `budget_status` describes, when ZeroSub runs agents on several.
+ *
+ * Without ZeroSub the RPC sends no `account`, and nothing changes. A label is shown
+ * only when the person chose it; ZeroSub's generated labels come from the email.
+ */
+function accountLines(account) {
+  if (account === undefined || account === null) return { head: [], tail: [], fromRecorder: true };
+  const name = account.label === null ? "" : ` "${account.label}"`;
+  const head = [
+    account.kind === "main"
+      ? `Account: the CLI's own Claude login${name} (ZeroSub routes this session there).`
+      : `Account: a Claude account ZeroSub added${name}, not the CLI login. These numbers are ZeroSub's reading of it${
+          account.readAt === null ? " (none yet)" : `, taken ${describeRelative(account.readAt)}`
+        }; there is no pace history for it.`,
+  ];
+  const tail = [];
+  const others = account.otherAccountsWithRoom;
+  if (account.autoSwitch && others > 0) {
+    tail.push(
+      `ZeroSub has ${others} other Claude account${others === 1 ? "" : "s"} with room and moves this session to one when this account hits a limit, so a full window here is not a reason to stop early.`,
+    );
+  }
+  return { head, tail, fromRecorder: account.kind === "main" };
+}
+
+/**
  * Session Guard's word on this session, for `budget_status`.
  *
  * Read-only, and only for the session asking: the plugin resolves it from
@@ -321,13 +347,14 @@ const TOOLS = {
       "How much of the Claude plan's rolling 5-hour and weekly limits is already consumed, how fast, and when each window resets — and, inside Paseo, whether Session Guard will pause this session at the session limit and continue it after the reset. Call this before spawning several subagents, before a long autonomous run, or when deciding whether to use a more expensive model.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     async run() {
-      const result = await callPlugin("smart-session.budget", {});
+      const result = await callPlugin("smart-session.budget", AGENT_ID === null ? {} : { agentId: AGENT_ID });
       if (result.error) return `Could not read plan usage: ${result.error}`;
       const guard = await guardSummary();
+      const account = accountLines(result.account);
       const interesting = (result.windows ?? []).filter(
         (window) => window.id === "five_hour" || window.id === "seven_day" || window.pct > 0,
       );
-      if (interesting.length === 0) return ["No plan-usage reading recorded yet.", ...guard].join("\n");
+      if (interesting.length === 0) return [...account.head, "No plan-usage reading recorded yet.", ...account.tail, ...guard].join("\n");
 
       const lines = interesting.map((window) => {
         const name = window.id === "five_hour" ? "Session (5h)" : window.id === "seven_day" ? "Week" : window.id;
@@ -340,8 +367,10 @@ const TOOLS = {
         return `- ${parts.join(", ")}`;
       });
 
+      lines.unshift(...account.head);
+      lines.push(...account.tail);
       const recorder = result.recorder;
-      if (recorder?.ageSeconds !== null && recorder?.ageSeconds !== undefined && recorder.ageSeconds > 900) {
+      if (account.fromRecorder && recorder?.ageSeconds !== null && recorder?.ageSeconds !== undefined && recorder.ageSeconds > 900) {
         lines.push(
           `(Newest reading is ${Math.round(HOURS(recorder.ageSeconds * 1000) * 10) / 10}h old — treat these as a floor, not a current number.)`,
         );

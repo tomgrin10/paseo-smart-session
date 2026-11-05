@@ -75,6 +75,21 @@ A new user message, another running turn, closing/archiving/removing the agent, 
 
 If a reload or connection loss interrupts an unconfirmed stop/send, the pill reads **Check session**. Delivery acceptance may be ambiguous, so the plugin leaves that session for manual inspection instead of retrying a message that might already have arrived. Confirmed waiting work continues automatically.
 
+## With ZeroSub
+
+[ZeroSub](https://github.com/kapybara-org/zerosub) runs Claude and Codex agents on several subscription accounts. When an account hits a limit, ZeroSub moves the agent to another account and continues it. It switches only on the CLI's own limit notice, so an agent the guard interrupts or freezes first never switches. Paseo and the recorder also measure only the CLI's own login. When ZeroSub is enabled on the host, Session Guard reads ZeroSub's registry and usage readings from `$PASEO_HOME/zerosub/` and changes its behaviour as follows:
+
+- **Each agent is measured on its own account.**
+  - An agent on an account ZeroSub added is paused only when *that* account reaches the threshold.
+  - The CLI login keeps Paseo's and the recorder's reading.
+- **ZeroSub goes first.** The guard doesn't pause an agent while ZeroSub's automatic switching is on and another account of the same provider has room. Room means signed in, not disabled, no recorded limit, and a reading under 30 minutes old that is below the threshold.
+  - A session the guard already froze is released when such an account appears, so the CLI reaches the limit and ZeroSub can switch it.
+  - Once no account has room, the guard pauses and continues as before.
+- **A moved session continues sooner.** An interrupted session that ZeroSub moves to an account with room is continued as soon as that account's reading confirms the room. It doesn't wait for the old account's reset.
+- **Codex tasks aren't continued twice.** When ZeroSub carries a Codex task on in another tab, the old tab's waiting continuation is cancelled.
+
+The guard only reads account ids, flags, timestamps and percentages. It never writes ZeroSub's files and never opens an account's credential home. Without ZeroSub, or when its files can't be read, nothing changes.
+
 ## Daemon authentication
 
 For password-protected daemons, Smart Session reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`. It never logs or stores the password. Provider usage comes through Paseo; provider credentials are not read directly.
@@ -85,4 +100,4 @@ Workspace labels support text and color. Session Guard uses the short amber labe
 
 ## Agents
 
-Inside Paseo, the `budget_status` tool adds one line about the calling session: whether Session Guard will pause it at the limit and continue it afterwards, or whether it is paused now. It covers only the caller, never other sessions or continuation text, and it cannot turn protection off or resume a pause.
+Inside Paseo, the `budget_status` tool adds one line about the calling session: whether Session Guard will pause it at the limit and continue it afterwards, or whether it is paused now. It covers only the caller, never other sessions or continuation text, and it cannot turn protection off or resume a pause. Under ZeroSub, `budget_status` names the Claude account the session runs on. For an account ZeroSub added, it reports ZeroSub's reading of that account in place of the CLI login's history, and it says when ZeroSub has another account with room.

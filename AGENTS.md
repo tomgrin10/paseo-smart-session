@@ -179,6 +179,12 @@
 - Usage comes from Paseo's `provider.usage.list`, merged for Claude with the recorder's freshest
   accepted reading (`server/guard/usage.ts`). Only a reading with a provider `fetchedAt` may be
   merged: `resetReady` relies on it to prove a report is newer than the pause.
+- Both of those measure only the CLI's own login. When ZeroSub is enabled, `shared/guard/zerosub.ts`
+  measures each agent on its ZeroSub account and lets ZeroSub fail over first while another account
+  has room (`docs/session-guard.md`, "With ZeroSub"). ZeroSub only switches on the CLI's limit
+  notice, so a guard interrupt or SIGSTOP that comes first starves it. ZeroSub's files are read-only
+  and parsed defensively. Never copy an email or a generated (`autoLabel`) label out of them, and
+  never open an account home.
 - Its pill is drawn only while this process is the active governor, and while turning off only for a
   session that still has a pending pause.
 - Agents see it only through `budget_status` in `mcp.mjs`, which asks
