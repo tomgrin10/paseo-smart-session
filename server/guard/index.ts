@@ -382,19 +382,20 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     if (governor !== "active") return;
     // Never await a governor tick inside a lifecycle hook: cancelAgent itself causes
     // turn_ended, and awaiting both would deadlock.
-    if (!stopped) void engine.turnEnded(event.agent.id, event.turnId, event.outcome.kind).catch(() => undefined);
     if (event.outcome.kind === "failed") engine.quotaFailure(event.agent.id, event.outcome.error.message, event.turnId);
     // Claude completes a turn at the limit with a notice instead of failing it. Under
     // ZeroSub, when no account has room, that notice is all there is: read it so the
-    // agent is paused and continued after a reset. Without ZeroSub nothing changes.
+    // agent is paused and continued after a reset, and so a pause racing it is kept
+    // rather than cancelled as finished work. Without ZeroSub nothing changes.
     if (event.outcome.kind === "completed" && event.turnId && engine.accounts && !stopped) {
-      void readLimitNotice(context, event.agent.id, event.agent.provider, event.turnId).then((found) => {
-        if (found && !stopped) {
-          engine.limitReached(event.agent.id, event.turnId);
-          void refresh();
-        }
-      }).catch(() => undefined);
-    }
+      const turnId = event.turnId;
+      void readLimitNotice(context, event.agent.id, event.agent.provider, turnId).catch(() => false).then(async (found) => {
+        if (stopped) return;
+        if (found) engine.limitReached(event.agent.id, turnId);
+        await engine.turnEnded(event.agent.id, turnId, "completed", found).catch(() => undefined);
+        void refresh();
+      });
+    } else if (!stopped) void engine.turnEnded(event.agent.id, event.turnId, event.outcome.kind).catch(() => undefined);
     void refresh();
   });
 

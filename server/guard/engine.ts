@@ -336,7 +336,7 @@ export class Engine {
     pause.phase = "cancelled"; pause.note = note; pause.settledAt = new Date(this.now()).toISOString();
   }
   /** A normally completed turn racing cancel must never become a continuation. */
-  async turnEnded(agentId: string, turnId: string | null, outcome: string) {
+  async turnEnded(agentId: string, turnId: string | null, outcome: string, endedOnLimit = false) {
     return this.exclusive(async () => {
       if (!["completed", "canceled"].includes(outcome)) return;
       const state = await this.store.read();
@@ -351,6 +351,12 @@ export class Engine {
         }
         if (outcome !== "completed") continue;
         if (turnId !== null && pause.turnId === turnId) {
+          if (endedOnLimit) {
+            // It completed on the limit notice, not with the work done: the same pause
+            // stands, now as the quota stop it is, rather than a release and a second pause.
+            if (!pause.wasQuotaFailure) { pause.wasQuotaFailure = true; changed = true; }
+            continue;
+          }
           await this.cancel(pause, "The interrupted turn completed before the pause."); changed = true;
         }
       }

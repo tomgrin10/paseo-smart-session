@@ -356,6 +356,27 @@ test("(h) without ZeroSub nothing changes: a notice turn alone records no pause,
   assert.deepEqual(g.log, ["guard:interrupt"]);
 });
 
+test("an interrupt racing the CLI's notice keeps its one pause instead of releasing it and pausing again", async t => {
+  const f = await fixture(t);
+  f.zs.sessions.x = "claude-a";
+  bothFull(f.zs);
+  await f.engine.tick();
+  assert.deepEqual(f.log, ["guard:interrupt"]);
+  // The interrupted turn reports "completed" — it ended on the notice, not with the work done.
+  await f.engine.turnEnded("x", "t1", "completed", true);
+  f.engine.limitReached("x", "t1");
+  await f.engine.tick(); await f.engine.tick();
+  const pauses = await f.pauses();
+  assert.deepEqual(pauses.map(p => [p.phase, p.wasQuotaFailure]), [["waiting", true]], "one pause, still waiting");
+  // A turn that completed with the work done still cancels, as before.
+  const g = await fixture(t);
+  g.zs.sessions.x = "claude-a";
+  bothFull(g.zs);
+  await g.engine.tick();
+  await g.engine.turnEnded("x", "t1", "completed");
+  assert.equal((await g.pauses())[0]!.phase, "cancelled");
+});
+
 // --------------------------------------------------------------------------- frozen sessions
 
 test("a frozen session released when B gets room carries on through ZeroSub, with no continuation from the guard", async t => {
