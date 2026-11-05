@@ -225,7 +225,8 @@ export function makeOverview(client: PluginClientContext, live: Live) {
 
     // While something is paused here, that is the news; the plan forecast moves to the line below.
     const title = pauseLead !== null ? pauseLead.title : head?.title ?? null;
-    const detail = pauseLead !== null ? [head?.title, pauseLead.shared !== null ? `in ${formatDuration(pauseLead.shared - now)}` : null].filter(Boolean).join(" · ") : head?.detail ?? null;
+    const autoResume = guard?.policy.enabled === true && guard.policy.autoResume;
+    const detail = pauseLead !== null ? [head?.title, pauseLead.shared !== null ? `in ${formatDuration(pauseLead.shared - now)}` : null, autoResume ? "each continues in its own conversation" : "continue each by hand"].filter(Boolean).join(" · ") : head?.detail ?? null;
     const glyph = pauseLead !== null ? { icon: pauseLead.tone === "danger" ? "TriangleAlert" : "Pause", color: toneColor(c, pauseLead.tone) }
       : head ? { icon: toneIcon(head.tone, lead?.state ?? null), color: head.tone === "default" ? c.foregroundMuted : toneColor(c, head.tone) } : null;
     const header = <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
@@ -310,7 +311,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
               <Text style={{ ...t.meta, flex: 1, color: c.statusWarning }}>{hooksProblem}</Text>
             </View> : null}
           </FeatureRow>
-          <FeatureRow theme={theme} first={false} icon={guardOn ? "ShieldCheck" : "ShieldOff"} title="Pause at the limit" line={guardState.line} tone={guardState.tone} on={guardOn} compact={compact} disabled={guardSettings.saving} onToggle={toggleGuard}
+          <FeatureRow theme={theme} first={false} icon="CirclePause" title="Pause at the limit" line={guardState.line} tone={guardState.tone} on={guardOn} compact={compact} disabled={guardSettings.saving} onToggle={toggleGuard}
             links={<TextLink theme={theme} compact={compact} label="Settings" onPress={() => client.openSettings(SMART_COMPACT_SETTINGS)} />}>
             {guard !== undefined && guardOn ? <Exceptions theme={theme} layout={layout} status={guard} titleOf={titleOf} /> : null}
           </FeatureRow>

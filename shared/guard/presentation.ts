@@ -133,3 +133,13 @@ export function pausedLead(pending: readonly Pause[], autoResume: boolean, now: 
   if (next !== null) return { title: `${n(waiting.length, "session", "sessions")} paused · next ${autoResume ? "resumes" : "reset"} at ${clock(next)}${look}`, tone, shared, next };
   return { title: `${n(waiting.length, "session waits", "sessions wait")} for a fresh reading${look}`, tone, shared, next };
 }
+
+/**
+ * The one action set for a waiting pause, wherever it shows: the chat card, the
+ * pill's popover and the overview's list. Same words, same order, same hint.
+ */
+export const PAUSE_ACTIONS = {
+  resume: { label: "Resume now", busy: "Resuming…", icon: "Play", hint: "Continues before the reset and stops this session pausing at the limit. The provider may still refuse work until the reset." },
+  dismiss: { label: "Dismiss pause", busy: "Dismissing…", hint: "Lets the session go without sending a message and stops it pausing at the limit." },
+  note: "Resume now stops this session pausing at the limit · Dismiss sends nothing",
+} as const;

@@ -2,7 +2,7 @@ import { useRpc, useSettings, type PluginClientContext, type PluginSurfaceProps 
 import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSelect, SettingsSwitch, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, ScrollView, Text, TextInput, View } from "react-native";
 
 import { displayPreferences } from "../shared/display";
 import { formatCompactTokens } from "../shared/format";
@@ -15,7 +15,7 @@ import { getSettings, installStatus, setSettings } from "../shared/smart-session
 import { withCompactThreshold } from "../shared/thresholds";
 import { broadcastDisplay } from "./display";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
-import { errorText } from "./kit";
+import { Button, errorText } from "./kit";
 import { refreshPills } from "./pill-store";
 
 /** A whole number from 1 to 99, or null. */
@@ -217,14 +217,25 @@ export function makeSettings(client: PluginClientContext) {
               onChangeText={(value) => setTiming((t) => t && { ...t, draft: { ...t.draft, resetGraceSeconds: value } })} />
             <SettingsInput label="Between continuations (seconds)" hint="0–300, default 5, so paused sessions don't all start at once." initialValue={timing.draft.resumeSpacingSeconds} error={fieldError("resumeSpacingSeconds")} disabled={guard.saving}
               onChangeText={(value) => setTiming((t) => t && { ...t, draft: { ...t.draft, resumeSpacingSeconds: value } })} />
-            <SettingsInput label="Continuation message" hint="Sent once into the same conversation after the reset is confirmed." initialValue={timing.draft.continuation} error={fieldError("continuation")} disabled={guard.saving}
-              onChangeText={(value) => setTiming((t) => t && { ...t, draft: { ...t.draft, continuation: value } })} />
-            <SettingsInput label="Providers" hint="Comma separated. Empty means every provider that reports session usage." initialValue={timing.draft.providerIds} error={fieldError("providerIds")} disabled={guard.saving}
+            {/* A message is prose: it gets the full width and several lines, not a one-line field. */}
+            <View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 6 }}>
+              <Text style={{ color: c.foreground, fontSize: 14, lineHeight: 20 }}>Continuation message</Text>
+              <Text style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Sent once into the same conversation after the reset is confirmed.</Text>
+              <TextInput multiline accessibilityLabel="Continuation message" defaultValue={timing.draft.continuation} editable={!guard.saving}
+                onChangeText={(value) => setTiming((t) => t && { ...t, draft: { ...t.draft, continuation: value } })}
+                style={{ minHeight: 96, marginTop: 4, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: fieldError("continuation") ? c.statusDanger : c.border, backgroundColor: c.surface2, color: c.foreground, fontSize: 13, lineHeight: 19, textAlignVertical: "top" }} />
+              {fieldError("continuation") ? <Text style={{ color: c.statusDanger, fontSize: 12, lineHeight: 17 }}>{fieldError("continuation")}</Text> : null}
+            </View>
+            <SettingsInput label="Providers" hint="Comma separated, e.g. claude, codex. Empty means every provider that reports session usage." initialValue={timing.draft.providerIds} error={fieldError("providerIds")} disabled={guard.saving}
               onChangeText={(value) => setTiming((t) => t && { ...t, draft: { ...t.draft, providerIds: value } })} />
-            <SettingsInput label="Session windows" hint="Comma separated, in order of preference. Default: five_hour, session." initialValue={timing.draft.windowIds} error={fieldError("windowIds")} disabled={guard.saving}
+            <SettingsInput label="Session windows" hint="Which usage window counts as the session limit, first match wins: five_hour is Claude's 5-hour window, session is Codex's." initialValue={timing.draft.windowIds} error={fieldError("windowIds")} disabled={guard.saving}
               onChangeText={(value) => setTiming((t) => t && { ...t, draft: { ...t.draft, windowIds: value } })} />
-            <SettingsAction label="Apply the new timing" hint={timingTried && checked && Object.keys(checked.errors).length > 0 ? "Fix the fields above first" : undefined} actionLabel="Save" disabled={guard.saving} onPress={() => void saveTiming()} />
-            <SettingsAction label="Keep the saved timing" actionLabel="Discard" disabled={guard.saving} onPress={() => { setTiming(null); setTimingTried(false); }} />
+            <SettingsRow label={timingTried && checked && Object.keys(checked.errors).length > 0 ? "Fix the marked fields to save" : "Save the new timing?"}>
+              <View style={{ flexDirection: "row", gap: 6 }}>
+                <Button theme={theme} small kind="ghost" title="Discard" disabled={guard.saving} onPress={() => { setTiming(null); setTimingTried(false); }} />
+                <Button theme={theme} small title={guard.saving ? "Saving…" : "Save"} disabled={guard.saving} onPress={() => void saveTiming()} />
+              </View>
+            </SettingsRow>
           </>}
         </SettingsCard>
         {guard.status === "ready" && guard.saveError ? <Text accessibilityRole="alert" style={{ color: c.statusDanger }}>{guard.saveError}</Text> : null}

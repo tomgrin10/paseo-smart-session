@@ -7,8 +7,8 @@ import { useQuery } from "@tanstack/react-query";
 import { formatClock, formatCompactTokens, formatDuration, formatRelative } from "../shared/format";
 import { contextOutlook } from "../shared/forecast";
 import { listCompactions, setEnrolment, type CompactionRequest } from "../shared/governor";
-import { cancelResumeRpc, setProtectionRpc, statusRpc } from "../shared/guard/contracts";
-import { governorNotice, pausePresentation } from "../shared/guard/presentation";
+import { cancelResumeRpc, dismissPauseRpc, resumeNowRpc, setProtectionRpc, statusRpc } from "../shared/guard/contracts";
+import { PAUSE_ACTIONS, governorNotice, pausePresentation } from "../shared/guard/presentation";
 import { contextStatus } from "../shared/smart-session";
 import { profileFor } from "../shared/thresholds";
 import type { AgentDirectory } from "./agents";
@@ -45,7 +45,9 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
     const readGuard = useRpc(statusRpc);
     const writeProtection = useRpc(setProtectionRpc);
     const cancelResume = useRpc(cancelResumeRpc);
-    const [saving, setSaving] = useState<"compact" | "protect" | "release" | null>(null);
+    const resumeNow = useRpc(resumeNowRpc);
+    const dismissPause = useRpc(dismissPauseRpc);
+    const [saving, setSaving] = useState<"compact" | "protect" | "release" | "resume" | "dismiss" | null>(null);
     const [problem, setProblem] = useState<string | null>(null);
     const detail = useQuery({ queryKey: ["smart-session", "context", agentId], queryFn: () => readContext({ agentId }), refetchInterval: 30_000 });
     const compactions = useQuery({ queryKey: ["smart-session", "compactions", agentId], queryFn: () => readCompactions({ agentId }), refetchInterval: 30_000 });
@@ -60,7 +62,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
     const pause = governedPause(guard, agentId);
     const protection = sessionProtection(guard, agentId);
 
-    async function run(kind: "compact" | "protect" | "release", work: () => Promise<void>) {
+    async function run(kind: "compact" | "protect" | "release" | "resume" | "dismiss", work: () => Promise<void>) {
       setSaving(kind); setProblem(null);
       try {
         await work();
@@ -80,8 +82,13 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       await writeProtection({ agentId, enabled });
       publishGuard(await readGuard({}));
     });
+    // A stuck pause can only be released; a waiting one gets the same two actions as its chat card.
     const release = () => run("release", async () => {
       await cancelResume({ agentId });
+      publishGuard(await readGuard({}));
+    });
+    const settle = (kind: "resume" | "dismiss", pauseId: string) => run(kind, async () => {
+      await (kind === "resume" ? resumeNow : dismissPause)({ agentId, pauseId });
       publishGuard(await readGuard({}));
     });
     const openOverview = (focus?: string) => { close(); client.openScreen({ screenId: "overview", params: focus ? { focus } : undefined }); };
@@ -117,27 +124,31 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       const auto = guard.policy.enabled && guard.policy.autoResume;
       const moment = stuck ? "Needs a look" : pause.demo ? "Test pause" : reset === null ? "Reset time unknown" : reset <= now ? "Reset due" : `${auto ? "Resumes" : "Resets"} ${formatClock(pause.anchorResetsAt)}`;
       const after = stuck ? (pause.note ?? "It stopped before the pause was confirmed. Check it before continuing by hand.")
-        : pause.demo ? "Waits for you · resume it from its card in the chat"
+        : pause.demo ? "a test pause that waits for you"
           : reset === null ? "Waiting for the provider to report the reset"
             : reset <= now ? "Waiting for a fresh usage reading"
-              : `in ${formatDuration(reset - now)}${auto ? " · continues in this conversation" : " · continue it by hand"}`;
+              : `in ${formatDuration(reset - now)} · ${auto ? "continues in this conversation" : "continue it by hand"}`;
       const tone = stuck ? c.statusDanger : c.statusWarning;
+      const meta = [stuck ? null : "Paused at the session limit", after, look.coverage.toLowerCase()].filter(Boolean).join(" · ");
+      const waiting = pause.phase === "waiting";
       return <View style={{ gap: 8 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Icon name={stuck ? "TriangleAlert" : "Pause"} size={15} color={tone} />
-          <Text style={{ ...t.label, flex: 1, color: tone }}>{stuck ? "Paused, then something changed" : "Paused at the session limit"}</Text>
+          <Icon name={stuck ? "TriangleAlert" : "Pause"} size={18} color={tone} />
+          <Text style={{ color: c.foreground, fontSize: 20, lineHeight: 26, fontWeight: "600", flexShrink: 1, ...tabular }}>{moment}</Text>
         </View>
-        <View style={{ gap: 2 }}>
-          <Text style={{ color: c.foreground, fontSize: 20, lineHeight: 26, fontWeight: "600", ...tabular }}>{moment}</Text>
-          <Text style={{ ...t.meta, color: stuck ? c.statusDanger : c.foregroundMuted }}>{after}</Text>
-          <Text style={t.meta}>{look.coverage}</Text>
-        </View>
-        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <Button theme={theme} small compact={compact} icon={pause.suspension ? "Play" : "X"} title={saving === "release" ? "Updating…" : look.actionLabel} disabled={saving !== null}
-            accessibilityHint={look.actionHint} onPress={() => void release()} />
+        <Text style={{ ...t.meta, color: stuck ? c.statusDanger : c.foregroundMuted }}>{meta}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+          {waiting ? <>
+            <Button theme={theme} small compact={compact} icon={PAUSE_ACTIONS.resume.icon} title={saving === "resume" ? PAUSE_ACTIONS.resume.busy : PAUSE_ACTIONS.resume.label} disabled={saving !== null}
+              accessibilityHint={PAUSE_ACTIONS.resume.hint} onPress={() => void settle("resume", pause.id)} />
+            <Button theme={theme} small compact={compact} kind="ghost" title={saving === "dismiss" ? PAUSE_ACTIONS.dismiss.busy : PAUSE_ACTIONS.dismiss.label} disabled={saving !== null}
+              accessibilityHint={PAUSE_ACTIONS.dismiss.hint} onPress={() => void settle("dismiss", pause.id)} />
+          </> : stuck ? <Button theme={theme} small compact={compact} title={saving === "release" ? "Updating…" : look.actionLabel} disabled={saving !== null}
+            accessibilityHint={look.actionHint} onPress={() => void release()} /> : null}
           <View style={{ flex: 1 }} />
           <TextLink theme={theme} compact={compact} label="All paused sessions" onPress={() => openOverview("paused")} />
         </View>
+        {waiting ? <Text style={t.small}>{PAUSE_ACTIONS.note}</Text> : null}
       </View>;
     })();
 
@@ -147,7 +158,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       if (protection.kind === "on") {
         const meta = protection.protected
           ? `Pauses at ${protection.thresholdPct}% of the session window, ${protection.autoResume ? "continues after the reset" : "you continue it after the reset"}`
-          : "Not paused for this session; work stops when the provider refuses it";
+          : "Off for this session · at the limit the provider refuses work and nothing continues it";
         const source = protection.override === null ? (protection.byDefault ? "Your default" : "Your default is off") : "Changed for this session";
         return <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <View style={{ flex: 1, gap: 2 }}>
@@ -166,8 +177,9 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
         : protection.kind === "elsewhere" ? (protection.standalone ? "The standalone Session Guard plugin handles pausing at the limit here" : "Another process handles pausing at the limit here")
           : (governorNotice(guard!)?.title ?? "Pause at the limit isn't running");
       return <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Icon name="ShieldOff" size={13} color={c.foregroundMuted} />
+        <Icon name="CirclePause" size={13} color={c.foregroundMuted} />
         <Text style={{ ...t.meta, flex: 1 }}>{line}</Text>
+        {protection.kind === "off" ? <TextLink theme={theme} compact={compact} icon="Settings" label="Turn on" onPress={openSettings} /> : null}
       </View>;
     })();
 
