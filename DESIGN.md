@@ -1,6 +1,6 @@
 ---
 name: Smart Session (Paseo native surface)
-description: Plan usage, session context and Session Guard pauses read as moments, drawn in Paseo's own theme.
+description: Plan usage, session context and pauses at the limit read as moments, drawn in Paseo's own theme.
 typography:
   headline:
     fontSize: "22px"
@@ -150,7 +150,7 @@ The palette is the host's. Smart Session owns no hex values, so the frontmatter 
 - **Pressed** (`surface2`): pressed fill, the switch's off track, skeletons.
 - **Hairline** (`border`): row dividers, chart top and baseline. At 60% it draws the chart midline, at 50% day ticks, at 55–80% empty cells and zero bars.
 - **Ink** (`foreground`): text, figures, the "now" rule, the compact tick on a meter. At 82% it is the used fill and the current bar, at 42% past bars, at 16% the projection, at 13% projected bars, and at 10% the meter track.
-- **Muted Ink** (`foregroundMuted`): meta, axes, the even-pace tick, the Session Guard threshold dash, idle icons, a not-enrolled ring.
+- **Muted Ink** (`foregroundMuted`): meta, axes, the even-pace tick, the pause-at-the-limit threshold dash, idle icons, a not-enrolled ring.
 
 ### Status
 - **Amber** (`statusWarning`): a forecast says a limit will bite before the reset, a session is past its compact line, or a session is paused and waiting. On the chart it fills the "nothing left" bars at 42%.
@@ -172,7 +172,7 @@ The palette is the host's. Smart Session owns no hex values, so the frontmatter 
 **Character:** Paseo's own voice at Paseo's sizes. Weight carries the hierarchy, and there is no display face.
 
 ### Hierarchy
-- **Headline** (600, 22/29; 19/25 compact): the status title on the overview and Paused sessions screens ("Session runs out around 4:58 PM"). It is followed by a 13/19 muted meta sentence.
+- **Headline** (600, 22/29; 19/25 compact): the status title on the overview ("Session runs out around 4:58 PM", or "2 sessions resume at 6:27 AM" while anything is paused here). It is followed by a 13/19 muted meta sentence.
 - **Lead figure** (600, 22/28): the context percentage in the popover. **Moment** (600, 20/26; 18/24 compact, tabular) is the resume clock on a pause card. **Row figure** (600, 17/22) is a plan window's percentage. Context rows use 15/20 tabular.
 - **Title** (600, 15/21): a paused-session row's name, and a pause row's own time.
 - **Body** (13/19): sentences and card text. **Label** (600, 13/18): row names and chat-card titles.
@@ -185,7 +185,7 @@ The palette is the host's. Smart Session owns no hex values, so the frontmatter 
 
 ## Layout
 
-The overview and Paused sessions are host screens. Content is centred at 860px (overview) or 760px (Paused sessions), with 32px padding (16px compact) and 48px at the bottom. Blocks are 26px apart (20px compact) on the overview and 22px (18px compact) on Paused sessions. A section is a group head 8px above one card. The first viewport is the headline with its icon and gear, then Plan limits (session row with meter, chart and earlier windows, then week rows and the meter key), then Session context rows, then the Smart Compact and Session Guard feature rows. Tokens (last 30 days) follows.
+The overview is a host screen, centred at 860px, with 32px padding (16px compact) and 48px at the bottom. Blocks are 26px apart (20px compact). A section is a group head 8px above one card. The first viewport is the headline with its icon and gear; while anything is paused, the Paused sessions section comes next (and ⌘K "paused sessions" opens the overview there), then Plan limits (session row with meter, chart and earlier windows, then week rows and the meter key), then Session context rows, then the Smart Compact and Pause at the limit feature rows (sessions changed from the default listed under the latter). Tokens (last 30 days) follows. Settings are one host settings screen in the order a session meets them: Smart Compact, When to ask, Pause at the limit, Display, Claude Code, Limit timing (folded behind Edit).
 
 Rows pad 12×14 with 6px internal gaps. Under a row's icon or status mark, secondary lines indent 22–25px to the text edge. In compact layouts, feature-row links drop to their own indented line, ranked totals stack, the window chart drops to 40 columns (from 60) and 60px tall (from 76), and controls grow to 44px. The popover is 340px (full-width sheet on phones), with 14px padding (16px compact) and 12px gaps, and hairlines between its parts. Chat cards sit right-aligned up to 560px wide, full width when compact.
 
@@ -229,19 +229,19 @@ Corners are soft and few. Cards are 10px, chat and pause cards 12px. Controls ar
 
 ### Navigation
 - **Sidebar row:** Paseo's sidebar header item, named Smart Session. It trails the session window's use in 12px tabular muted text, or a toned chip when a forecast or pause applies.
-- **Text link:** 12px muted text with a 12px ArrowUpRight. Hover turns the text `foreground` and underlines it. Used for "Settings", "Paused sessions" and "All paused", which point to places.
+- **Text link:** 12px muted text with a 12px ArrowUpRight. Hover turns the text `foreground` and underlines it. Used for "Settings", "Paused sessions", "All paused sessions" and "Use default".
 
 ### Meter
 An 8px track (6px for context) in ink at 10%. The fill is ink at 82%, amber or red by tone. A faint projection continues to where the reset lands (ink at 16%, or the tone at 24%). A muted 2px tick marks even pace, and a `foreground` tick marks the compact line. It carries a progressbar role and a spoken label. One key under the plan card names Used, By the reset at this pace and Even pace.
 
 ### Window chart (signature)
-The open session window from start to reset, in 60 columns (40 compact). It has a hairline top at 100%, a 60% midline, a dashed muted line at Session Guard's threshold when below 100%, and a 1px `foreground` "now" rule. Past bars are ink at 42% and the current bar ink at 82% (red when the forecast is danger). Projected bars are ink at 13%. Bars past the run-out moment are amber at 42%, at full height. Hover on web replaces the caption with a readout ("4:12 PM · ~68% at this pace"). The whole chart is one accessible summary sentence.
+The open session window from start to reset, in 60 columns (40 compact). It has a hairline top at 100%, a 60% midline, a dashed muted line at the pause threshold when below 100%, and a 1px `foreground` "now" rule. Past bars are ink at 42% and the current bar ink at 82% (red when the forecast is danger). Projected bars are ink at 13%. Bars past the run-out moment are amber at 42%, at full height. Hover on web replaces the caption with a readout ("4:12 PM · ~68% at this pace"). The whole chart is one accessible summary sentence.
 
 ### Context ring and pill (signature)
-The composer pill keeps the host's chrome. Its icon is the ring, and its label is the percentage ("34%"). The ring is `foreground` when the session is enrolled and muted when it is not, takes its tone colour when past the line, and shows the tick only when the session is enrolled. Pressing it opens the popover: a 40px ring with a 22px figure, a meta line of tokens and compact line, a 6px meter with the compact tick, one sentence in tone, a fact table (112px label column), and the per-session switch. A text link ends it. Session Guard's pill uses the host Icon: ShieldCheck in `foreground`, ShieldOff muted, Pause amber, TriangleAlert red.
+The composer pill keeps the host's chrome. Its icon is the ring, and its label is the percentage ("34%"). The ring is `foreground` when the session is enrolled and muted when it is not, takes its tone colour when past the line, and shows the tick only when the session is enrolled. Pressing it opens the popover: a 40px ring with a 22px figure, a meta line of tokens and compact line, a 6px meter with the compact tick, one sentence in tone, a fact table (112px label column), and the per-session switch. A text link ends it. There is one pill per session. Protection adds nothing to it while a session is simply protected; an excluded session says so only in the pill's title. While a session is paused at the limit (and this process governs the pause) the icon becomes the host Pause glyph in amber (TriangleAlert in red when it needs a look), the label becomes the moment it resumes ("Resumes 6:27 AM": a clock, so the label rarely changes), and the pill stays up even when hidden in settings. The popover then leads with the pause: amber Pause icon and label, the moment at 20/26 semibold tabular, a meta line with the countdown and coverage, a bordered small release button and an "All paused sessions" link, then the context shrunk to a 28px ring and 15px figure. Below Smart Compact's switch sits the **Pause at the limit** switch with a meta line and a small "Your default" / "Changed for this session" note plus a RotateCcw "Use default" link. When protection does not run here it is one muted ShieldOff line.
 
 ### Pause card
-In chat it is `surface1`, 12px corners and `raised` depth. It leads with an amber Pause icon, the resume moment at 20/26 semibold tabular and a 13px muted countdown, then one meta line of facts. Then come a small secondary **Resume now** (Play), a ghost **Dismiss pause**, a right-aligned "All paused" link and a small hint. When it settles it folds to one quiet 13px line with a 13px icon ("Paused at 3:28 PM · resumed 5:16 PM"). When stuck it swaps to the red border with "Pause needs attention".
+In chat it uses the same shell as Smart Session's message cards: `surface1`, 12px corners, `raised`, a title row (14px amber Pause icon, 13px semibold "Paused at the session limit", the time it paused in meta at the right), then the resume moment at 18/24 semibold tabular with a 13px muted countdown, then one meta line of facts. Then come a small secondary **Resume now** (Play), a ghost **Dismiss pause**, a right-aligned "Paused sessions" link and a small hint. When it settles it folds to one quiet line sized like the tool rows (14px text, 12px icon in a 22px slot) ("Paused at 3:28 PM · resumed 5:16 PM"). When stuck it swaps to the red border with "Pause needs attention".
 
 ### Chat rows and cards
 Smart Session's tool calls are one 14px muted line with a 12px icon. Hover and expand swap the icon for a rotating chevron. Expanding opens a bordered `surface1` box up to 240px tall. A refused call is amber and a failed one red, with TriangleAlert. Messages the plugin sent become `raised` `surface1` cards (12px corners, 11/14px padding): a 14px icon, a 13px semibold title, a "Full message" toggle, the body, and a 12/17 muted provenance line. The full text expands in mono, up to 300px.

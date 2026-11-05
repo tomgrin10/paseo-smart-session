@@ -88,7 +88,9 @@
   `agents.list({ subscribe: {}, signal })` observation; bare `agents.subscribe()` only listens
   locally and does not discover new agents (`RESEARCH.md` §5.1). Do not open a second one for a new
   pill: `check-bundles.mjs` asserts the observation is released exactly once.
-- `client/pill.tsx` owns the Smart Compact pill and `client/pill-store.ts` its state. Pill state lives in
+- `client/pill.tsx` owns Smart Session's one composer pill, `client/pill-view.ts` what it says (plain
+  functions, tested in `pill.test.ts`), `client/pill-store.ts` its Smart Compact state and
+  `client/guard/status.ts` its protection state (one `smart-session.guard.status` poll per bundle). Pill state lives in
   a module-level store because the pill, its popover, the Command Center item and the screens are
   all in the one client bundle; that is what makes a toggle redraw immediately instead of waiting out
   a poll. A registration bakes in the workspace and cannot be patched, so an agent that moves
@@ -96,14 +98,22 @@
   arc is the session's context, the tick its compact line, muted when the session is not enrolled)
   with the percentage as its label; context comes from the shared agent directory's `lastUsage`, so
   it moves every turn without a poll of its own. Pressing it opens `client/popover.tsx`: context,
-  compact line, task state, last compaction and the enrolment switch. Only update `label`/`title`
-  on change; a new `behavior` remounts an open popover.
-- Views are screens, not surfaces: `addScreen("overview")` titled **Smart Session** and
-  `addScreen("paused-sessions")` titled **Paused sessions**, opened with `openScreen`, plus the
-  `addSidebarHeaderItem` row (trailing the session window's use, or the paused count from the Session
-  Guard pills' poll through `client/live.ts`). Settings live in Settings → Plugins (`smart-compact`,
-  `session-guard`, `display`) and open with `openSettings`. `check-bundles.mjs` refuses `addSurface`,
-  whose header shows the raw id.
+  compact line, task state, last compaction, the enrolment switch and the per-session **Pause at the
+  limit** switch. While this process governs a pending pause for the session, the pill becomes the
+  pause (amber glyph, "Resumes 5:58 PM") and its popover leads with it; that pill is registered even
+  when the pill is hidden, so it goes on the host's own client, not through `button-visibility`.
+  Only update `label`/`title` on change; a new `behavior` remounts an open popover. The label is a
+  clock, not a countdown, for the same reason. There is no second pill: `check-bundles.mjs` refuses one.
+- Views are screens, not surfaces: `addScreen("overview")` titled **Smart Session**, which holds the
+  paused sessions (`params.focus = "paused"` opens it at that list), plus `paused-sessions`, kept as
+  the overview opened at that list so old links still land, and the `addSidebarHeaderItem` row
+  (trailing the session window's use, or the paused count from the status poll through
+  `client/live.ts`). Settings are one screen, id `smart-compact` (the old first page's id, so links
+  to it still land), titled **Settings**; ids live in `client/screens.ts`. `check-bundles.mjs` refuses
+  `addSurface`, whose header shows the raw id, and a second settings screen.
+- In the UI the feature is **Pause at the limit**, part of Smart Session; "Session Guard" names only
+  the standalone plugin (and the code and data paths). Command Center items all start with
+  "Smart Session" (`client/commands.ts`) and keep the old keywords.
 - `shared/forecast.ts` turns a window reading into its moment: when it resets, when it runs out at
   this pace (the last half hour for the session, the window's own average for a week), and the
   per-hour pace that would last. Every view and `forecast.test.ts` read the same rules. Charts in
@@ -135,8 +145,8 @@
 - Deliver only at a turn boundary, only when task state on disk is current, and never retry an
   interrupted `/compact` — it is destructive and not idempotent.
 - `settings.enabled` is the master switch; `showPill` and `autoEnrol` qualify it and mean nothing
-  while it is off. There is no third pill state — a session is enrolled or it is not, and with the
-  feature off the pill is not drawn at all.
+  while it is off. There is no third pill state — a session is enrolled or it is not. With Smart
+  Compact off the pill is drawn only while Pause at the limit runs here (muted ring, no tick).
 - Do not log secrets, tokens, task-state contents, or message bodies. Credentials are read-only.
 
 ## Session Guard
@@ -185,8 +195,8 @@
   notice, so a guard interrupt or SIGSTOP that comes first starves it. ZeroSub's files are read-only
   and parsed defensively. Never copy an email or a generated (`autoLabel`) label out of them, and
   never open an account home.
-- Its pill is drawn only while this process is the active governor, and while turning off only for a
-  session that still has a pending pause.
+- The pill shows protection only while this process is the active governor; a pending pause keeps
+  a session's pill up (even with the pill hidden) only while this process governs it.
 - Agents see it only through `budget_status` in `mcp.mjs`, which asks
   `smart-session.guard.agent` about the calling `PASEO_AGENT_ID`. It is read-only: no agent-facing
   path may opt a session out or resume a pause.

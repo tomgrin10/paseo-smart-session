@@ -22,7 +22,7 @@ context and budget, checkpoint, and ask to be compacted.
 
 Three parts in one plugin. A recorder keeps the only history of plan-usage percentages that exists
 (the provider and Paseo keep none). Smart Compact lets an agent compact itself at a safe stopping
-point, never forced, with its task state on disk first. Session Guard pauses sessions at the
+point, never forced, with its task state on disk first. Pause at the limit (formerly the Session Guard plugin) pauses sessions at the
 provider's session limit and continues the same conversations after the reset. Success is a developer
 who never loses work to a full context or a spent window, and never has to babysit either.
 
@@ -35,10 +35,10 @@ place. *(inferred)* Neighbours show a usage snapshot (usage-monitor, zerosub) or
 
 ## Operating Context
 
-- Entry points: the Smart Session sidebar screen (plan limits, agent context, spend history,
-  feature switches), the Smart Compact composer pill on every session, the Session Guard composer
-  pill while it governs, timeline cards for pauses, Command Center items, and Settings → Plugins →
-  Smart Session (Smart Compact, Session Guard, Display).
+- Entry points: the Smart Session sidebar screen (plan limits, paused sessions, agent context,
+  spend history, feature switches), one Smart Session composer pill per session (the context ring;
+  it becomes the pause while a session waits for the reset), timeline cards for pauses, Command
+  Center items, and one settings screen, Settings → Plugins → Smart Session.
 - Agents reach it through MCP tools (`context_status`, `checkpoint`, `request_compaction`,
   `defer_compaction`, `budget_status`) and Claude Code hooks; those calls show in the chat.
 - Used on desktop, web and phones; composer pill popovers become bottom sheets on phones.
@@ -49,7 +49,7 @@ place. *(inferred)* Neighbours show a usage snapshot (usage-monitor, zerosub) or
   cache as fallback); append-only monthly JSONL under `$PASEO_HOME/plugin-data/smart-session/`.
 - Compaction is always agent-mandated; the plugin never decides to compact. It sends at most the
   requested `/compact` and one optional continuation.
-- Session Guard is off by default; its state format, lock and hand-off with the standalone plugin
+- Pause at the limit is off by default; its state format, lock and hand-off with the standalone plugin
   are frozen. It freezes provider processes with SIGSTOP on Linux.
 - Paseo ≥ 0.14, no runtime dependencies, host theme tokens only, no react-native-svg (inline SVG
   only through the host `Icon`).
