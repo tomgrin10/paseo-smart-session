@@ -9,8 +9,12 @@ import type { EnrolmentState } from "../shared/governor";
 import type { Thresholds } from "../shared/thresholds";
 
 export interface PillState {
-  /** Both switches folded into one answer: is there a pill on the composer at all. */
+  /** Both switches folded into one answer: is Smart Compact's part of the pill wanted. */
   readonly showPill: boolean;
+  /** Smart Compact's master switch, on its own. */
+  readonly compactOn: boolean;
+  /** The "pill on every session" preference, on its own; it also covers protection. */
+  readonly pillOn: boolean;
   readonly enrolled: ReadonlySet<string>;
   /** The compact bands; null until the daemon has answered. */
   readonly thresholds: Thresholds | null;
@@ -22,7 +26,7 @@ export interface PillState {
  * The alternative — assume shown, then retract — flashes a pill at everyone who
  * turned it off, every time the app loads.
  */
-let current: PillState = { showPill: false, enrolled: new Set(), thresholds: null };
+let current: PillState = { showPill: false, compactOn: false, pillOn: false, enrolled: new Set(), thresholds: null };
 
 /** The current answer, for code outside React. */
 export function state(): PillState {
@@ -70,6 +74,8 @@ export async function refreshPills(fetch: () => Promise<EnrolmentState>): Promis
   const next = await fetch();
   publish({
     showPill: next.enabled && next.showPill,
+    compactOn: next.enabled,
+    pillOn: next.showPill,
     enrolled: enrolmentSet(next.agents),
     thresholds: next.thresholds ?? current.thresholds,
   });

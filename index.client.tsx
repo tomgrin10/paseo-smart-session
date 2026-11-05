@@ -4,45 +4,29 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 
 import { observeAgents } from "./client/agents";
 import { contributeChat } from "./client/chat";
-import { contributeGuardClient } from "./client/guard/index";
+import { commandItems } from "./client/commands";
+import { contributeGuardTimeline } from "./client/guard/index";
+import { watchGuard } from "./client/guard/status";
 import { createLive } from "./client/live";
-import { OVERVIEW_SCREEN, SMART_COMPACT_SETTINGS, makeOverview } from "./client/overview";
-import { contributeClient, refreshPills } from "./client/pill";
-import { SmartCompactSettings } from "./client/settings";
-import { enrolmentState } from "./shared/governor";
-import { budgetStatus, getSettings, setSettings } from "./shared/smart-session";
+import { OVERVIEW_SCREEN, PAUSED_SCREEN, SMART_COMPACT_SETTINGS, makeOverview } from "./client/overview";
+import { contributeClient } from "./client/pill";
+import { makeSettings } from "./client/settings";
+import { budgetStatus } from "./shared/smart-session";
 
 export default function contribute(host: PluginClientContext) {
   const visibility = withButtonVisibility(host);
   const client = visibility.client;
   const live = createLive();
+  const Overview = makeOverview(client, live);
   const removers = [
-    client.addScreen({ id: OVERVIEW_SCREEN, title: "Smart Session", Component: makeOverview(client, live) }),
-    client.addSettingsScreen({ id: SMART_COMPACT_SETTINGS, title: "Smart Compact", icon: "FoldVertical", Component: SmartCompactSettings }),
+    client.addScreen({ id: OVERVIEW_SCREEN, title: "Smart Session", Component: Overview }),
+    // The old Paused sessions screen: links to it from older chats and clients land on the list.
+    client.addScreen({ id: PAUSED_SCREEN, title: "Smart Session", Component: (props) => <Overview {...props} params={{ ...props.params, focus: "paused" }} /> }),
+    client.addSettingsScreen({ id: SMART_COMPACT_SETTINGS, title: "Settings", icon: "Gauge", Component: makeSettings(client) }),
     contributeDisplay(client, live),
-    client.addCommandCenterItem({
-      id: "smart-session-open",
-      title: "Smart Session: plan usage and context",
-      icon: "Gauge",
-      keywords: ["usage", "budget", "limit", "forecast", "context", "tokens", "compact", "smart session"],
-      context: "global",
-      onSelect({ openScreen }) {
-        openScreen({ screenId: OVERVIEW_SCREEN });
-      },
-    }),
-    client.addCommandCenterItem({
-      id: "smart-session-pill",
-      title: "Show or hide the context pill",
-      icon: "ToggleLeft",
-      keywords: ["pill", "compact", "smart", "context", "ring", "enrol"],
-      context: "global",
-      async onSelect({ rpc }) {
-        const { settings } = await rpc(getSettings, {});
-        await rpc(setSettings, { showPill: !settings.showPill });
-        await refreshPills(() => rpc(enrolmentState, {}));
-      },
-    }),
+    ...commandItems().map((item) => client.addCommandCenterItem(item)),
     contributeChat(client),
+    contributeGuardTimeline(client),
   ];
 
   // The sidebar row shows the session window between overview visits.
@@ -50,13 +34,14 @@ export default function contribute(host: PluginClientContext) {
   void readBudget();
   const budgetTimer = setInterval(() => void readBudget(), 2 * 60_000);
 
-  // One agent observation for every pill in this bundle.
+  // One agent observation and one protection poll for the one pill.
   const agents = observeAgents(client);
-  const removeClient = contributeClient(client, agents);
-  const removeGuard = contributeGuardClient(client, agents, live);
+  const stopGuard = watchGuard(client, live);
+  // The pill registers on the host's own client: a paused session keeps it even when pills are hidden.
+  const removeClient = contributeClient(host, agents);
   return () => {
     clearInterval(budgetTimer);
-    removeGuard();
+    stopGuard();
     removeClient();
     for (const remove of removers.splice(0)) void remove();
     visibility.dispose();

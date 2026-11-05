@@ -1,68 +1,60 @@
 /**
- * The Smart Compact pill, on every agent's composer.
+ * The Smart Session pill, on every agent's composer: the one place Smart Session
+ * shows up next to the box you are about to type into.
  *
- * It answers two questions where they matter, next to the box you are about to type
- * into: how full is this session's context, and will Smart Compact ask it to compact
- * itself. The icon is a ring that fills with the context and carries a tick at the
- * compact line; the label is the percentage. Pressing it opens a popover with the
- * detail and the enrolment switch.
+ * Normally it answers how full this session's context is and whether Smart Compact
+ * will ask it to compact itself: the icon is a ring that fills with the context and
+ * carries a tick at the compact line, the label is the percentage. Protection adds
+ * nothing while it simply protects; the quiet case stays quiet. When this session is
+ * paused at the session limit the pill turns into the pause itself, an amber pause
+ * glyph and the moment it resumes, and it stays on the composer even when the pill
+ * is otherwise hidden, so a paused session can always be released from where it is.
+ * Pressing it opens `client/popover.tsx`, which has the detail and both switches.
  *
- * State lives in this module rather than in each pill, because the pill and the
- * things that change it (its own popover, the Command Center item, the overview and
- * settings) are all in this one client bundle. One store, one fetch, and every
- * mounted pill redraws together. Context occupancy comes from the shared agent
- * directory, which already carries each agent's last usage, so the ring moves with
+ * State lives in module stores (`pill-store.ts`, `guard/status.ts`) rather than in
+ * each pill, because the pill and everything that changes it (its popover, the
+ * Command Center item, the overview and settings) are in this one client bundle.
+ * Context occupancy comes from the shared agent directory, so the ring moves with
  * every turn without a poll of its own.
  *
- * With Smart Compact off there is no pill at all: there is nothing for one to say.
+ * Registered on the host's own client rather than through the Display gate, because
+ * a paused session's pill must outlive "hide the pill".
  */
 
 import type { PluginButtonIconProps, PluginClientContext, PluginButtonRegistration } from "@getpaseo/plugin/client";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { useSyncExternalStore } from "react";
 
-import { contextOutlook } from "../shared/forecast";
 import { enrolmentState } from "../shared/governor";
+import type { AgentDirectory } from "./agents";
+import { Ring, toneFill } from "./charts";
+import { subscribeDisplay } from "./display";
+import { governedPause, guardSnapshot, subscribeGuard } from "./guard/status";
+import { describePill, pillPresentation, pillVisible } from "./pill-view";
 import { pillSnapshot, refreshPills, state as currentState, subscribePills } from "./pill-store";
+import { makeContextPopover } from "./popover";
 
 export { refreshPills } from "./pill-store";
-import { profileFor } from "../shared/thresholds";
-import type { Thresholds } from "../shared/thresholds";
-import type { AgentDirectory, DirectoryAgent } from "./agents";
-import { Ring, toneFill } from "./charts";
-import { makeContextPopover } from "./popover";
+export { describePill, pillPresentation, pillVisible } from "./pill-view";
 
 /** How often the client re-reads enrolment, for changes made somewhere else. */
 const REFRESH_MS = 20_000;
 
-/** Everything a pill shows about one agent, in one place for the icon, label and title. */
-export function pillPresentation(agent: Pick<DirectoryAgent, "usedTokens" | "maxTokens"> | undefined, enrolled: boolean, thresholds: Thresholds | null) {
-  const known = agent !== undefined && agent.usedTokens !== null && agent.maxTokens !== null;
-  if (!known) {
-    return {
-      label: "Smart Compact",
-      title: enrolled ? "Smart Compact on · no context reading yet" : "Smart Compact off · no context reading yet",
-      fraction: 0, mark: null as number | null, tone: "default" as const, pct: null as number | null,
-    };
-  }
-  const compactAtPct = profileFor(agent.maxTokens!, thresholds ?? undefined).compact;
-  const outlook = contextOutlook({ usedTokens: agent.usedTokens!, maxTokens: agent.maxTokens!, compactAtPct });
-  const pct = Math.round(outlook.pct);
-  return {
-    label: `${pct}%`,
-    title: `Context ${pct}% full · ${enrolled ? `Smart Compact asks at ${compactAtPct}%` : "Smart Compact off for this session"}`,
-    fraction: outlook.pct / 100, mark: compactAtPct / 100, tone: outlook.tone, pct,
-  };
-}
-
-/** One live icon per pill: the ring, muted while the session is not enrolled. */
+/** One live icon per pill: the pause while paused, otherwise the ring, muted while not enrolled. */
 function makeIcon(agents: AgentDirectory) {
-  return function ContextRingIcon(props: PluginButtonIconProps) {
+  return function SmartSessionPillIcon(props: PluginButtonIconProps) {
     const current = useSyncExternalStore(subscribePills, pillSnapshot, pillSnapshot);
+    const status = useSyncExternalStore(subscribeGuard, guardSnapshot, guardSnapshot);
     useSyncExternalStore(agents.subscribe, agents.version, agents.version);
     const agentId = props.context === "agent" ? props.agentId : "";
-    const enrolled = current.enrolled.has(agentId);
-    const view = pillPresentation(agents.current().get(agentId), enrolled, current.thresholds);
     const c = props.theme.colors;
+    const pause = governedPause(status, agentId);
+    if (pause !== undefined) {
+      const stuck = pause.phase === "attention";
+      return <Icon name={stuck ? "TriangleAlert" : "Pause"} size={props.size} color={stuck ? c.statusDanger : c.statusWarning} />;
+    }
+    const enrolled = current.compactOn && current.enrolled.has(agentId);
+    const view = pillPresentation(agents.current().get(agentId), enrolled, current.thresholds, current.compactOn);
     const color = view.tone !== "default" ? toneFill(c, view.tone) : enrolled ? c.foreground : c.foregroundMuted;
     return <Ring size={props.size} color={color} fraction={view.fraction} mark={enrolled ? view.mark : null} />;
   };
@@ -73,10 +65,11 @@ export function contributeClient(client: PluginClientContext, agents: AgentDirec
   const tracked = new Map<string, { workspaceId: string; handle: PluginButtonRegistration | null; signature: string }>();
   const Icon = makeIcon(agents);
   const Content = makeContextPopover(client, agents);
+  // The Display switch; shown until the saved preference says otherwise, like the old gate.
+  let displayOn = true;
 
   function describe(agentId: string) {
-    const view = pillPresentation(agents.current().get(agentId), currentState().enrolled.has(agentId), currentState().thresholds);
-    return { label: view.label, title: view.title };
+    return describePill(agentId, agents.current().get(agentId), currentState(), guardSnapshot());
   }
 
   function register(agentId: string, entry: { workspaceId: string; handle: PluginButtonRegistration | null; signature: string }): void {
@@ -90,11 +83,13 @@ export function contributeClient(client: PluginClientContext, agents: AgentDirec
     });
   }
 
-  /** Brings the registrations in line with the store, whichever way it moved. */
+  /** Brings the registrations in line with the stores, whichever way they moved. */
   function sync(): void {
+    const status = guardSnapshot();
     for (const [agentId, entry] of tracked) {
-      if (currentState().showPill && entry.handle === null) register(agentId, entry);
-      else if (!currentState().showPill && entry.handle !== null) {
+      const visible = !agents.current().get(agentId)?.closed && pillVisible(agentId, currentState(), status, displayOn);
+      if (visible && entry.handle === null) register(agentId, entry);
+      else if (!visible && entry.handle !== null) {
         entry.handle.remove();
         entry.handle = null;
       } else if (entry.handle !== null) {
@@ -130,6 +125,12 @@ export function contributeClient(client: PluginClientContext, agents: AgentDirec
   const refresh = () => refreshPills(() => client.rpc(enrolmentState, {}));
 
   const unsubscribeStore = subscribePills(sync);
+  const unsubscribeGuard = subscribeGuard(sync);
+  const unsubscribeDisplay = subscribeDisplay((values) => {
+    if (values.enable_composer_button === displayOn) return;
+    displayOn = values.enable_composer_button;
+    sync();
+  });
   const unsubscribeAgents = agents.subscribe(followDirectory);
   followDirectory();
 
@@ -139,6 +140,8 @@ export function contributeClient(client: PluginClientContext, agents: AgentDirec
   return () => {
     clearInterval(timer);
     unsubscribeAgents();
+    unsubscribeDisplay();
+    unsubscribeGuard();
     unsubscribeStore();
     for (const agentId of [...tracked.keys()]) forget(agentId);
   };

@@ -52,15 +52,15 @@ const PLUGIN_ID = "smart-session";
 const DEFERRED_RETRY_SECONDS = 15;
 
 const STANDALONE_MESSAGE =
-  "The standalone Session Guard plugin is enabled on this host, so Smart Session leaves session protection to it and pauses nothing. " +
+  "The standalone Session Guard plugin is enabled on this host, so Smart Session leaves pausing at the limit to it. " +
   "Disable or uninstall Session Guard to hand over; its per-session choices and waiting pauses carry over.";
 const HANDED_BACK_MESSAGE =
-  "The standalone Session Guard plugin was enabled while Smart Session was protecting this host, so Smart Session released its paused sessions and stopped. " +
+  "The standalone Session Guard plugin was enabled while Smart Session was pausing at the limit here, so Smart Session released its paused sessions and stopped. " +
   "Disable or uninstall Session Guard to hand back to Smart Session, or reload Session Guard to let it take over.";
 const LOCK_HELD_MESSAGE =
-  "Another process is already running Session Guard on this host, most likely a second Smart Session install. Nothing is paused from here until it stops.";
-const UNCHECKED_MESSAGE = "Session Guard could not check which plugins are installed, so it is not pausing anything yet. It will retry.";
-const OFF_MESSAGE = "Session Guard is off on this host. Turn it on in Smart Session's Session Guard settings.";
+  "Another process already pauses sessions at the limit on this host, most likely a second Smart Session install. Nothing is paused from here until it stops.";
+const OFF_MESSAGE = "Pause at the limit is off on this host. Turn it on in Smart Session settings.";
+const UNCHECKED_MESSAGE = "Smart Session could not check which plugins are installed, so it is not pausing anything yet. It will retry.";
 
 /** The daemon connection and process control, replaceable only by tests. */
 export interface GuardDependencies {
@@ -134,7 +134,7 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
       release = await store.lock();
     } catch (error) {
       governor = error instanceof LockHeldError ? "deferred" : "error";
-      lockError = governor === "deferred" ? LOCK_HELD_MESSAGE : "Session Guard could not take its lock. Check its saved state and try again.";
+      lockError = governor === "deferred" ? LOCK_HELD_MESSAGE : "Pause at the limit could not take its lock. Check its saved state and try again.";
       return;
     }
     try {
@@ -143,7 +143,7 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
       lockError = null;
     } catch {
       governor = "error";
-      lockError = "Session Guard could not read its saved state. Restore state.json before continuing.";
+      lockError = "Pause at the limit could not read its saved state (session-guard/state.json). Restore it before continuing.";
       const unlock = release;
       release = null;
       await unlock?.();
@@ -197,7 +197,7 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
       policy = await readPolicy();
       settingsError = null;
     } catch {
-      settingsError = "Session Guard settings are invalid. Reset them in Session Guard settings.";
+      settingsError = "The Pause at the limit settings are invalid. Reset them in Smart Session settings.";
     }
     if (!policy?.enabled && governor !== "active") {
       governor = "off";

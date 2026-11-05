@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { useRpc, type PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { timelinePresentation, type TimelineData } from "../../shared/guard/timeline.ts";
 import { dismissPauseRpc, resumeNowRpc, statusRpc } from "../../shared/guard/contracts.ts";
+import { PAUSE_ACTIONS } from "../../shared/guard/presentation.ts";
 import { timestamp, type Pause } from "../../shared/guard/policy.ts";
 import { formatClock, formatDuration } from "../../shared/format.ts";
 import { formatMoment } from "../../shared/forecast.ts";
@@ -14,7 +15,8 @@ import { raised, tabular, withAlpha } from "../theme.ts";
 const providerName = (id: string) => (id === "claude" ? "Claude" : id === "codex" ? "Codex" : id);
 
 /**
- * A Session Guard pause in the chat. While the pause waits, it is a card that leads
+ * A pause at the session limit, in the chat, drawn like Smart Session's other chat
+ * cards and rows. While the pause waits, it is a card that leads
  * with the clock the window resets at, a live countdown, and Resume now / Dismiss.
  * Once the pause settles it resolves itself into one quiet line, so the chat keeps
  * the history without a stale card. Settled events (resumed, released) are lines
@@ -68,32 +70,38 @@ export function GuardTimelineItem({ theme, agentId, item, layout, openOverview }
   const at = formatClock(item.data.at);
 
   /** One quiet line: the settled form of every card. */
+  /** One quiet line, sized like Smart Session's tool rows and Paseo's own. */
   const line = (icon: string, color: string, words: string, extra?: string) => (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 }}>
-      <View style={{ width: 22, alignItems: "center" }}><Icon name={icon} size={13} color={color} /></View>
-      <Text style={{ flexShrink: 1, color: c.foregroundMuted, fontSize: 13, lineHeight: 18, ...tabular }}>
+    <View style={{ marginHorizontal: -13, flexDirection: "row", alignItems: "center", paddingHorizontal: 8, paddingVertical: 4 }}>
+      <View style={{ width: 22, height: 22, marginRight: 4, alignItems: "center", justifyContent: "center" }}><Icon name={icon} size={12} color={color} /></View>
+      <Text numberOfLines={2} style={{ flexShrink: 1, color: c.foregroundMuted, fontSize: 14, lineHeight: 20, ...tabular }}>
         <Text style={{ color: c.foreground }}>{words}</Text>{extra ? ` · ${extra}` : ""}
       </Text>
     </View>
   );
+  /** The card shell shared with the messages Smart Session sends. */
+  const shell = (alarm: boolean, children: ReactNode) => <View style={{ width: "100%", maxWidth: 560, marginVertical: 4 }}>
+    <View style={[{ borderRadius: 12, backgroundColor: c.surface1, overflow: "hidden" }, alarm ? { borderWidth: 1, borderColor: withAlpha(c.statusDanger, 0.6) } : raised(c)]}>{children}</View>
+  </View>;
+  const titleRow = (icon: string, color: string, title: string, titleColor = c.foreground) => <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingTop: 11, paddingBottom: 4 }}>
+    <Icon name={icon} size={14} color={color} />
+    <Text numberOfLines={1} style={{ flex: 1, color: titleColor, fontSize: 13, lineHeight: 18, fontWeight: "600" }}>{title}</Text>
+    <Text style={t.meta}>{at}</Text>
+  </View>;
 
   if (!live) {
-    if (item.data.event === "resumed") return line("Play", c.foregroundMuted, presentation.title, item.data.manualResume ? `${at} · by you · protection off for this session` : `${at} · ${item.data.native ? "workers continued in place" : "continuation sent"}`);
-    if (item.data.event === "released") return line("ShieldOff", c.foregroundMuted, presentation.title, item.data.dismissed ? `${at} · no message sent · protection off` : at);
+    if (item.data.event === "resumed") return line("Play", c.foregroundMuted, presentation.title, item.data.manualResume ? `${at} · by you · no longer pauses at the limit` : `${at} · ${item.data.native ? "workers continued in place" : "continuation sent"}`);
+    if (item.data.event === "released") return line("Pause", c.foregroundMuted, presentation.title, item.data.dismissed ? `${at} · no message sent · no longer pauses at the limit` : at);
     // attention
-    return <View style={[{ borderRadius: 12, backgroundColor: c.surface1, padding: 14, gap: 6, borderWidth: 1, borderColor: withAlpha(c.statusDanger, 0.6) }]}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Icon name="TriangleAlert" size={15} color={c.statusDanger} />
-        <Text style={{ ...t.label, color: c.statusDanger, flex: 1 }}>{presentation.title}</Text>
-        <Text style={t.meta}>{at}</Text>
-      </View>
-      <Text style={t.body}>{presentation.detail}</Text>
-    </View>;
+    return shell(true, <>
+      {titleRow("TriangleAlert", c.statusDanger, presentation.title, c.statusDanger)}
+      <View style={{ paddingHorizontal: 14, paddingBottom: 11 }}><Text style={t.body}>{presentation.detail}</Text></View>
+    </>);
   }
 
   // A live pause: settled ones fold to a line.
   if (loaded && (pause === null || pause.phase === "cancelled" || pause.phase === "resumed")) {
-    if (pause?.phase === "cancelled" && pause.dismissed) return line("ShieldOff", c.foregroundMuted, "Pause dismissed", "no message sent · protection off");
+    if (pause?.phase === "cancelled" && pause.dismissed) return line("Pause", c.foregroundMuted, "Pause dismissed", "no message sent · no longer pauses at the limit");
     if (pause?.phase === "resumed") return line("Pause", c.foregroundMuted, `Paused at ${at}`, pause.manualResume ? `resumed by you ${formatClock(pause.settledAt)}` : `resumed ${formatClock(pause.settledAt)}`);
     // The event that ended it has its own line; this one only says when.
     return line("Pause", c.foregroundMuted, `Paused at ${at}`, pause?.settledAt ? `ended ${formatClock(pause.settledAt)}` : "no longer active");
@@ -106,49 +114,46 @@ export function GuardTimelineItem({ theme, agentId, item, layout, openOverview }
   // Lead with the moment, the way every family card does: the reset clock, then the countdown.
   const big = item.data.demo ? "Test pause" : reset === null ? "Reset time unknown" : formatMoment(item.data.resetAt!, now);
   const countdown = item.data.demo ? "waits for you" : reset === null ? "waiting for the provider to report it" : reset <= now ? "reset passed · waiting for a fresh reading" : `${auto ? "resumes" : "resets"} in ${formatDuration(reset - now)}`;
-  const facts = [item.data.demo ? "Test pause" : item.data.event === "recovery" ? "Saved through a Paseo restart" : "Paused at the session limit", at, providerName(item.data.provider),
+  const facts = [providerName(item.data.provider),
     item.data.usedPct === null ? null : `${Math.round(item.data.usedPct)}% used`,
     item.data.native ? "native subagents frozen" : "turn interrupted",
     auto ? null : "continue by hand"].filter(Boolean).join(" · ");
   const accent = stuck ? c.statusDanger : c.statusWarning;
 
-  return <View style={[{ borderRadius: 12, backgroundColor: c.surface1, paddingHorizontal: 14, paddingVertical: 12, gap: 8 }, stuck ? { borderWidth: 1, borderColor: withAlpha(c.statusDanger, 0.6) } : raised(c)]}>
-    {stuck ? <>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Icon name="TriangleAlert" size={14} color={accent} />
-        <Text style={{ ...t.label, flex: 1, color: c.statusDanger }}>Pause needs attention</Text>
-        <Text style={t.meta}>{at}</Text>
-      </View>
-      <Text style={t.body}>{pause?.note ?? (pause?.dismissed ? "Worker release needs attention. Automatic continuation is cancelled." : "Check the session before continuing by hand.")}</Text>
-    </> : <>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", rowGap: 0 }}>
-        <Icon name="Pause" size={compact ? 15 : 16} color={accent} />
-        <Text style={{ color: c.foreground, fontSize: compact ? 18 : 20, lineHeight: compact ? 24 : 26, fontWeight: "600", ...tabular }}>{big}</Text>
-        <Text style={{ ...t.meta, fontSize: 13, flexShrink: 1 }}>{countdown}</Text>
-      </View>
-      <Text style={t.meta}>{facts}</Text>
-      {item.data.event === "recovery" ? <Text style={t.meta}>The original workers ended; the conversation and workspace stay in place.</Text> : null}
-    </>}
-    {!loaded ? <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}><Spinner color={c.foregroundMuted} size={11} /><Text style={t.meta}>Checking the pause…</Text></View> : null}
-    {pause?.phase === "resuming" ? <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}><Spinner color={c.foregroundMuted} size={11} /><Text style={t.meta}>Resuming…</Text></View> : null}
-    {waiting ? <View style={{ gap: 6 }}>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-        <Button theme={theme} small compact={compact} icon="Play" title={action === "resume" ? "Resuming…" : "Resume now"} loading={action === "resume"} disabled={busy}
-          accessibilityHint={item.data.demo ? "Releases this test session and turns its protection off." : "Continues before the reset and turns protection off for this session. The provider may still refuse work until the reset."} onPress={() => void act("resume")} />
-        <Button theme={theme} small compact={compact} kind="ghost" title={action === "dismiss" ? "Dismissing…" : "Dismiss pause"} disabled={busy}
-          accessibilityLabel="Dismiss pause without sending a message" onPress={() => void act("dismiss")} />
-        <View style={{ flex: 1, minWidth: 8 }} />
-        <TextLink theme={theme} compact={compact} label="All paused" onPress={openOverview} />
-      </View>
-      <Text style={t.small}>{item.data.demo ? "Resume now releases this test session and turns its protection off." : "Resume now turns protection off for this session · Dismiss sends nothing"}</Text>
-    </View> : null}
-    {stuck && pause?.dismissed ? <View style={{ flexDirection: "row" }}>
-      <Button theme={theme} small compact={compact} title={action === "dismiss" ? "Dismissing…" : "Retry dismissal"} disabled={busy}
-        accessibilityLabel="Retry dismissing pause without sending a message" onPress={() => void act("dismiss")} />
-    </View> : null}
-    {error ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{error}</Text> : null}
-    {statusError ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{statusError}</Text> : null}
-    {stuck ? <TextLink theme={theme} compact={compact} label="All paused sessions" onPress={openOverview} /> : null}
-  </View>;
+  return shell(stuck, <>
+    {stuck ? titleRow("TriangleAlert", accent, "Pause needs attention", c.statusDanger)
+      : titleRow("Pause", accent, item.data.demo ? "Test pause" : item.data.event === "recovery" ? "Still paused after a Paseo restart" : "Paused at the session limit")}
+    <View style={{ paddingHorizontal: 14, paddingBottom: 11, gap: 8 }}>
+      {stuck ? <Text style={t.body}>{pause?.note ?? (pause?.dismissed ? "Releasing the workers needs a look. Automatic continuation is cancelled." : "Check the session before continuing by hand.")}</Text> : <>
+        <View style={{ gap: 2 }}>
+          <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8, flexWrap: "wrap", rowGap: 0 }}>
+            <Text style={{ color: c.foreground, fontSize: compact ? 17 : 18, lineHeight: compact ? 22 : 24, fontWeight: "600", ...tabular }}>{big}</Text>
+            <Text style={{ ...t.meta, fontSize: 13, flexShrink: 1 }}>{countdown}</Text>
+          </View>
+          <Text style={t.meta}>{facts}</Text>
+          {item.data.event === "recovery" ? <Text style={t.meta}>The original workers ended; the conversation and workspace stay in place.</Text> : null}
+        </View>
+      </>}
+      {!loaded ? <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}><Spinner color={c.foregroundMuted} size={11} /><Text style={t.meta}>Checking the pause…</Text></View> : null}
+      {pause?.phase === "resuming" ? <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}><Spinner color={c.foregroundMuted} size={11} /><Text style={t.meta}>Resuming…</Text></View> : null}
+      {waiting ? <View style={{ gap: 6 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+          <Button theme={theme} small compact={compact} icon={PAUSE_ACTIONS.resume.icon} title={action === "resume" ? PAUSE_ACTIONS.resume.busy : PAUSE_ACTIONS.resume.label} loading={action === "resume"} disabled={busy}
+            accessibilityHint={item.data.demo ? "Releases this test session and stops it pausing at the limit." : PAUSE_ACTIONS.resume.hint} onPress={() => void act("resume")} />
+          <Button theme={theme} small compact={compact} kind="ghost" title={action === "dismiss" ? PAUSE_ACTIONS.dismiss.busy : PAUSE_ACTIONS.dismiss.label} disabled={busy}
+            accessibilityHint={PAUSE_ACTIONS.dismiss.hint} onPress={() => void act("dismiss")} />
+          <View style={{ flex: 1, minWidth: 8 }} />
+          <TextLink theme={theme} compact={compact} label="Paused sessions" onPress={openOverview} />
+        </View>
+        <Text style={t.small}>{item.data.demo ? "Resume now releases this test session." : PAUSE_ACTIONS.note}</Text>
+      </View> : null}
+      {stuck && pause?.dismissed ? <View style={{ flexDirection: "row" }}>
+        <Button theme={theme} small compact={compact} title={action === "dismiss" ? "Dismissing…" : "Retry dismissal"} disabled={busy}
+          accessibilityLabel="Retry dismissing pause without sending a message" onPress={() => void act("dismiss")} />
+      </View> : null}
+      {error ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{error}</Text> : null}
+      {statusError ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{statusError}</Text> : null}
+      {stuck ? <TextLink theme={theme} compact={compact} label="Paused sessions" onPress={openOverview} /> : null}
+    </View>
+  </>);
 }
-

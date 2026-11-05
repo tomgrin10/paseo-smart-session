@@ -17,15 +17,15 @@ export function timelinePresentation(data: TimelineData) {
   if (data.event === "released" && data.dismissed) return { title: "Pause dismissed", icon: "ShieldOff", tone: "muted" as const,
     detail: "No message was sent. Protection is off for this session." + (data.native ? " Existing workers were released; their current work may continue." : "") };
   if (data.event === "resumed") return { title: "Session resumed", icon: "Play", tone: "success" as const,
-    detail: data.manualResume ? "Resumed by you. Protection is off for this session; restore it from the composer pill when ready."
+    detail: data.manualResume ? "Resumed by you. Pause at the limit is off for this session; turn it back on from the composer pill."
       : data.native ? "Session and native subagents resumed after the quota reset." : "A continuation was sent after the quota reset." };
   if (data.event === "released") return { title: data.native ? "Session released" : "Automatic resume cancelled", icon: "ShieldOff", tone: "muted" as const,
     detail: data.note ?? (data.native ? "Suspended workers were released." : "Continue this session manually when ready.") };
   if (data.event === "attention") return { title: "Pause needs attention", icon: "TriangleAlert", tone: "danger" as const,
     detail: data.note ?? "Check this session before continuing manually." };
   if (data.event === "recovery") return { title: "Waiting after Paseo restart", icon: "Pause", tone: "warning" as const,
-    detail: `The original workers ended, but this pause is saved. ${data.autoResume ? "Session Guard will continue this conversation after the quota resets." : "Automatic resume is off; continue manually when ready."} Your workspace and conversation remain in place.` };
-  if (data.demo) return { title: "Session Guard demo paused", icon: "Pause", tone: "warning" as const,
+    detail: `The original workers ended, but this pause is saved. ${data.autoResume ? "Smart Session continues this conversation after the window resets." : "Automatic resume is off; continue by hand when ready."} Your workspace and conversation remain in place.` };
+  if (data.demo) return { title: "Test pause", icon: "Pause", tone: "warning" as const,
     detail: "This empty test session is suspended so you can try Resume now. No provider quota was changed, and no task was sent. It will wait for you to resume it." };
   const reset = data.resetAt ? Date.parse(data.resetAt) : NaN;
   const resetLabel = Number.isFinite(reset) ? `Expected reset ${new Date(reset).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}.` : "The provider has not reported a reset time yet.";
