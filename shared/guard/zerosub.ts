@@ -214,7 +214,7 @@ const pctOf = (window: UsageWindow): number | null =>
  * window: the session window the guard watches can show room while the account is
  * out for days. A recorded budget limit counts too: the account takes no turn.
  */
-function outUntil(row: ProviderUsage, account: ZeroSubAccount, now: number): number | null {
+export function outUntil(row: ProviderUsage, account: ZeroSubAccount, now: number): number | null {
   const ends: number[] = [];
   const until = time(account.limitedUntil);
   if (until !== null && until > now) ends.push(until);

@@ -14,7 +14,7 @@ import { readAgents, withDaemon } from "./daemon.ts";
 import { readZeroSub } from "./guard/zerosub.ts";
 import { appendAccount, readAccounts, readUsage, type AccountSample } from "./store.ts";
 import { burnRatePctPerHour, segmentBlocks, thinPoints } from "../shared/blocks.ts";
-import { accountOf, type ZeroSubAccount, type ZeroSubReading, type ZeroSubSnapshot, type ZeroSubWindow } from "../shared/guard/zerosub.ts";
+import { accountOf, outUntil, type ZeroSubAccount, type ZeroSubReading, type ZeroSubSnapshot, type ZeroSubWindow } from "../shared/guard/zerosub.ts";
 import { STALE_AFTER_MS, poolForecast, subscriptionName, type Subscription, type SubscriptionWindow } from "../shared/subscriptions.ts";
 import { canonicalWindowId, effectiveAt, type UsageSample } from "../shared/usage.ts";
 
@@ -142,6 +142,11 @@ export function buildView(
       signedIn: account.signedIn,
       disabled: account.disabled,
       limitedUntil: account.limitedUntil,
+      outUntil: (() => {
+        // The guard's rule for "out", over the windows shown here.
+        const out = outUntil({ providerId: account.family, status: windows.length > 0 ? "available" : "unavailable", fetchedAt: readAt, windows: windows.map((w) => ({ id: w.id, usedPct: w.pct, remainingPct: null, resetsAt: w.resetsAt })) }, account, now);
+        return out === null ? null : new Date(out).toISOString();
+      })(),
       createdAt: account.createdAt,
       agents: counts.get(account.id) ?? 0,
       readAt,

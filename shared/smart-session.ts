@@ -112,6 +112,8 @@ export const SubscriptionSchema = z.object({
   signedIn: z.boolean(),
   disabled: z.boolean(),
   limitedUntil: z.string().nullable(),
+  /** When the account has room again (the guard's own rule); null while it has room. */
+  outUntil: z.string().nullable().optional(),
   createdAt: z.string().nullable(),
   agents: z.number(),
   readAt: z.string().nullable(),

@@ -54,6 +54,12 @@ export interface Subscription {
   readonly disabled: boolean;
   /** A limit the CLI reported, until it lifts. */
   readonly limitedUntil: string | null;
+  /**
+   * When the account has room again, by the guard's own rule (`outUntil` in
+   * `shared/guard/zerosub.ts`): a limit ZeroSub recorded or a full window, weekly
+   * included. Null while it has room; absent from older servers, when the windows decide.
+   */
+  readonly outUntil?: string | null;
   readonly createdAt: string | null;
   /** Live sessions on this account now. */
   readonly agents: number;
@@ -130,6 +136,7 @@ export function limitedWindow(account: Subscription, now: number): SubscriptionW
  * limit time stands only when no window explains it (a budget limit, or a later one).
  */
 export function limitEnd(account: Subscription, now: number): number | null {
+  if (account.outUntil !== undefined) { const out = time(account.outUntil); return out !== null && out > now ? out : null; }
   const limited = time(account.limitedUntil);
   const full = fullUntil(account, now);
   const window = limitedWindow(account, now);
@@ -153,7 +160,8 @@ export function subscriptionState(account: Subscription, now: number, hour12?: b
   if (!account.signedIn) return { kind: "signed-out", label: "Signed out", tone: "muted", until: null, staleMs };
   const limited = time(account.limitedUntil);
   const full = fullUntil(account, now);
-  if ((limited !== null && limited > now) || full !== undefined) {
+  const out = account.outUntil === undefined ? (limited !== null && limited > now) || full !== undefined : limitEnd(account, now) !== null;
+  if (out) {
     const until = limitEnd(account, now);
     return { kind: "limit", label: until === null ? "At the limit" : `At the limit until ${at(until)}`, tone: "danger", until, staleMs };
   }
@@ -246,7 +254,8 @@ function simAccount(a: Subscription, rank: number, now: number): SimAccount {
   return {
     a, rank, p5, r5, weeklyPct, weeklyFullAt, wReset,
     usable: a.signedIn && !a.disabled,
-    limitedUntil: Math.max(limited !== null && limited > now ? limited : 0, otherUntil ?? 0) || null,
+    // The guard's verdict when the server sends it; else ZeroSub's limit and any other full cap.
+    limitedUntil: a.outUntil !== undefined ? limitEnd(a, now) : Math.max(limited !== null && limited > now ? limited : 0, otherUntil ?? 0) || null,
   };
 }
 

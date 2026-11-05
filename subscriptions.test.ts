@@ -297,3 +297,24 @@ test("pool: work stays on its own account, so the takeover lands when that accou
   assert.equal(pool.current, "claude-main");
   assert.equal(pool.lanes.personal![0]!.kind, "active", "the other account's own work keeps running there");
 });
+
+test("out uses the guard's own rule: a full week holds the account even with room in its session window", async () => {
+  const { buildView } = await import("./server/subscriptions.ts");
+  const { parseZeroSub } = await import("./shared/guard/zerosub.ts");
+  const weekEnd = NOW + 2 * 24 * H;
+  const state = { accounts: [
+    { id: "claude-main", family: "claude", label: "x@example.com", kind: "main", createdAt: iso(NOW - 9 * H) },
+    { id: "claude-w", family: "claude", label: "Work", autoLabel: false, kind: "managed", createdAt: iso(NOW - 8 * H) },
+  ] };
+  const usage = { "claude-w": { fetchedAt: iso(NOW - 60_000), windows: [
+    { id: "five_hour", usedPercent: 12, resetsAt: iso(NOW + 3 * H) }, { id: "seven_day", usedPercent: 100, resetsAt: iso(weekEnd) },
+  ] } };
+  const view = buildView(parseZeroSub(state, usage, undefined)!, { recorded: [], accountRows: [], liveAgents: [] }, NOW);
+  const work = view.accounts.find((a) => a.id === "claude-w")!;
+  assert.equal(work.outUntil, iso(weekEnd));
+  const st = subscriptionState(work, NOW);
+  assert.equal(st.kind, "limit");
+  assert.equal(st.until, weekEnd);
+  // The pool agrees: no room there until the week resets.
+  assert.equal(poolForecast(view.accounts, "claude", NOW, { autoSwitch: true }).lanes["claude-w"]![0]!.kind, "limit");
+});
