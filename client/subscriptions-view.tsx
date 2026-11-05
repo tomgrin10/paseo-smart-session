@@ -63,7 +63,7 @@ function Runway({ theme, pool, accounts, now, compact }: { theme: Theme; pool: P
       {compact ? null : <View style={{ width: nameWidth }} />}
       <View style={{ flex: 1, height: 14 }}>
         <Text style={{ ...t.small, fontSize: 10, lineHeight: 14, position: "absolute", left: 0 }}>Now</Text>
-        {ticks.map((h, i) => (Math.round(h / HOUR) % every === 0 && (h - now) / span > 0.08 && (end - h) / span > 0.06)
+        {ticks.map((h, i) => (Math.round(h / HOUR) % every === 0 && (h - now) / span > (compact ? 0.13 : 0.08) && (end - h) / span > 0.06)
           ? <Text key={i} style={{ ...t.small, fontSize: 10, lineHeight: 14, position: "absolute", left: at(h) as `${number}%`, transform: [{ translateX: -30 }], width: 60, textAlign: "center" }}>{hourLabel(h, now)}</Text>
           : null)}
       </View>
@@ -115,8 +115,8 @@ function AccountRow({ theme, account, now, compact, first, alone }: { theme: The
   const f = s5 && !stale && !(s5.resetsAt && Date.parse(s5.resetsAt) <= now) ? forecastWindow(s5, now) : null;
   const facts = [
     account.agents > 0 ? `${account.agents} ${account.agents === 1 ? "session" : "sessions"} on it` : null,
-    f && (f.state === "short" || f.state === "ok") ? paceLine(f, now) : null,
-    stale ? `Reading ${formatDuration(state.staleMs!)} old` : null,
+    f && state.kind === "room" && (f.state === "short" || f.state === "ok") ? paceLine(f, now) : null,
+    stale && !muted ? `Reading ${formatDuration(state.staleMs!)} old` : null,
     account.credits ? (account.credits.unlimited ? "Unlimited credits" : account.credits.balance !== null ? `${Math.round(account.credits.balance).toLocaleString()} credits` : null) : null,
   ].filter(Boolean);
 
@@ -174,7 +174,7 @@ export function SubscriptionsSection({ theme, compact, accounts, pools, now, aut
 /** The family's one line in its card: the headline's facts, which the title already frames. */
 function headLine(head: { title: string; detail: string }, pool: PoolForecast): string {
   // "Claude · 2 subscriptions last until about 9:40 PM" → "Last until about 9:40 PM".
-  const lead = head.title.replace(/^(Claude|Codex) · \d+ subscriptions /, "").replace(/^(Claude|Codex) /, "");
+  const lead = head.title.replace(/^(Claude|Codex) · \d+ subscriptions? /, "").replace(/^(Claude|Codex) /, "");
   const sentence = lead.charAt(0).toUpperCase() + lead.slice(1);
   if (pool.pace === null && pool.runsOutAt === null) return head.detail;
   return [sentence, head.detail].filter(Boolean).join(" · ");

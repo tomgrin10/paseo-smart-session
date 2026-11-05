@@ -183,7 +183,11 @@ test("at the limit: ZeroSub's move, or the pause when nothing has room", () => {
   assert.equal(atTheLimit(accounts, "claude-main", NOW, { autoSwitch: true, protectedHere: true }).text, "At the limit, ZeroSub moves it to Personal (64% left)");
   const none = [account("claude-main", { p5: 60, r5: NOW + 2 * H }), account("full", { p5: 100, r5: NOW + 3 * H })];
   assert.match(atTheLimit(none, "claude-main", NOW, { autoSwitch: true, protectedHere: true }).text, /^No other account has room · Smart Session pauses it until /);
-  assert.match(atTheLimit(none, "claude-main", NOW, { autoSwitch: true, protectedHere: false }).text, /it stops at the limit/);
+  assert.match(atTheLimit(none, "claude-main", NOW, { autoSwitch: true, protectedHere: false }).text, /at the limit it stops until \d\d:\d\d|at the limit it stops until \d+:\d\d/);
+  // Already full: it waits for whichever account is back first, and names it when it is another.
+  const both = [account("claude-main", { p5: 100, r5: NOW + 2 * H }), account("work", { p5: 100, r5: NOW + H, name: "Personal" })];
+  const waiting = atTheLimit(both, "claude-main", NOW, { autoSwitch: true, protectedHere: false }).text;
+  assert.match(waiting, /^No other account has room · it waits until .* \(Personal\)$/);
   assert.match(atTheLimit(accounts, "claude-main", NOW, { autoSwitch: false, protectedHere: false }).text, /^Automatic switching is off/);
 });
 

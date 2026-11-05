@@ -156,6 +156,8 @@ export interface Takeover {
 export interface PoolForecast {
   readonly family: Family;
   readonly total: number;
+  /** Accounts signed in and not set aside: the ones the pool can use at all. */
+  readonly usable: number;
   /** Accounts that could take an agent right now. */
   readonly withRoom: number;
   /** The pool's measured pace in session-window points per hour; null when nothing is in use. */
@@ -270,7 +272,7 @@ export function poolForecast(
     return rate !== null && rate >= IDLE_RATE ? [{ on: s, rate, stalled: false }] : [];
   }).sort((x, y) => y.rate - x.rate);
   const pace = streams.reduce((sum, w) => sum + w.rate, 0);
-  const base = { family, total: mine.length, withRoom, autoSwitch: options.autoSwitch, horizon, stale };
+  const base = { family, total: mine.length, usable: sims.filter((s) => s.usable).length, withRoom, autoSwitch: options.autoSwitch, horizon, stale };
 
   const takeovers: Takeover[] = [];
   let runsOutAt: number | null = null;
@@ -357,6 +359,8 @@ export function poolHeadline(pool: PoolForecast, accounts: readonly Subscription
   const name = (id: string | null) => accounts.find((a) => a.id === id)?.name ?? "another account";
   const at = (ms: number) => formatMoment(new Date(ms).toISOString(), now, hour12);
   const subs = `${pool.total} ${plural(pool.total, "subscription", "subscriptions")}`;
+  // What lasts is what can be used: set-aside and signed-out accounts are not counted in.
+  const usable = `${pool.usable} ${plural(pool.usable, "subscription", "subscriptions")}`;
   const roughly = pool.stale > 0 ? `${pool.stale} ${plural(pool.stale, "reading is", "readings are")} over 30 min old` : null;
   const join = (...parts: (string | null)[]) => parts.filter(Boolean).join(" · ");
 
@@ -369,7 +373,7 @@ export function poolHeadline(pool: PoolForecast, accounts: readonly Subscription
   const moves = pool.takeovers.slice(0, 2).map((m, i) => `${i === 0 ? "" : "then "}${name(m.accountId)} ${i === 0 ? "takes over" : ""} at ${at(m.at)}`.replace(/ {2}/g, " "));
   if (pool.runsOutAt !== null) {
     const soon = pool.runsOutAt - now <= 30 * MINUTE;
-    const lead = pool.total === 1 ? `${fam} runs out around ${at(pool.runsOutAt)}` : `${fam} · ${subs} last until about ${at(pool.runsOutAt)}`;
+    const lead = pool.usable <= 1 ? `${fam} runs out around ${at(pool.runsOutAt)}` : `${fam} · ${usable} last until about ${at(pool.runsOutAt)}`;
     const back = pool.backAt !== null ? `first one back at ${at(pool.backAt)}` : null;
     const off = !pool.autoSwitch && pool.total > 1 ? "automatic switching is off in ZeroSub" : null;
     return { title: lead, detail: join(...moves, off, back, `at ${rounded(pool.pace ?? 0)}%/h`, roughly), tone: soon ? "danger" : "warning" };
@@ -377,7 +381,7 @@ export function poolHeadline(pool: PoolForecast, accounts: readonly Subscription
   if (pool.pace !== null) {
     const through = `past ${at(pool.horizon)}`;
     return {
-      title: pool.total === 1 ? `${fam} lasts at this pace` : `${fam} · ${subs} last at this pace`,
+      title: pool.usable <= 1 ? `${fam} lasts at this pace` : `${fam} · ${usable} last at this pace`,
       detail: join(moves.length > 0 ? moves.join(", ") : `No switch needed ${through}`, `${rounded(pool.pace)}%/h`, roughly),
       tone: "default",
     };
@@ -427,16 +431,22 @@ export function atTheLimit(
     const left = roomLeft(target.a, now);
     return { text: `At the limit, ZeroSub moves it to ${target.a.name}${left === null ? "" : ` (${Math.round(left)}% left)`}`, tone: "default", target: target.a.id };
   }
-  const states = sims.map((s) => subscriptionState(s.a, now, options.hour12));
-  const backs = states.map((s) => s.until).filter((u): u is number => u !== null);
-  const s5 = sessionWindow(own);
-  const ownReset = time(s5?.resetsAt);
-  const back = ownReset !== null && ownReset > now ? Math.min(ownReset, ...backs) : backs.length > 0 ? Math.min(...backs) : null;
-  const when = back === null ? "the reset" : formatMoment(new Date(back).toISOString(), now, options.hour12);
+  // Nowhere to go: when is the first account back (this one at its reset, or another), and which.
+  const backs = sims.map((s, i) => {
+    const st = subscriptionState(s.a, now, options.hour12);
+    if (st.kind === "limit") return { s, at: st.until };
+    if (st.kind !== "room") return { s, at: null };
+    // An account with room now: this one is back at its own reset; another one is already back.
+    const reset = time(sessionWindow(s.a)?.resetsAt);
+    return { s, at: i === 0 ? (reset !== null && reset > now ? reset : null) : now };
+  }).filter((b): b is { s: SimAccount; at: number } => b.at !== null).sort((x, y) => x.at - y.at);
+  const first = backs[0] ?? null;
+  const when = first === null ? "the reset" : formatMoment(new Date(first.at).toISOString(), now, options.hour12);
+  const which = first !== null && first.s !== sims[0] ? ` (${first.s.a.name})` : "";
+  const fullNow = subscriptionState(own, now, options.hour12).kind === "limit";
   const lead = others.length === 0 ? "No other account" : !options.autoSwitch ? "Automatic switching is off" : "No other account has room";
-  return {
-    text: options.protectedHere ? `${lead} · Smart Session pauses it until ${when}` : `${lead} · it stops at the limit${back === null ? "" : ` until ${when}`}`,
-    tone: others.length > 0 ? "warning" : "default",
-    target: null,
-  };
+  const text = options.protectedHere ? `${lead} · Smart Session pauses it until ${when}${which}`
+    : fullNow ? `${lead} · it waits until ${when}${which}`
+      : `${lead} · at the limit it stops until ${when}${which}`;
+  return { text, tone: others.length > 0 ? "warning" : "default", target: null };
 }
