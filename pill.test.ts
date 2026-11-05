@@ -50,7 +50,7 @@ test("the quiet case stays quiet; only an excluded session says so, in words", (
 test("paused, the pill becomes the pause and leads with the moment it comes back", () => {
   const view = describePill("a", agent, pills, status({ pauses: [pause()] }), NOW);
   assert.match(view.label, /^Resumes /);
-  assert.match(view.title, /Paused at the session limit/);
+  assert.match(view.title, /^Paused at the limit · resumes /);
   const policy = PolicySchema.parse({ enabled: true });
   assert.equal(pausePill(pause(), policy, NOW, clock).label, "Resumes 17:58");
   assert.equal(pausePill(pause(), { ...policy, autoResume: false }, NOW, clock).label, "Paused · resets 17:58");

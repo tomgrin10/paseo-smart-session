@@ -141,7 +141,8 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const pausedY = useRef<number | null>(null);
     // "Paused sessions" from anywhere lands on the list, however long the page above it.
     useEffect(() => {
-      if (focus === "paused" && pausedY.current !== null) scroller.current?.scrollTo({ y: Math.max(0, pausedY.current - 12), animated: false });
+      // Only when the list starts below the first screenful; otherwise the lead stays in view.
+      if (focus === "paused" && pausedY.current !== null && pausedY.current > 400) scroller.current?.scrollTo({ y: Math.max(0, pausedY.current - 12), animated: false });
     }, [focus, guard !== undefined]);
 
     useEffect(() => { if (budgetQuery.data) live.setBudget(budgetQuery.data); }, [budgetQuery.data]);
@@ -240,7 +241,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const pausedSection = showPaused ? <View onLayout={(event) => {
       const first = pausedY.current === null;
       pausedY.current = event.nativeEvent.layout.y;
-      if (first && focus === "paused") scroller.current?.scrollTo({ y: Math.max(0, pausedY.current - 12), animated: false });
+      if (first && focus === "paused" && pausedY.current > 400) scroller.current?.scrollTo({ y: Math.max(0, pausedY.current - 12), animated: false });
     }}>
       {guard === undefined ? <LoadingCard theme={theme} rows={1} /> : <PausedSection theme={theme} layout={layout} host={host} navigation={navigation} status={guard} shared={pauseLead?.shared ?? null} now={now} openSettings={() => client.openSettings(SMART_COMPACT_SETTINGS)} />}
     </View> : null;

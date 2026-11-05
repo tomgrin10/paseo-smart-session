@@ -3,7 +3,7 @@ import { Text, TextInput, View } from "react-native";
 import { type PluginScreenProps, useRpc } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/ui";
 import { cancelResumeRpc, setProtectionRpc, statusRpc } from "../../shared/guard/contracts.ts";
-import { governorNotice, pauseOwnerNote, pausedSessions, pausePresentation } from "../../shared/guard/presentation.ts";
+import { governorNotice, pauseOwnerNote, pausedLead, pausedSessions, pausePresentation } from "../../shared/guard/presentation.ts";
 import { timestamp, type Pause } from "../../shared/guard/policy.ts";
 import { formatDuration } from "../../shared/format.ts";
 import { formatMoment } from "../../shared/forecast.ts";
@@ -18,7 +18,7 @@ const providerName = (id: string) => (id === "claude" ? "Claude" : id === "codex
  * each session's window resets and whether it continues by itself. Rows act only on
  * pauses this process governs; another governor's pauses are listed read-only.
  */
-export function PausedSection({ theme, layout, host, navigation, status, shared, now, openSettings }: Pick<PluginScreenProps, "theme" | "layout" | "host" | "navigation"> & {
+export function PausedSection({ theme, layout, host, navigation, status, shared: lead, now, openSettings }: Pick<PluginScreenProps, "theme" | "layout" | "host" | "navigation"> & {
   status: GuardStatus | null; shared: number | null; now: number; openSettings(): void;
 }) {
   const c = theme.colors;
@@ -44,6 +44,9 @@ export function PausedSection({ theme, layout, host, navigation, status, shared,
   const notice = status ? governorNotice(status) : null;
   const owner = status ? pauseOwnerNote(status) : null;
   const autoResume = status ? status.policy.enabled && status.policy.autoResume : false;
+  // The overview's lead names the shared reset only for pauses governed here; the list
+  // finds it itself otherwise, so rows never repeat a time the section already implies.
+  const shared = lead ?? pausedLead(all, autoResume, now, String)?.shared ?? null;
 
   const row = (pause: Pause, i: number) => {
     const presentation = pausePresentation(pause, status!.policy, now);
@@ -54,7 +57,8 @@ export function PausedSection({ theme, layout, host, navigation, status, shared,
     const after = stuck ? (pause.note ?? "It stopped before the pause was confirmed. Check it before continuing by hand.")
       : pause.demo ? "Test pause · waits for you"
         : reset === null ? "Waiting for the provider to report the reset"
-          : reset > now ? `${autoResume ? "Resumes" : "Resets"} in ${formatDuration(reset - now)}`
+          // The lead already says when a shared reset lands; the row says what happens then.
+          : reset > now ? (ownTime === null && shared !== null ? (autoResume ? "Continues in the same conversation" : "Continue it by hand after the reset") : `${autoResume ? "Resumes" : "Resets"} in ${formatDuration(reset - now)}`)
             : `Reset was ${formatMoment(pause.anchorResetsAt!, now)} · waiting for a fresh reading`;
     return <CardRow key={pause.id} theme={theme} first={i === 0} style={{ gap: 6 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -67,7 +71,6 @@ export function PausedSection({ theme, layout, host, navigation, status, shared,
         {[providerName(pause.provider), presentation.coverage].map((chip) => <Chip key={chip} theme={theme} label={chip} />)}
         {owner ? <Chip theme={theme} label="Read-only here" /> : null}
       </View>
-      {owner ? <Text style={{ ...t.meta, paddingLeft: 22 }}>{owner}</Text> : null}
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 2, paddingLeft: 22 }}>
         {navigation ? <Button theme={theme} small compact={compact} icon={compact ? undefined : "ArrowUpRight"} title="Open session" onPress={() => navigation.openAgent({ agentId: pause.agentId, serverId: host.id })} /> : null}
         <View style={{ flex: 1, minWidth: 8 }} />
@@ -86,6 +89,7 @@ export function PausedSection({ theme, layout, host, navigation, status, shared,
       <View style={{ flex: 1, gap: 3 }}>
         <Text style={t.label}>{notice.title}</Text>
         <Text style={t.meta}>{notice.hint}</Text>
+        {owner && status?.governor === "off" ? <Text style={t.meta}>{owner}</Text> : null}
       </View>
       <TextLink theme={theme} compact={compact} icon="Settings" label="Settings" onPress={openSettings} />
     </CardRow></Card> : null}

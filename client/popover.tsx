@@ -133,7 +133,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
           <Text style={t.meta}>{look.coverage}</Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <Button theme={theme} small compact={compact} kind="ghost" icon={pause.suspension ? "Play" : "X"} title={saving === "release" ? "Updating…" : look.actionLabel} disabled={saving !== null}
+          <Button theme={theme} small compact={compact} icon={pause.suspension ? "Play" : "X"} title={saving === "release" ? "Updating…" : look.actionLabel} disabled={saving !== null}
             accessibilityHint={look.actionHint} onPress={() => void release()} />
           <View style={{ flex: 1 }} />
           <TextLink theme={theme} compact={compact} label="All paused sessions" onPress={() => openOverview("paused")} />
@@ -147,7 +147,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       if (protection.kind === "on") {
         const meta = protection.protected
           ? `Pauses at ${protection.thresholdPct}% of the session window, ${protection.autoResume ? "continues after the reset" : "you continue it after the reset"}`
-          : "Runs into the limit like an unprotected session";
+          : "Not paused for this session; work stops when the provider refuses it";
         const source = protection.override === null ? (protection.byDefault ? "Your default" : "Your default is off") : "Changed for this session";
         return <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <View style={{ flex: 1, gap: 2 }}>

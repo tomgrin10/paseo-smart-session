@@ -70,7 +70,9 @@ export function governorNotice(status: GovernorView): { title: string; hint: str
   if (status.governor === "active") return null;
   if (status.governor === "off") return { title: "Pause at the limit is off", hint: "Nothing pauses at the session limit. Turn it on in Smart Session settings." };
   if (status.governor === "deferred" && status.standalone !== false) {
-    return { title: "The standalone Session Guard plugin handles pausing here", hint: status.error ?? "Disable or uninstall it to hand over; its per-session choices and waiting pauses carry over." };
+    // One calm line; the server's longer story only adds what needs a look.
+    const stuck = status.error?.includes("could not be released") ? " Some paused sessions could not be released; check them." : "";
+    return { title: "The standalone Session Guard plugin handles pausing here", hint: `Disable or uninstall it to hand back; its per-session choices and waiting pauses carry over.${stuck}` };
   }
   if (status.governor === "deferred") return { title: "Another process handles pausing here", hint: status.error ?? "Nothing is paused from here until it stops." };
   return { title: "Pause at the limit isn't running", hint: status.error ?? "It will retry automatically." };
@@ -97,18 +99,18 @@ export function pauseOwnerNote(status: GovernorView): string | null {
  */
 export function pausePill(pause: Pause, policy: Policy, now = Date.now(), clock: (iso: string) => string = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })) {
   const reset = timestamp(pause.anchorResetsAt);
-  const subagents = pause.suspension ? " with its native subagents" : "";
-  if (pause.phase === "attention") return { label: "Check session", title: pause.note ?? "Paused at the session limit, then something changed. Check it before continuing.", tone: "danger" as const };
+  // The title is also the phone sheet's title: one short sentence, the detail is in the sheet.
+  if (pause.phase === "attention") return { label: "Check session", title: "Paused, then something changed · check it", tone: "danger" as const };
   if (pause.phase === "pausing") return { label: "Pausing…", title: "Pausing at the session limit", tone: "warning" as const };
-  if (pause.phase === "resuming") return { label: "Resuming…", title: "The window reset. Continuing this session now.", tone: "warning" as const };
-  if (pause.demo) return { label: "Paused · test", title: "A test pause. Resume it from its card in the chat; no quota was used.", tone: "warning" as const };
-  if (!policy.enabled) return { label: "Paused · on hold", title: `Paused at the session limit${subagents}. Pause at the limit is off, so nothing continues it until you turn it back on or cancel.`, tone: "warning" as const };
-  if (reset === null) return { label: "Paused", title: `Paused at the session limit${subagents}. Waiting for the provider to report the reset.`, tone: "warning" as const };
+  if (pause.phase === "resuming") return { label: "Resuming…", title: "The window reset · continuing now", tone: "warning" as const };
+  if (pause.demo) return { label: "Paused · test", title: "Test pause · waits for you", tone: "warning" as const };
+  if (!policy.enabled) return { label: "Paused · on hold", title: "Paused · on hold while Pause at the limit is off", tone: "warning" as const };
+  if (reset === null) return { label: "Paused", title: "Paused at the limit · reset time not reported yet", tone: "warning" as const };
   const at = clock(pause.anchorResetsAt!);
-  if (reset <= now) return { label: "Paused · reset due", title: `Paused at the session limit${subagents}. The window reset at ${at}; waiting for a fresh usage reading.`, tone: "warning" as const };
+  if (reset <= now) return { label: "Paused · reset due", title: `Paused at the limit · reset was ${at}`, tone: "warning" as const };
   return policy.autoResume
-    ? { label: `Resumes ${at}`, title: `Paused at the session limit${subagents} · resumes at ${at}, after the reset`, tone: "warning" as const }
-    : { label: `Paused · resets ${at}`, title: `Paused at the session limit${subagents} · the window resets at ${at}; continue it by hand`, tone: "warning" as const };
+    ? { label: `Resumes ${at}`, title: `Paused at the limit · resumes ${at}`, tone: "warning" as const }
+    : { label: `Paused · resets ${at}`, title: `Paused at the limit · resets ${at}, continue by hand`, tone: "warning" as const };
 }
 
 /**
