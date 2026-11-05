@@ -1,6 +1,16 @@
 {
   "id": "smart-session",
+  "name": "Smart Session",
   "icon": "assets/icon.png",
+  "description": "See when your plan runs out at this pace, how full each session's context is, and let agents checkpoint and compact themselves. Session Guard pauses work at the session limit and continues it after the reset.",
+  "media": [
+    "docs/media/smart-session-hero.png",
+    "docs/media/smart-session-flow.gif",
+    "docs/media/smart-session-pill.png",
+    "docs/media/smart-session-chat.png",
+    "docs/media/smart-session-guard.png",
+    "docs/media/smart-session-mobile.png"
+  ],
   "requirements": {
     "paseo": ">=0.14.0"
   }
