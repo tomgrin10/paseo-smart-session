@@ -1,8 +1,8 @@
 import { useRpc, useSettings, type PluginClientContext, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, type ReactNode } from "react";
-import { Platform, ScrollView, Text, View } from "react-native";
+import { useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { Platform, ScrollView, Text, View, type ScrollView as ScrollViewType } from "react-native";
 
 import { formatCompactTokens, formatDay, formatDuration, formatRelative, isInteresting } from "../shared/format";
 import {
@@ -10,20 +10,22 @@ import {
   type Tone, type WindowForecast,
 } from "../shared/forecast";
 import { enrolmentState } from "../shared/governor";
-import { guardPreferences, statusRpc as guardStatus } from "../shared/guard/contracts";
-import { governorNotice, pausedSessions } from "../shared/guard/presentation";
+import { guardPreferences } from "../shared/guard/contracts";
+import { governorNotice, pausedLead, pausedSessions } from "../shared/guard/presentation";
 import { budgetStatus, contextStatus, getSettings, installStatus, setSettings, spendSummary } from "../shared/smart-session";
 import { DailyBars, HourHeatmap, Meter, PastWindows, RankedTotals, Ring, WindowChart, ink, toneFill } from "./charts";
-import { refreshGuardPills } from "./guard/pills";
-import { GUARD_SCREENS } from "./guard/surfaces";
+import { Exceptions, PausedSection } from "./guard/paused";
+import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
 import { Card, CardRow, Chip, IconButton, SectionHead, StatusGlyph, Switch, TextLink, errorText, text, useNow } from "./kit";
 import type { Live } from "./live";
 import { Reveal, Skeleton } from "./motion";
 import { refreshPills } from "./pill-store";
+import { SETTINGS_SCREEN } from "./screens";
 import { tabular, toneColor, type Theme } from "./theme";
 
-export const OVERVIEW_SCREEN = "overview";
-export const SMART_COMPACT_SETTINGS = "smart-compact";
+export { OVERVIEW_SCREEN, PAUSED_SCREEN } from "./screens";
+/** The one settings screen; it kept Smart Compact's id so links to it still land. */
+export const SMART_COMPACT_SETTINGS = SETTINGS_SCREEN;
 
 const ORDER = (id: string) => (id === "five_hour" ? 0 : id === "seven_day" ? 1 : 2);
 
@@ -106,7 +108,7 @@ function FeatureRow({ theme, icon, title, line, tone = "default", on, onToggle, 
 }
 
 export function makeOverview(client: PluginClientContext, live: Live) {
-  return function SmartSessionOverview({ theme, layout, navigation }: PluginScreenProps) {
+  return function SmartSessionOverview({ theme, layout, navigation, host, params }: PluginScreenProps) {
     const c = theme.colors;
     const t = text(c);
     const compact = layout.compact;
@@ -120,7 +122,6 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const writeSettings = useRpc(setSettings);
     const readEnrolment = useRpc(enrolmentState);
     const readInstall = useRpc(installStatus);
-    const readGuard = useRpc(guardStatus);
     const guardSettings = useSettings(guardPreferences);
 
     // The recorder writes once a minute and the daemon caches usage for five, so
@@ -133,20 +134,30 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const enrolmentQuery = useQuery({ queryKey: ["smart-session", "enrolment"], queryFn: () => readEnrolment({}), refetchInterval: 30_000 });
     // Cheap after the first call: with nothing to reconcile it reads two files and writes none.
     const installQuery = useQuery({ queryKey: ["smart-session", "install"], queryFn: () => readInstall({}), refetchInterval: 5 * 60_000 });
-    const guardQuery = useQuery({ queryKey: ["smart-session", "guard"], queryFn: () => readGuard({}), refetchInterval: 15_000 });
+    // The pill's own status poll; this screen only reads it.
+    const guard = useSyncExternalStore(subscribeGuard, guardSnapshot, guardSnapshot) ?? undefined;
+    const focus = params?.focus === "paused" ? "paused" : null;
+    const scroller = useRef<ScrollViewType>(null);
+    const pausedY = useRef<number | null>(null);
+    // "Paused sessions" from anywhere lands on the list, however long the page above it.
+    useEffect(() => {
+      if (focus === "paused" && pausedY.current !== null) scroller.current?.scrollTo({ y: Math.max(0, pausedY.current - 12), animated: false });
+    }, [focus, guard !== undefined]);
 
     useEffect(() => { if (budgetQuery.data) live.setBudget(budgetQuery.data); }, [budgetQuery.data]);
     const guardValues = guardSettings.status === "ready" ? guardSettings.values : undefined;
     // A change made here or on another client moves the pills without waiting out their poll.
-    useEffect(() => { if (guardValues !== undefined) refreshGuardPills(); }, [guardValues]);
+    useEffect(() => { if (guardValues !== undefined) refreshGuard(); }, [guardValues]);
 
     const settings = settingsQuery.data?.settings;
     const forecasts = (budgetQuery.data?.windows ?? []).filter(isInteresting).map((w) => forecastWindow(w, now)).sort((a, b) => ORDER(a.id) - ORDER(b.id) || b.pct - a.pct);
     const lead = leadWindow(forecasts);
     const head = budgetQuery.data === undefined ? null : headline(lead, now);
     const session = budgetQuery.data?.windows.find((w) => w.id === "five_hour");
-    const guard = guardQuery.data;
     const paused = guard === undefined ? [] : pausedSessions(guard.pauses);
+    // The lead speaks only for pauses this process can act on; another governor's are listed, not announced.
+    const governed = guard?.governor === "active" ? paused : [];
+    const pauseLead = pausedLead(governed, guard?.policy.enabled === true && guard.policy.autoResume, now, (ms) => formatMoment(new Date(ms).toISOString(), now));
     const enrolled = new Set((enrolmentQuery.data?.agents ?? []).filter((a) => a.enrolled).map((a) => a.agentId));
     const agents = (contextQuery.data?.agents ?? []).filter((a) => a.status !== "closed");
     const recorder = budgetQuery.data?.recorder;
@@ -154,7 +165,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const error = budgetQuery.data?.error ?? contextQuery.data?.error ?? (budgetQuery.error ? errorText(budgetQuery.error) : null);
     const guardOn = guardSettings.status === "ready" ? guardSettings.values.enabled : null;
     const guardPct = guardOn && guard?.governor === "active" ? guard.policy.thresholdPct : null;
-    const openPaused = () => client.openScreen({ screenId: GUARD_SCREENS.paused });
+    const titleOf = (agentId: string) => (contextQuery.data?.agents.find((a) => a.agentId === agentId)?.title ?? paused.find((p) => p.agentId === agentId)?.title)?.trim() || `Session ${agentId.slice(0, 8)}`;
 
     async function saveSmartCompact(patch: Parameters<typeof writeSettings>[0], message: string) {
       try {
@@ -171,9 +182,9 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     function toggleGuard(next: boolean) {
       if (guardSettings.status !== "ready") return;
       void guardSettings.save({ ...guardSettings.values, enabled: next }, guardSettings.revision).then((saved) => {
-        if (!saved) return toast.error("Session Guard could not be changed. Try again.");
-        toast.show(next ? "Session Guard on" : "Session Guard off");
-        void guardQuery.refetch();
+        if (!saved) return toast.error("That change couldn't be saved. Try again.");
+        toast.show(next ? "Sessions pause at the limit" : "Pause at the limit off");
+        refreshGuard();
       });
     }
 
@@ -190,17 +201,13 @@ export function makeOverview(client: PluginClientContext, live: Live) {
       // Only the clause that is state wears the state colour.
       : pastLine > 0 ? <>{`${enrolled.size} enrolled · `}<Text style={{ color: c.statusWarning }}>{`${pastLine} past ${pastLine === 1 ? "its" : "their"} compact line, asked at the end of a turn`}</Text></>
         : `${enrolled.size} enrolled · asked past ${settings.thresholds.large.compact}% of a ${formatCompactTokens(settings.thresholds.largeWindowFrom)}+ window, ${settings.thresholds.small.compact}% of a smaller one`;
-    const waitingResets = paused.filter((p) => p.phase !== "attention").map((p) => (p.anchorResetsAt ? Date.parse(p.anchorResetsAt) : NaN)).filter((t) => Number.isFinite(t) && t > now).sort((a, b) => a - b);
     const guardState: { line: string; tone: Tone } = (() => {
       if (guardOn === null) return { line: "…", tone: "default" };
-      if (!guardOn) return { line: paused.length > 0 ? `Off · ${paused.length} paused still ${paused.length === 1 ? "waits" : "wait"} for the reset` : "Off · nothing pauses at the session limit", tone: "default" };
+      if (!guardOn) return { line: paused.length > 0 ? `Off · ${paused.length} paused still ${paused.length === 1 ? "waits" : "wait"} for the reset` : "Off · sessions run into the limit", tone: "default" };
       if (notice !== null && guard?.governor !== "off") return { line: notice.title, tone: "default" };
       const auto = guard?.policy.autoResume !== false;
-      if (paused.some((p) => p.phase === "attention")) return { line: `${paused.length} paused · ${paused.filter((p) => p.phase === "attention").length} need${paused.filter((p) => p.phase === "attention").length === 1 ? "s" : ""} a look`, tone: "danger" };
-      if (paused.length > 0) {
-        const at = waitingResets[0];
-        return { line: at === undefined ? `${paused.length} paused · waiting for a fresh reading` : `${paused.length} paused · ${auto ? `resume${paused.length === 1 ? "s" : ""} at` : "continue by hand after"} ${formatMoment(new Date(at).toISOString(), now)}`, tone: "warning" };
-      }
+      // Paused sessions have their own section and the lead; this line keeps to the rule.
+      if (paused.length > 0) return { line: `${paused.length} paused · listed above`, tone: "default" };
       const threshold = guard?.policy.thresholdPct ?? 100;
       const s5 = lead?.id === "five_hour" ? lead : null;
       if (s5 && s5.pct >= threshold) {
@@ -215,26 +222,34 @@ export function makeOverview(client: PluginClientContext, live: Live) {
       return { line: `Pauses at ${threshold}% of the session window · ${auto ? "resumes by itself" : "you continue"} after the reset`, tone: "default" };
     })();
 
-    const header = <View style={{ gap: 6 }}>
-      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
-        {head ? <View style={{ paddingTop: compact ? 3 : 5 }}><Icon name={toneIcon(head.tone, lead?.state ?? null)} size={compact ? 17 : 19} color={head.tone === "default" ? c.foregroundMuted : toneColor(c, head.tone)} /></View> : null}
-        <View style={{ flex: 1, gap: 4 }}>
-          {head ? <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: compact ? 19 : 22, lineHeight: compact ? 25 : 29, fontWeight: "600" }}>{head.title}</Text>
-            : <Skeleton width="60%" height={22} color={c.surface2} />}
-          {head ? <Text style={{ color: c.foregroundMuted, fontSize: 13, lineHeight: 19, ...tabular }}>{head.detail}</Text> : null}
-        </View>
-        <IconButton theme={theme} icon="Settings" label="Smart Session settings" compact={compact} onPress={() => client.openSettings(SMART_COMPACT_SETTINGS)} />
+    // While something is paused here, that is the news; the plan forecast moves to the line below.
+    const title = pauseLead !== null ? pauseLead.title : head?.title ?? null;
+    const detail = pauseLead !== null ? [head?.title, pauseLead.shared !== null ? `in ${formatDuration(pauseLead.shared - now)}` : null].filter(Boolean).join(" · ") : head?.detail ?? null;
+    const glyph = pauseLead !== null ? { icon: pauseLead.tone === "danger" ? "TriangleAlert" : "Pause", color: toneColor(c, pauseLead.tone) }
+      : head ? { icon: toneIcon(head.tone, lead?.state ?? null), color: head.tone === "default" ? c.foregroundMuted : toneColor(c, head.tone) } : null;
+    const header = <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+      {glyph ? <View style={{ paddingTop: compact ? 3 : 5 }}><Icon name={glyph.icon} size={compact ? 17 : 19} color={glyph.color} /></View> : null}
+      <View style={{ flex: 1, gap: 4 }}>
+        {title ? <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: compact ? 19 : 22, lineHeight: compact ? 25 : 29, fontWeight: "600" }}>{title}</Text>
+          : <Skeleton width="60%" height={22} color={c.surface2} />}
+        {detail ? <Text style={{ color: c.foregroundMuted, fontSize: 13, lineHeight: 19, ...tabular }}>{detail}</Text> : null}
       </View>
-      {paused.length > 0 && guard?.governor === "active" ? <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, paddingLeft: compact ? 27 : 29 }}>
-        <Chip theme={theme} icon="Pause" label={`${paused.length} paused`} color={paused.some((p) => p.phase === "attention") ? c.statusDanger : c.statusWarning} />
-        <TextLink theme={theme} label={paused.some((p) => p.phase === "attention") ? "Check the paused sessions" : "Session Guard resumes them after the reset"} onPress={openPaused} />
-      </View> : null}
+      <IconButton theme={theme} icon="Settings" label="Smart Session settings" compact={compact} onPress={() => client.openSettings(SMART_COMPACT_SETTINGS)} />
     </View>;
+    const showPaused = paused.length > 0 || focus === "paused";
+    const pausedSection = showPaused ? <View onLayout={(event) => {
+      const first = pausedY.current === null;
+      pausedY.current = event.nativeEvent.layout.y;
+      if (first && focus === "paused") scroller.current?.scrollTo({ y: Math.max(0, pausedY.current - 12), animated: false });
+    }}>
+      {guard === undefined ? <LoadingCard theme={theme} rows={1} /> : <PausedSection theme={theme} layout={layout} host={host} navigation={navigation} status={guard} shared={pauseLead?.shared ?? null} now={now} openSettings={() => client.openSettings(SMART_COMPACT_SETTINGS)} />}
+    </View> : null;
 
-    return <ScrollView style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ padding: compact ? 16 : 32, paddingBottom: 48 }}>
+    return <ScrollView ref={scroller} style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ padding: compact ? 16 : 32, paddingBottom: 48 }}>
       <View style={{ width: "100%", maxWidth: 860, alignSelf: "center", gap: compact ? 20 : 26 }}>
         {header}
         {error ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{error}</Text> : null}
+        {pausedSection}
 
         <View style={{ gap: 8 }}>
           <SectionHead theme={theme} title="Plan limits" />
@@ -271,6 +286,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
                     <StatusGlyph theme={theme} status={agent.status} />
                     <Text numberOfLines={1} style={{ ...t.label, flexShrink: 1 }}>{agent.title ?? `Session ${agent.agentId.slice(0, 8)}`}</Text>
                     <View style={{ flex: 1 }} />
+                    {governed.some((p) => p.agentId === agent.agentId) ? <Chip theme={theme} icon="Pause" label="Paused" color={c.statusWarning} /> : null}
                     {on ? <Chip theme={theme} label="Smart Compact" /> : compact ? null : <Text style={t.small}>Not enrolled</Text>}
                     <Ring size={16} color={outlook.tone !== "default" ? toneFill(c, outlook.tone) : on ? c.foreground : c.foregroundMuted} fraction={outlook.pct / 100} mark={on ? agent.compactAtPct / 100 : null} />
                     <Text style={{ color: c.foreground, fontSize: 15, lineHeight: 20, fontWeight: "600", minWidth: 36, textAlign: "right", ...tabular }}>{`${Math.round(outlook.pct)}%`}</Text>
@@ -293,20 +309,9 @@ export function makeOverview(client: PluginClientContext, live: Live) {
               <Text style={{ ...t.meta, flex: 1, color: c.statusWarning }}>{hooksProblem}</Text>
             </View> : null}
           </FeatureRow>
-          <FeatureRow theme={theme} first={false} icon={guardOn ? "ShieldCheck" : "ShieldOff"} title="Session Guard" line={guardState.line} tone={guardState.tone} on={guardOn} compact={compact} disabled={guardSettings.saving} onToggle={toggleGuard}
-            links={<View style={{ flexDirection: "row", gap: 14 }}>
-              {paused.length > 0 || guardOn ? <TextLink theme={theme} compact={compact} label="Paused sessions" onPress={openPaused} /> : null}
-              <TextLink theme={theme} compact={compact} label="Settings" onPress={() => client.openSettings("session-guard")} />
-            </View>}>
-            {paused.length > 0 ? <View style={{ gap: 2, paddingLeft: 25 }}>{paused.slice(0, 3).map((pause) => {
-              const at = pause.anchorResetsAt ? Date.parse(pause.anchorResetsAt) : NaN;
-              // The line above already names the first reset; a row repeats a time only when its own differs.
-              const own = pause.phase === "attention" ? "Check" : Number.isFinite(at) && at > now && Math.abs(at - (waitingResets[0] ?? at)) >= 60_000 ? formatMoment(pause.anchorResetsAt!, now) : null;
-              return <View key={pause.id} style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
-                <Text numberOfLines={1} style={{ ...t.meta, flex: 1, color: c.foreground }}>{pause.title?.trim() || "Untitled session"}</Text>
-                {own ? <Text style={{ ...t.meta, color: pause.phase === "attention" ? c.statusDanger : c.foreground, fontWeight: "600" }}>{own}</Text> : null}
-              </View>;
-            })}</View> : null}
+          <FeatureRow theme={theme} first={false} icon={guardOn ? "ShieldCheck" : "ShieldOff"} title="Pause at the limit" line={guardState.line} tone={guardState.tone} on={guardOn} compact={compact} disabled={guardSettings.saving} onToggle={toggleGuard}
+            links={<TextLink theme={theme} compact={compact} label="Settings" onPress={() => client.openSettings(SMART_COMPACT_SETTINGS)} />}>
+            {guard !== undefined && guardOn ? <Exceptions theme={theme} layout={layout} status={guard} titleOf={titleOf} /> : null}
           </FeatureRow>
         </Card>
 

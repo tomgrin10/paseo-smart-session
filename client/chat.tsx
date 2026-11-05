@@ -52,7 +52,7 @@ function ToolRowView({ item, theme }: PluginTimelineItemProps<ToolRow>) {
 const CARD: Record<PromptCard["kind"], { icon: string; title: string }> = {
   compact: { icon: "FoldVertical", title: "Compaction the agent asked for" },
   continue: { icon: "CornerDownRight", title: "Continue after compaction" },
-  "guard-continue": { icon: "ShieldCheck", title: "Continue after the reset" },
+  "guard-continue": { icon: "Play", title: "Continue after the reset" },
   "guard-resume": { icon: "Play", title: "Resume now" },
 };
 
@@ -71,7 +71,7 @@ function PromptCardView({ item, theme, layout }: PluginTimelineItemProps<PromptC
   const card = item.data;
   const [expanded, setExpanded] = useState(false);
   const look = CARD[card.kind];
-  const sender = card.kind.startsWith("guard") ? "Session Guard" : "Smart Compact";
+  const sender = card.kind.startsWith("guard") ? "Smart Session" : "Smart Compact";
   return <View style={{ alignSelf: layout.compact ? "stretch" : "flex-end", width: "100%", maxWidth: 560, marginVertical: 4 }}>
     <View style={[{ borderRadius: 12, backgroundColor: c.surface1, overflow: "hidden" }, raised(c)]}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingTop: 11, paddingBottom: 4 }}>

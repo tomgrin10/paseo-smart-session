@@ -113,6 +113,7 @@ async function runClientBundle(code) {
     },
     addSettingsScreen(screen) {
       if (typeof screen.Component !== "function") throw new Error("Invalid settings screen");
+      summary.push(`addSettingsScreen(${screen.id})`);
       return () => {};
     },
     addSurface(id, Component) {
@@ -178,23 +179,10 @@ async function runClientBundle(code) {
       requireText(item?.button?.title, "composer pill button title");
       requireText(item?.button?.label, "composer pill button label");
       requireFunction(item?.button?.icon, "composer pill button icon");
-      if (item.id === "session-guard") {
-        // A menu descriptor: every entry needs an id, and every item an action.
-        const items = item.button.behavior?.kind === "menu" ? item.button.behavior.items : null;
-        if (!Array.isArray(items) || items.length === 0) throw new Error("Session Guard pill must use a menu descriptor");
-        for (const entry of items) {
-          requireText(entry?.id, "menu entry id");
-          if (entry.kind === "item") {
-            requireText(entry.title, `menu item ${entry.id} title`);
-            if (entry.behavior?.kind !== "action") throw new Error(`menu item ${entry.id} must be an action`);
-            requireFunction(entry.behavior.onPress, `menu item ${entry.id} callback`);
-          } else if (entry.kind !== "separator") throw new Error(`unknown menu entry kind: ${entry.kind}`);
-        }
-      } else {
-        // The context pill opens a popover: Paseo positions it, and makes it a sheet on phones.
-        if (item?.button?.behavior?.kind !== "popover") throw new Error("The Smart Compact pill must use a popover descriptor");
-        requireFunction(item.button.behavior.Content, "composer pill popover content");
-      }
+      // The one Smart Session pill opens a popover: Paseo positions it, and makes it a sheet on phones.
+      if (item.id !== "smart-compact") throw new Error(`Smart Session draws one pill, not ${item.id}`);
+      if (item?.button?.behavior?.kind !== "popover") throw new Error("The Smart Session pill must use a popover descriptor");
+      requireFunction(item.button.behavior.Content, "composer pill popover content");
       summary.push(`addComposerPill(${item.id})`);
       let removed = false;
       const registration = {
@@ -237,10 +225,15 @@ async function runClientBundle(code) {
       },
     },
   });
-  for (const id of ["smart-compact", "session-guard"]) {
-    if (summary.filter((item) => item === `addComposerPill(${id})`).length !== 2) {
-      throw new Error(`observed agents must receive the ${id} pill regardless of model`);
-    }
+  if (summary.filter((item) => item === "addComposerPill(smart-compact)").length !== 2) {
+    throw new Error("observed agents must receive the pill regardless of model");
+  }
+  if (summary.some((item) => item.startsWith("addComposerPill(") && item !== "addComposerPill(smart-compact)")) {
+    throw new Error("Smart Session draws one composer pill per session");
+  }
+  const settingsScreens = summary.filter((item) => item.startsWith("addSettingsScreen("));
+  if (settingsScreens.join() !== "addSettingsScreen(smart-compact)") {
+    throw new Error(`Smart Session has one settings screen, under the id links already use; got ${settingsScreens.join(", ")}`);
   }
   if (!summary.includes("addTimelineRenderer(quota-pause)")) {
     throw new Error("Session Guard's timeline cards must have a renderer");
