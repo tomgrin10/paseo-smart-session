@@ -445,7 +445,10 @@ export function atTheLimit(
   const which = first !== null && first.s !== sims[0] ? ` (${first.s.a.name})` : "";
   const fullNow = subscriptionState(own, now, options.hour12).kind === "limit";
   const lead = others.length === 0 ? "No other account" : !options.autoSwitch ? "Automatic switching is off" : "No other account has room";
-  const text = options.protectedHere ? `${lead} · Smart Session pauses it until ${when}${which}`
+  // A pause continues at this account's own reset (ZeroSub may take it elsewhere sooner, but the pause waits for its own).
+  const own_ = backs.find((b) => b.s === sims[0]) ?? null;
+  const ownWhen = own_ === null ? "its reset" : `its ${formatMoment(new Date(own_.at).toISOString(), now, options.hour12)} reset`;
+  const text = options.protectedHere ? `${lead} · Smart Session pauses it until ${ownWhen}`
     : fullNow ? `${lead} · it waits until ${when}${which}`
       : `${lead} · at the limit it stops until ${when}${which}`;
   return { text, tone: others.length > 0 ? "warning" : "default", target: null };
