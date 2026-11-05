@@ -73,7 +73,7 @@ If a reload or connection loss interrupts an unconfirmed stop/send, the pill rea
 
 ## With ZeroSub
 
-[ZeroSub](https://github.com/kapybara-org/zerosub) runs Claude and Codex agents on several subscription accounts. When an account hits a limit, ZeroSub moves the agent to another account and continues it. It switches only on the CLI's own limit notice, so an agent the guard interrupts or freezes first never switches. Paseo and the recorder also measure only the CLI's own login. When ZeroSub is enabled on the host, Session Guard reads ZeroSub's registry and usage readings from `$PASEO_HOME/zerosub/` and changes its behaviour as follows:
+[ZeroSub](https://github.com/kapybara-org/zerosub) runs Claude and Codex agents on several subscription accounts. When an account hits a limit, ZeroSub moves the agent to another account and continues it. It switches only on the CLI's own limit notice, so an agent the guard interrupts or freezes first never switches. Paseo and the recorder also measure only the CLI's own login. When ZeroSub is enabled on the host, Pause at the limit reads ZeroSub's registry and usage readings from `$PASEO_HOME/zerosub/` and changes its behaviour as follows:
 
 - **Each agent is measured on its own account.**
   - An agent on an account ZeroSub added is paused only when *that* account reaches the threshold.
@@ -96,4 +96,4 @@ Workspace labels support text and color. Session Guard uses the short amber labe
 
 ## Agents
 
-Inside Paseo, the `budget_status` tool adds one line about the calling session: whether Session Guard will pause it at the limit and continue it afterwards, or whether it is paused now. It covers only the caller, never other sessions or continuation text, and it cannot turn protection off or resume a pause. Under ZeroSub, `budget_status` names the Claude account the session runs on. For an account ZeroSub added, it reports ZeroSub's reading of that account in place of the CLI login's history, and it says when ZeroSub has another account with room.
+Inside Paseo, the `budget_status` tool adds one line about the calling session: whether it pauses at the limit and continues afterwards, or whether it is paused now. It covers only the caller, never other sessions or continuation text, and it cannot turn protection off or resume a pause. Under ZeroSub, `budget_status` names the Claude account the session runs on. For an account ZeroSub added, it reports ZeroSub's reading of that account in place of the CLI login's history, and it says when ZeroSub has another account with room.
