@@ -18,6 +18,7 @@ import { Exceptions, PausedSection } from "./guard/paused";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
 import { hasSubscriptions, pools, subscribeSubscriptions, subscriptionsSnapshot } from "./subscriptions";
 import { familyName, leadPool, poolHeadline, poolTrailing } from "../shared/subscriptions";
+import { SubscriptionsSection } from "./subscriptions-view";
 import { Card, CardRow, Chip, IconButton, SectionHead, StatusGlyph, Switch, TextLink, errorText, text, useNow } from "./kit";
 import type { Live } from "./live";
 import { Reveal, Skeleton } from "./motion";
@@ -138,6 +139,12 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const installQuery = useQuery({ queryKey: ["smart-session", "install"], queryFn: () => readInstall({}), refetchInterval: 5 * 60_000 });
     // The pill's own status poll; this screen only reads it.
     const guard = useSyncExternalStore(subscribeGuard, guardSnapshot, guardSnapshot) ?? undefined;
+    // ZeroSub's subscriptions, from the bundle's own poll; null or empty without ZeroSub.
+    const subs = useSyncExternalStore(subscribeSubscriptions, subscriptionsSnapshot, subscriptionsSnapshot);
+    const multi = hasSubscriptions(subs);
+    const subPools = multi ? pools(subs, now) : [];
+    const poolLead = leadPool(subPools.filter((p) => p.total > 1), now);
+    const poolHead = poolLead === null || !multi ? null : poolHeadline(poolLead, subs.accounts.filter((a) => a.family === poolLead.family), now);
     const focus = params?.focus === "paused" ? "paused" : null;
     const scroller = useRef<ScrollViewType>(null);
     const pausedY = useRef<number | null>(null);
@@ -211,6 +218,13 @@ export function makeOverview(client: PluginClientContext, live: Live) {
       const auto = guard?.policy.autoResume !== false;
       // Paused sessions have their own section and the lead; this line keeps to the rule.
       if (paused.length > 0) return { line: `${paused.length} paused · listed above`, tone: "default" };
+      // Under ZeroSub the pause comes only once no subscription has room: say when that is.
+      const claudePool = subPools.find((p) => p.family === "claude" && p.total > 1);
+      if (claudePool && subs?.autoSwitch) {
+        if (claudePool.runsOutAt !== null && claudePool.runsOutAt <= now) return { line: `No Claude subscription has room · a running session pauses${claudePool.backAt !== null ? ` until ${formatMoment(new Date(claudePool.backAt).toISOString(), now)}` : ""}`, tone: "warning" };
+        if (claudePool.runsOutAt !== null) return { line: `ZeroSub switches first · pauses sessions at ~${formatMoment(new Date(claudePool.runsOutAt).toISOString(), now)}, when no subscription has room`, tone: "default" };
+        return { line: "ZeroSub switches first · pauses only when no subscription has room", tone: "default" };
+      }
       const threshold = guard?.policy.thresholdPct ?? 100;
       const s5 = lead?.id === "five_hour" ? lead : null;
       if (s5 && s5.pct >= threshold) {
@@ -226,11 +240,14 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     })();
 
     // While something is paused here, that is the news; the plan forecast moves to the line below.
-    const title = pauseLead !== null ? pauseLead.title : head?.title ?? null;
+    // Under ZeroSub the pool is the plan: how long all the subscriptions last, not one login.
+    const planHead = poolHead ?? head;
+    const title = pauseLead !== null ? pauseLead.title : planHead?.title ?? null;
     const autoResume = guard?.policy.enabled === true && guard.policy.autoResume;
-    const detail = pauseLead !== null ? [head?.title, pauseLead.shared !== null ? `in ${formatDuration(pauseLead.shared - now)}` : null, autoResume ? "each continues in its own conversation" : "continue each by hand"].filter(Boolean).join(" · ") : head?.detail ?? null;
+    const detail = pauseLead !== null ? [planHead?.title, pauseLead.shared !== null ? `in ${formatDuration(pauseLead.shared - now)}` : null, autoResume ? "each continues in its own conversation" : "continue each by hand"].filter(Boolean).join(" · ") : planHead?.detail ?? null;
     const glyph = pauseLead !== null ? { icon: pauseLead.tone === "danger" ? "TriangleAlert" : "Pause", color: toneColor(c, pauseLead.tone) }
-      : head ? { icon: toneIcon(head.tone, lead?.state ?? null), color: head.tone === "default" ? c.foregroundMuted : toneColor(c, head.tone) } : null;
+      : poolHead ? { icon: poolHead.tone === "danger" ? "OctagonAlert" : poolHead.tone === "warning" ? "Hourglass" : "Layers", color: poolHead.tone === "default" ? c.foregroundMuted : toneColor(c, poolHead.tone) }
+        : head ? { icon: toneIcon(head.tone, lead?.state ?? null), color: head.tone === "default" ? c.foregroundMuted : toneColor(c, head.tone) } : null;
     const header = <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
       {glyph ? <View style={{ paddingTop: compact ? 3 : 5 }}><Icon name={glyph.icon} size={compact ? 17 : 19} color={glyph.color} /></View> : null}
       <View style={{ flex: 1, gap: 4 }}>
@@ -254,9 +271,11 @@ export function makeOverview(client: PluginClientContext, live: Live) {
         {header}
         {error ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{error}</Text> : null}
         {pausedSection}
+        {multi ? <SubscriptionsSection theme={theme} compact={compact} accounts={subs.accounts} pools={subPools} now={now} autoSwitch={subs.autoSwitch} /> : null}
 
         <View style={{ gap: 8 }}>
-          <SectionHead theme={theme} title="Plan limits" />
+          {/* Under ZeroSub these are the CLI login's windows, with the recorder's full history. */}
+          <SectionHead theme={theme} title={multi ? "Plan limits · CLI login" : "Plan limits"} />
           {budgetQuery.data === undefined ? <LoadingCard theme={theme} />
             : forecasts.length === 0 ? <Empty theme={theme} title="No reading yet" detail="Smart Session records Claude's plan usage every minute while Paseo runs. The first reading usually arrives within a few minutes of signing in to Claude on this host." />
               : <Reveal><Card theme={theme}>

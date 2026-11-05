@@ -18,6 +18,8 @@ import { Button, Switch, TextLink, errorText, text, useNow } from "./kit";
 import { noteEnrolment, pillSnapshot, subscribePills } from "./pill-store";
 import { tabular, toneColor } from "./theme";
 import { SETTINGS_SCREEN } from "./screens";
+import { hasSubscriptions, subscribeSubscriptions, subscriptionsSnapshot } from "./subscriptions";
+import { atTheLimit, sessionWindow, subscriptionState, weeklyWindow } from "../shared/subscriptions";
 
 /** What the last compaction did, in one line. */
 function compactionLine(item: CompactionRequest | undefined, now: number): string {
@@ -38,6 +40,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
     const now = useNow(15_000);
     const pills = useSyncExternalStore(subscribePills, pillSnapshot, pillSnapshot);
     const guard = useSyncExternalStore(subscribeGuard, guardSnapshot, guardSnapshot);
+    const subs = useSyncExternalStore(subscribeSubscriptions, subscriptionsSnapshot, subscriptionsSnapshot);
     useSyncExternalStore(agents.subscribe, agents.version, agents.version);
     const readContext = useRpc(contextStatus);
     const readCompactions = useRpc(listCompactions);
@@ -112,6 +115,21 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       ["Task state", state === null ? (row === undefined ? "…" : "Not written yet") : `Saved ${formatRelative(state, now)}`],
       ["Last compaction", compactions.data === undefined ? "…" : compactionLine(latest, now)],
     ];
+    // Under ZeroSub with several subscriptions: which one this session runs on, and what happens at its limit.
+    const account = (() => {
+      if (!hasSubscriptions(subs)) return null;
+      const own = subs.accounts.find((a) => a.id === subs.agents[agentId]);
+      if (!own || subs.accounts.filter((a) => a.family === own.family).length < 2) return null;
+      const pct = (w: { pct: number; resetsAt: string | null } | null) => w === null ? null : w.resetsAt !== null && Date.parse(w.resetsAt) <= now ? 0 : Math.round(w.pct);
+      const s5 = pct(sessionWindow(own));
+      const week = pct(weeklyWindow(own));
+      const state = subscriptionState(own, now);
+      const windows = [s5 === null ? null : `5h ${s5}%`, week === null ? null : `week ${week}%`].filter(Boolean).join(" · ");
+      const value = [own.name, state.kind === "room" ? windows : state.label].filter(Boolean).join(" · ");
+      const next = atTheLimit(subs.accounts, own.id, now, { autoSwitch: subs.autoSwitch, protectedHere: protection.kind === "on" && protection.protected });
+      return { value, next, tone: state.kind === "limit" ? "danger" as const : null };
+    })();
+    if (account) facts.unshift(["Subscription", account.value]);
     const ringColor = head === null ? c.foregroundMuted : head.outlook.tone !== "default" ? toneFill(c, head.outlook.tone) : enrolled ? c.foreground : c.foregroundMuted;
     const part = { gap: 6, paddingTop: 10, borderTopWidth: 1, borderTopColor: c.border } as const;
 
@@ -202,8 +220,9 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       {pausePart !== null ? null : <View style={part}>
         {facts.map(([label, value]) => <View key={label} style={{ flexDirection: "row", gap: 12 }}>
           <Text style={{ ...t.meta, width: 112 }}>{label}</Text>
-          <Text style={{ ...t.meta, flex: 1, color: c.foreground, ...tabular }}>{value}</Text>
+          <Text style={{ ...t.meta, flex: 1, color: label === "Subscription" && account?.tone ? toneColor(c, account.tone) : c.foreground, ...tabular }}>{value}</Text>
         </View>)}
+        {account && account.next.text ? <Text style={{ ...t.meta, paddingLeft: 124, color: account.next.tone === "default" ? c.foregroundMuted : toneColor(c, account.next.tone) }}>{account.next.text}</Text> : null}
       </View>}
       <View style={{ ...part, gap: 12 }}>
         {compactOn ? <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
