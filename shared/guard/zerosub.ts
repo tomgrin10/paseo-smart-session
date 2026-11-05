@@ -174,20 +174,61 @@ const limited = (account: ZeroSubAccount, now: number) => {
 
 /**
  * One account's usage as a provider row the guard reads, or an unavailable row when
- * there is no trustworthy reading. A limit the CLI reported is the freshest word on a
- * window, so it shows as full until it lifts.
+ * there is no trustworthy reading. Whether the account is out is `withOut`'s job.
  */
-export function accountUsage(snapshot: ZeroSubSnapshot, account: ZeroSubAccount, now: number): ProviderUsage {
+export function accountUsage(snapshot: ZeroSubSnapshot, account: ZeroSubAccount): ProviderUsage {
   const reading = snapshot.readings[account.id];
   if (!reading || reading.windows.length === 0) return { providerId: account.family, status: "unavailable", fetchedAt: null, windows: [] };
-  const full = limited(account, now) && account.limitKind === "window";
   const windows: UsageWindow[] = reading.windows.map((window) => ({
     id: paseoWindowId(account.family, window),
-    usedPct: full ? Math.max(100, window.usedPct) : window.usedPct,
+    usedPct: window.usedPct,
     remainingPct: null,
     resetsAt: window.resetsAt,
   }));
   return { providerId: account.family, status: "available", fetchedAt: reading.fetchedAt, windows };
+}
+
+const pctOf = (window: UsageWindow): number | null =>
+  typeof window.usedPct === "number" ? window.usedPct : typeof window.remainingPct === "number" ? 100 - window.remainingPct : null;
+
+/**
+ * When an account is out, the time it gets room again (ms); null while it has room.
+ *
+ * Out means ZeroSub recorded a limit on it (the CLI's notice, or a full reading), or a
+ * window it reads that has not rolled over yet is full. That includes the weekly
+ * window: the session window the guard watches can show room while the account is
+ * out for days. A recorded budget limit counts too: the account takes no turn.
+ */
+function outUntil(row: ProviderUsage, account: ZeroSubAccount, now: number): number | null {
+  const ends: number[] = [];
+  const until = time(account.limitedUntil);
+  if (until !== null && until > now) ends.push(until);
+  for (const window of row.status === "available" ? row.windows : []) {
+    const resets = time(window.resetsAt);
+    if (resets !== null && resets <= now) continue; // Rolled over since that reading.
+    if ((pctOf(window) ?? 0) >= 100) ends.push(resets ?? now);
+  }
+  return ends.length ? Math.max(...ends) : null;
+}
+
+/**
+ * An out account's row, with the guard's session windows shown full until it gets room
+ * again. The guard pauses and anchors on its session window alone, so this is how an
+ * account out on another window, or at a limit no reading shows yet, reads as out; the
+ * anchor is when the account as a whole has room again.
+ */
+function withOut(row: ProviderUsage, account: ZeroSubAccount, now: number, sessionWindowIds: readonly string[]): ProviderUsage {
+  const until = outUntil(row, account, now);
+  if (until === null || row.status !== "available") return row;
+  let changed = false;
+  const windows = row.windows.map((window) => {
+    const resets = time(window.resetsAt);
+    // Already full until the account has room again: the reading says so itself.
+    if (!sessionWindowIds.includes(window.id) || ((pctOf(window) ?? 0) >= 100 && resets !== null && resets >= until)) return window;
+    changed = true;
+    return { ...window, usedPct: Math.max(100, pctOf(window) ?? 100), remainingPct: null, resetsAt: new Date(Math.max(until, resets ?? 0)).toISOString() };
+  });
+  return changed ? { ...row, windows } : row;
 }
 
 /**
@@ -214,12 +255,32 @@ export function accountsWithRoom(snapshot: ZeroSubSnapshot, current: ZeroSubAcco
     account.family === current.family && account.id !== current.id && hasRoom(snapshot, account, thresholdPct, sessionWindowIds, now)).length;
 }
 
+/**
+ * Whether ZeroSub would move the agent to another account at the limit, by ZeroSub's
+ * own rule (`isUsable` in its routing): automatic switching on and another account of
+ * the provider signed in, not set aside and with no recorded limit. Looser than
+ * `hasRoom`, deliberately: once the CLI has reported the limit it is ZeroSub that
+ * decides, and this is what it decides with.
+ */
+export function switchesAtLimit(snapshot: ZeroSubSnapshot, current: ZeroSubAccount, now: number): boolean {
+  return snapshot.autoSwitch && snapshot.accounts.some((account) =>
+    account.family === current.family && account.id !== current.id && account.signedIn && !account.disabled && !limited(account, now));
+}
+
 /** The view Session Guard's engine asks, once per pass. */
 export interface AccountView {
-  /** Usage as the agent's own account sees it. */
+  /** Usage as the agent's own account sees it, with an out account's session windows shown full. */
   usageFor(agentId: string, provider: string): Usage;
   /** ZeroSub will move this agent to another account with room when its account hits the limit. */
   failsOver(agentId: string, provider: string): boolean;
+  /** After the CLI reported the limit: ZeroSub is moving this agent to another account itself. */
+  switchesAtLimit(agentId: string, provider: string): boolean;
+  /**
+   * Whether an account this agent can use has room, shown by a reading taken after
+   * `since` (a pause): its own account, or — when ZeroSub would fail it over there —
+   * another one. Null while every account is still out.
+   */
+  roomSince(agentId: string, provider: string, since: number): "own" | "elsewhere" | null;
   /** ZeroSub already carries this agent's Codex task on in another tab. */
   continuedElsewhere(agentId: string): boolean;
 }
@@ -230,18 +291,39 @@ export function accountView(
   policy: { thresholdPct: number; windowIds: readonly string[] },
   now: number,
 ): AccountView {
+  const roomAfter = (account: ZeroSubAccount, since: number) => {
+    const fetched = time(snapshot.readings[account.id]?.fetchedAt);
+    return fetched !== null && fetched > since && hasRoom(snapshot, account, policy.thresholdPct, policy.windowIds, now);
+  };
   return {
     usageFor(agentId, provider) {
       const account = accountOf(snapshot, agentId, provider);
-      // The CLI login is what Paseo and the recorder already measure, and measure more often.
-      if (!account || account.kind === "main") return usage;
-      const own = accountUsage(snapshot, account, now);
-      return { ...usage, providers: [...usage.providers.filter((p) => p.providerId !== provider), { ...own, providerId: provider }] };
+      if (!account) return usage;
+      // The CLI login is what Paseo and the recorder already measure, and measure more
+      // often; ZeroSub only adds a limit it recorded on it.
+      const own = account.kind === "main"
+        ? usage.providers.find((p) => p.providerId === provider)
+        : { ...accountUsage(snapshot, account), providerId: provider };
+      if (!own) return usage;
+      const shown = withOut(own, account, now, policy.windowIds);
+      if (shown === own && account.kind === "main") return usage;
+      return { ...usage, providers: [...usage.providers.filter((p) => p.providerId !== provider), shown] };
     },
     failsOver(agentId, provider) {
       if (!snapshot.autoSwitch) return false;
       const account = accountOf(snapshot, agentId, provider);
       return account !== null && accountsWithRoom(snapshot, account, policy.thresholdPct, policy.windowIds, now) > 0;
+    },
+    switchesAtLimit(agentId, provider) {
+      const account = accountOf(snapshot, agentId, provider);
+      return account !== null && switchesAtLimit(snapshot, account, now);
+    },
+    roomSince(agentId, provider, since) {
+      const account = accountOf(snapshot, agentId, provider);
+      if (!account) return null;
+      if (roomAfter(account, since)) return "own";
+      if (!snapshot.autoSwitch) return null;
+      return snapshot.accounts.some((other) => other.family === account.family && other.id !== account.id && roomAfter(other, since)) ? "elsewhere" : null;
     },
     continuedElsewhere: (agentId) => snapshot.continuedElsewhere.has(agentId),
   };
