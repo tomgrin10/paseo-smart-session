@@ -66,7 +66,7 @@ function Runway({ theme, pool, accounts, now, compact }: { theme: Theme; pool: P
       {compact ? null : <View style={{ width: nameWidth }} />}
       <View style={{ flex: 1, height: 14 }}>
         <Text style={{ ...t.small, fontSize: 10, lineHeight: 14, position: "absolute", left: 0 }}>Now</Text>
-        {ticks.map((h, i) => (Math.round(h / HOUR) % every === 0 && (h - now) / span > (compact ? 0.1 : 0.08) && (end - h) / span > (compact ? 0.14 : 0.09) && !near(h, compact ? 0.18 : 0.1))
+        {ticks.map((h, i) => (Math.round(h / HOUR) % every === 0 && (h - now) / span > (compact ? 0.1 : 0.08) && (end - h) / span > (compact ? 0.22 : 0.09) && !near(h, compact ? 0.18 : 0.1))
           ? <Text key={i} style={{ ...t.small, fontSize: 10, lineHeight: 14, position: "absolute", left: at(h) as `${number}%`, transform: [{ translateX: -30 }], width: 60, textAlign: "center" }}>{hourLabel(h, now)}</Text>
           : null)}
         {dry !== null ? <Text style={{ ...t.small, fontSize: 10, lineHeight: 14, fontWeight: "600", color: c.foreground, position: "absolute", left: at(dry) as `${number}%`, transform: [{ translateX: -40 }], width: 80, textAlign: "center" }}>{`out ${formatMoment(new Date(dry).toISOString(), now)}`}</Text> : null}
