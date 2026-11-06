@@ -35,7 +35,7 @@ Each session has one pill above its message box: a ring of its context, with a t
 
 ![Pressing the context ring above the message box, then following it to the Smart Session screen and sweeping the window chart: recorded usage up to now, the projection at this pace, and the stretch after it runs out](docs/media/smart-session-flow.gif)
 
-![Two popovers of the one pill. Left: 34% of a 1M context, past its compact line, task state and last compaction, then the Smart Compact and Pause at the limit switches for this session. Right: the same pill while paused, reading Resumes 6:27 AM, with Cancel continuation and a link to all paused sessions](docs/media/smart-session-pill.png)
+![Two popovers of the one pill. Left: 13% of a 1M context, task state and last compaction, the subscription the session runs on (CLI login, 5h 76%, week 46%: runs out around 2:14 AM, then ZeroSub moves it to Account 3), then the Smart Compact and Pause at the limit (Session Guard) switches for this session. Right: the same pill while paused, reading Resumes 6:27 AM, with Resume now, Dismiss pause and a link to all paused sessions](docs/media/smart-session-pill.png)
 
 Agents get these tools:
 
@@ -70,7 +70,10 @@ With [ZeroSub](https://github.com/kapybara-org/zerosub) running several Claude o
 
 Smart Session keeps each account's readings in its own history (by ZeroSub's account id, never the email), so every account has a pace. ZeroSub's files are only read. A reading older than half an hour says so and adds no pace. Without ZeroSub, nothing changes.
 
-![The Smart Session overview with ZeroSub: the headline Claude · 3 subscriptions last past Friday, a runway with one lane per Claude account showing when each is in use, has room or is at the limit, then a row per account with its 5-hour and weekly windows, and a Codex card with credits](docs/media/smart-session-subscriptions.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/media/smart-session-subscriptions-light.png">
+  <img alt="The Smart Session overview with ZeroSub: the headline Claude · 3 subscriptions last past Sat 1:05 AM, Account 3 takes over at 2:12 AM, then Personal at 10:03 AM. A runway with one lane per Claude account showing when each is in use, has room or is at the limit, a row per account with its 5-hour and weekly windows, reset times and when it runs out, and a Codex card with credits" src="docs/media/smart-session-subscriptions.png">
+</picture>
 
 ## Pause at the limit (Session Guard)
 
@@ -84,7 +87,7 @@ If the standalone Session Guard plugin is still enabled, it keeps doing the paus
 
 On a phone, the pill opens as a sheet and every screen fits one column.
 
-![Smart Session at phone width: the overview leading with paused sessions, the pill's sheet while paused, and the settings screen](docs/media/smart-session-mobile.png)
+![Smart Session at phone width: the overview with every subscription and its runway, the pill's sheet while paused, and the settings screen with Pause at the limit (Session Guard)](docs/media/smart-session-mobile.png)
 
 ## Settings
 
@@ -108,7 +111,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 
 Hiding the row or the pill never turns a feature off.
 
-![The Smart Session settings screen: Smart Compact, When to ask, Pause at the limit, Display, Claude Code and Limit timing](docs/media/smart-session-settings.png)
+![The Smart Session settings screen: Smart Compact, When to ask, Pause at the limit (Session Guard), Display, Claude Code and Limit timing](docs/media/smart-session-settings.png)
 
 ## Data and access
 
