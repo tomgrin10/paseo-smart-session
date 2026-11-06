@@ -35,7 +35,7 @@ Each session has one pill above its message box: a ring of its context, with a t
 
 ![Pressing the context ring above the message box, then following it to the Smart Session screen and sweeping the window chart: recorded usage up to now, the projection at this pace, and the stretch after it runs out](docs/media/smart-session-flow.gif)
 
-![Two popovers of the one pill. Left: 34% of a 1M context, past its compact line, task state and last compaction, then the Smart Compact and Pause at the limit switches for this session. Right: the same pill while paused, reading Resumes 6:27 AM, with Cancel continuation and a link to all paused sessions](docs/media/smart-session-pill.png)
+![Two popovers of the one pill. Left: 13% of a 1M context, task state and last compaction, the subscription the session runs on (CLI login, 5h 76%, week 46%: runs out around 2:14 AM, then ZeroSub moves it to Account 3), then the Smart Compact and Pause at the limit (Session Guard) switches for this session. Right: the same pill while paused, reading Resumes 6:27 AM, with Resume now, Dismiss pause and a link to all paused sessions](docs/media/smart-session-pill.png)
 
 Agents get these tools:
 
@@ -59,7 +59,23 @@ After compaction, the agent chooses to stop (`continue_after_compaction: false`)
 
 The forecast uses the last half hour for the session window and the window's own average for a week, so a burst of work doesn't read as "the week runs out tonight".
 
-## Pause at the limit
+## Every ZeroSub subscription
+
+With [ZeroSub](https://github.com/kapybara-org/zerosub) running several Claude or Codex subscriptions, the question becomes how long all of them last, which one is next, and whether the work makes it to a reset. ZeroSub manages the accounts; Smart Session adds the time.
+
+- **The pool, as a time.** The overview leads with "Claude · 3 subscriptions last until about 9:40 PM", or "Both Claude subscriptions are at the limit · first one back at 5:58 PM". The forecast runs each account's own pace forward and moves work the way ZeroSub does, to the account with the most room, through each account's resets.
+- **A runway.** One lane per account across the next 12 hours: in use, room, at the limit. Reading down a column says who carries the work then.
+- **One row per account.** The name you gave it in ZeroSub (else "CLI login" or "Account 2", never the email), the 5-hour and weekly windows with their resets, the sessions on it, when it runs out, and how old its reading is. Codex credits show when ZeroSub reports them.
+- **Everywhere else.** The sidebar row summarises the pool, amber or red only when the pool is in trouble. The pill's popover says which subscription the session runs on and what happens at its limit. `budget_status` tells agents the pooled runway and which account is next.
+
+Smart Session keeps each account's readings in its own history (by ZeroSub's account id, never the email), so every account has a pace. ZeroSub's files are only read. A reading older than half an hour says so and adds no pace. Without ZeroSub, nothing changes.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/media/smart-session-subscriptions-light.png">
+  <img alt="The Smart Session overview with ZeroSub: the headline Claude · 3 subscriptions last past Sat 1:05 AM, Account 3 takes over at 2:12 AM, then Personal at 10:03 AM. A runway with one lane per Claude account showing when each is in use, has room or is at the limit, a row per account with its 5-hour and weekly windows, reset times and when it runs out, and a Codex card with credits" src="docs/media/smart-session-subscriptions.png">
+</picture>
+
+## Pause at the limit (Session Guard)
 
 When the provider's session window is spent, Smart Session pauses running sessions instead of letting them fail, and continues the same conversations once the window resets, even with the app closed. It is **off by default**: turn it on from the overview or in settings. It was the standalone [Session Guard](https://github.com/tomgrin10/paseo-session-guard) plugin, and its per-session choices and waiting pauses carry over.
 
@@ -71,7 +87,7 @@ If the standalone Session Guard plugin is still enabled, it keeps doing the paus
 
 On a phone, the pill opens as a sheet and every screen fits one column.
 
-![Smart Session at phone width: the overview leading with paused sessions, the pill's sheet while paused, and the settings screen](docs/media/smart-session-mobile.png)
+![Smart Session at phone width: the overview with every subscription and its runway, the pill's sheet while paused, and the settings screen with Pause at the limit (Session Guard)](docs/media/smart-session-mobile.png)
 
 ## Settings
 
@@ -83,7 +99,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | | Enrol sessions automatically | On | Enrol a session once it writes task state |
 | When to ask | Windows of 400k or more | 30% | Where large windows are asked to compact |
 | | Smaller windows | 85% | Where smaller windows are asked to compact |
-| Pause at the limit | Pause at the limit | Off | Pause sessions at the session limit |
+| Pause at the limit (Session Guard) | Pause at the limit (Session Guard) | Off | Pause sessions at the session limit |
 | | Sessions | Every session | Or only the ones you turn on from their pill |
 | | Continue after the reset | On | Off, you continue each one by hand |
 | | Include native subagents | On | Freeze nested workers too (Linux) |
@@ -95,13 +111,13 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 
 Hiding the row or the pill never turns a feature off.
 
-![The Smart Session settings screen: Smart Compact, When to ask, Pause at the limit, Display, Claude Code and Limit timing](docs/media/smart-session-settings.png)
+![The Smart Session settings screen: Smart Compact, When to ask, Pause at the limit (Session Guard), Display, Claude Code and Limit timing](docs/media/smart-session-settings.png)
 
 ## Data and access
 
-Everything lives in `$PASEO_HOME/plugin-data/smart-session/`: monthly usage and context logs, compaction records, an hourly spend index by model, workspace and agent type, and one `state/<agentId>.md` per agent. Logs are append-only, and a damaged line is skipped rather than risking the rest.
+Everything lives in `$PASEO_HOME/plugin-data/smart-session/`: monthly usage and context logs (and, with ZeroSub, a monthly log of each subscription's readings, keyed by account id), compaction records, an hourly spend index by model, workspace and agent type, and one `state/<agentId>.md` per agent. Logs are append-only, and a damaged line is skipped rather than risking the rest.
 
-Paseo plugins run trusted, unsandboxed code on the daemon host. Smart Session reads local Claude Code usage data and talks only to the local daemon. For password-protected daemons it reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`, and never writes or logs it.
+Paseo plugins run trusted, unsandboxed code on the daemon host. Smart Session reads local Claude Code usage data, reads ZeroSub's account registry and usage readings when ZeroSub is enabled (never its account homes or credentials), and talks only to the local daemon. For password-protected daemons it reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`, and never writes or logs it.
 
 ## Development
 

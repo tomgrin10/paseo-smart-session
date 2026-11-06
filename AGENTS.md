@@ -27,7 +27,7 @@
 - The data path is fixed and deliberately decoupled from the install id, so a second install under
   `--id something-else` cannot start a second history. It also means a second install runs a second
   recorder and a second governor over the same files.
-- Preserve the on-disk shapes: `usage-YYYY-MM.jsonl`, `context-YYYY-MM.jsonl`, `settings.json`,
+- Preserve the on-disk shapes: `usage-YYYY-MM.jsonl`, `context-YYYY-MM.jsonl`, `accounts-YYYY-MM.jsonl`, `settings.json`,
   `enrolment.json`, `compactions.json`, `state/<agentId>.md`. Migrate rather than break them.
 - `server/store.ts` owns the one-time v0.1 `super-session` to `smart-session` directory migration.
   The old name is allowed only in that migration, its regression tests, and upgrade documentation.
@@ -111,9 +111,23 @@
   `client/live.ts`). Settings are one screen, id `smart-compact` (the old first page's id, so links
   to it still land), titled **Settings**; ids live in `client/screens.ts`. `check-bundles.mjs` refuses
   `addSurface`, whose header shows the raw id, and a second settings screen.
-- In the UI the feature is **Pause at the limit**, part of Smart Session; "Session Guard" names only
-  the standalone plugin (and the code and data paths). Command Center items all start with
-  "Smart Session" (`client/commands.ts`) and keep the old keywords.
+- The feature keeps its name: where it is named as a feature (the settings section and its main
+  switch, the overview's feature row, the popover's protection part, README and docs headings) it is
+  **Pause at the limit (Session Guard)**; tight spots (pill title, chat card, toasts) may say
+  "Pause at the limit", but the popover's protection part always shows "Session Guard". Don't call
+  it "formerly" anything. Command Center items all start with "Smart Session"
+  (`client/commands.ts`) and keep the old keywords ("guard", "session guard").
+- Every ZeroSub subscription: `server/subscriptions.ts` keeps each new ZeroSub reading of an
+  account other than the CLI's Claude login (which the recorder already measures) in
+  `accounts-YYYY-MM.jsonl`, shaped like a usage sample plus `accountId`/`family`, keyed by ZeroSub's
+  account id and never an email; it serves `smart-session.subscriptions` and `budget_status`'s
+  optional `pool`. `shared/subscriptions.ts` holds the rules (`subscriptions.test.ts`): neutral names
+  ("CLI login", "Account N") unless the person named the account, each account's work as its own
+  stream that moves to ZeroSub's pick (the usable account with the lowest peak, then the default,
+  the CLI login, the oldest) when it fills, resets refilling windows, and stale readings (> 30 min)
+  adding no pace. Rows, the lead, the runway and the popover all read their times from that one
+  simulation, so they never disagree. `client/subscriptions.ts` is the one poll; without ZeroSub
+  (or with a single login) every view stays as it was.
 - `shared/forecast.ts` turns a window reading into its moment: when it resets, when it runs out at
   this pace (the last half hour for the session, the window's own average for a week), and the
   per-hour pace that would last. Every view and `forecast.test.ts` read the same rules. Charts in

@@ -16,6 +16,9 @@ import { budgetStatus, contextStatus, getSettings, installStatus, setSettings, s
 import { DailyBars, HourHeatmap, Meter, PastWindows, RankedTotals, Ring, WindowChart, ink, toneFill } from "./charts";
 import { Exceptions, PausedSection } from "./guard/paused";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
+import { hasSubscriptions, pools, subscribeSubscriptions, subscriptionsSnapshot } from "./subscriptions";
+import { familyName, leadPool, poolHeadline, poolTrailing, subscriptionState } from "../shared/subscriptions";
+import { SubscriptionsSection } from "./subscriptions-view";
 import { Card, CardRow, Chip, IconButton, SectionHead, StatusGlyph, Switch, TextLink, errorText, text, useNow } from "./kit";
 import type { Live } from "./live";
 import { Reveal, Skeleton } from "./motion";
@@ -36,11 +39,12 @@ function toneIcon(tone: Tone, state: WindowForecast["state"] | null): string {
 }
 
 /** A meter row for one plan window: label and percentage, meter, reset and pace. */
-function WindowRow({ theme, f, now, first, children }: { theme: Theme; f: WindowForecast; now: number; first: boolean; children?: ReactNode }) {
+function WindowRow({ theme, f, now, first, children, quiet = false, note = null }: { theme: Theme; f: WindowForecast; now: number; first: boolean; children?: ReactNode; quiet?: boolean; note?: string | null }) {
   const c = theme.colors;
   const t = text(c);
-  const pace = paceLine(f, now);
-  const budget = f.id === "five_hour" ? budgetLine(f) : null;
+  // Quiet: the Subscriptions section already says when this window runs out.
+  const pace = quiet ? "" : paceLine(f, now);
+  const budget = f.id === "five_hour" && !quiet ? budgetLine(f) : null;
   return <CardRow theme={theme} first={first} style={{ gap: 6 }}>
     <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
       <Text style={{ ...t.label, flex: 1 }}>{f.label}</Text>
@@ -53,6 +57,7 @@ function WindowRow({ theme, f, now, first, children }: { theme: Theme; f: Window
       {pace ? <Text style={{ ...t.meta, color: f.state === "short" || f.state === "full" ? toneColor(c, f.tone) : c.foregroundMuted, fontWeight: f.state === "short" ? "600" : "400" }}>{pace}</Text> : null}
       {budget ? <Text style={t.meta}>{budget}</Text> : null}
     </View>
+    {note ? <Text style={{ ...t.meta, color: c.statusDanger }}>{note}</Text> : null}
     {children}
   </CardRow>;
 }
@@ -136,6 +141,16 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const installQuery = useQuery({ queryKey: ["smart-session", "install"], queryFn: () => readInstall({}), refetchInterval: 5 * 60_000 });
     // The pill's own status poll; this screen only reads it.
     const guard = useSyncExternalStore(subscribeGuard, guardSnapshot, guardSnapshot) ?? undefined;
+    // ZeroSub's subscriptions, from the bundle's own poll; null or empty without ZeroSub.
+    const subs = useSyncExternalStore(subscribeSubscriptions, subscriptionsSnapshot, subscriptionsSnapshot);
+    const multi = hasSubscriptions(subs);
+    const subPools = multi ? pools(subs, now) : [];
+    const poolLead = leadPool(subPools.filter((p) => p.total > 1), now);
+    // The CLI's newer limit notice outranks the recorder's last reading; the history row says so.
+    const cliOut = multi ? subs.accounts.find((a) => a.id === "claude-main") : undefined;
+    const cliState = cliOut ? subscriptionState(cliOut, now) : null;
+    const cliOutNote = cliState?.kind === "limit" ? `ZeroSub reports this login ${cliState.label.charAt(0).toLowerCase()}${cliState.label.slice(1)}` : null;
+    const poolHead = poolLead === null || !multi ? null : poolHeadline(poolLead, subs.accounts.filter((a) => a.family === poolLead.family), now);
     const focus = params?.focus === "paused" ? "paused" : null;
     const scroller = useRef<ScrollViewType>(null);
     const pausedY = useRef<number | null>(null);
@@ -151,7 +166,10 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     useEffect(() => { if (guardValues !== undefined) refreshGuard(); }, [guardValues]);
 
     const settings = settingsQuery.data?.settings;
-    const forecasts = (budgetQuery.data?.windows ?? []).filter(isInteresting).map((w) => forecastWindow(w, now)).sort((a, b) => ORDER(a.id) - ORDER(b.id) || b.pct - a.pct);
+    // A limit ZeroSub recorded on the CLI login is newer than the recorder's last reading: the session window is full until then.
+    const forecasts = (budgetQuery.data?.windows ?? []).filter(isInteresting)
+      .map((w) => w.id === "five_hour" && cliState?.kind === "limit" && cliState.until !== null ? { ...w, pct: 100, resetsAt: new Date(cliState.until).toISOString(), burnPctPerHour: null } : w)
+      .map((w) => forecastWindow(w, now)).sort((a, b) => ORDER(a.id) - ORDER(b.id) || b.pct - a.pct);
     const lead = leadWindow(forecasts);
     const head = budgetQuery.data === undefined ? null : headline(lead, now);
     const session = budgetQuery.data?.windows.find((w) => w.id === "five_hour");
@@ -209,6 +227,13 @@ export function makeOverview(client: PluginClientContext, live: Live) {
       const auto = guard?.policy.autoResume !== false;
       // Paused sessions have their own section and the lead; this line keeps to the rule.
       if (paused.length > 0) return { line: `${paused.length} paused · listed above`, tone: "default" };
+      // Under ZeroSub the pause comes only once no subscription has room: say when that is.
+      const claudePool = subPools.find((p) => p.family === "claude" && p.total > 1);
+      if (claudePool && subs?.autoSwitch) {
+        if (claudePool.runsOutAt !== null && claudePool.runsOutAt <= now) return { line: `No Claude subscription has room · a running session pauses${claudePool.backAt !== null ? ` until ${formatMoment(new Date(claudePool.backAt).toISOString(), now)}` : ""}`, tone: "warning" };
+        if (claudePool.runsOutAt !== null) return { line: `ZeroSub switches first · pauses sessions at ~${formatMoment(new Date(claudePool.runsOutAt).toISOString(), now)}, when no subscription has room`, tone: "default" };
+        return { line: "ZeroSub switches first · pauses only when no subscription has room", tone: "default" };
+      }
       const threshold = guard?.policy.thresholdPct ?? 100;
       const s5 = lead?.id === "five_hour" ? lead : null;
       if (s5 && s5.pct >= threshold) {
@@ -224,11 +249,14 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     })();
 
     // While something is paused here, that is the news; the plan forecast moves to the line below.
-    const title = pauseLead !== null ? pauseLead.title : head?.title ?? null;
+    // Under ZeroSub the pool is the plan: how long all the subscriptions last, not one login.
+    const planHead = poolHead ?? head;
+    const title = pauseLead !== null ? pauseLead.title : planHead?.title ?? null;
     const autoResume = guard?.policy.enabled === true && guard.policy.autoResume;
-    const detail = pauseLead !== null ? [head?.title, pauseLead.shared !== null ? `in ${formatDuration(pauseLead.shared - now)}` : null, autoResume ? "each continues in its own conversation" : "continue each by hand"].filter(Boolean).join(" · ") : head?.detail ?? null;
+    const detail = pauseLead !== null ? [planHead?.title, pauseLead.shared !== null ? `in ${formatDuration(pauseLead.shared - now)}` : null, autoResume ? "each continues in its own conversation" : "continue each by hand"].filter(Boolean).join(" · ") : planHead?.detail ?? null;
     const glyph = pauseLead !== null ? { icon: pauseLead.tone === "danger" ? "TriangleAlert" : "Pause", color: toneColor(c, pauseLead.tone) }
-      : head ? { icon: toneIcon(head.tone, lead?.state ?? null), color: head.tone === "default" ? c.foregroundMuted : toneColor(c, head.tone) } : null;
+      : poolHead ? { icon: poolHead.tone === "danger" ? "OctagonAlert" : poolHead.tone === "warning" ? "Hourglass" : "Layers", color: poolHead.tone === "default" ? c.foregroundMuted : toneColor(c, poolHead.tone) }
+        : head ? { icon: toneIcon(head.tone, lead?.state ?? null), color: head.tone === "default" ? c.foregroundMuted : toneColor(c, head.tone) } : null;
     const header = <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
       {glyph ? <View style={{ paddingTop: compact ? 3 : 5 }}><Icon name={glyph.icon} size={compact ? 17 : 19} color={glyph.color} /></View> : null}
       <View style={{ flex: 1, gap: 4 }}>
@@ -252,13 +280,15 @@ export function makeOverview(client: PluginClientContext, live: Live) {
         {header}
         {error ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{error}</Text> : null}
         {pausedSection}
+        {multi ? <SubscriptionsSection theme={theme} compact={compact} accounts={subs.accounts} pools={subPools} now={now} autoSwitch={subs.autoSwitch} leadFamily={pauseLead === null && poolHead !== null ? poolLead?.family ?? null : null} /> : null}
 
         <View style={{ gap: 8 }}>
-          <SectionHead theme={theme} title="Plan limits" />
+          {/* Under ZeroSub these are the CLI login's windows, with the recorder's full history. */}
+          <SectionHead theme={theme} title={multi ? "CLI login · history" : "Plan limits"} />
           {budgetQuery.data === undefined ? <LoadingCard theme={theme} />
             : forecasts.length === 0 ? <Empty theme={theme} title="No reading yet" detail="Smart Session records Claude's plan usage every minute while Paseo runs. The first reading usually arrives within a few minutes of signing in to Claude on this host." />
               : <Reveal><Card theme={theme}>
-                {forecasts.map((f, i) => <WindowRow key={f.id} theme={theme} f={f} now={now} first={i === 0}>
+                {forecasts.map((f, i) => <WindowRow key={f.id} theme={theme} f={f} now={now} first={i === 0} quiet={multi && (f.id === "five_hour" || f.id === "seven_day")} note={f.id === "five_hour" ? cliOutNote : null}>
                   {f.id === "five_hour" && session?.history && session.history.length > 0 ? <View style={{ gap: 14, paddingTop: 10 }}>
                     <WindowChart theme={theme} forecast={f} history={session.history} now={now} compact={compact} guardPct={guardPct} />
                     {budgetQuery.data?.past && budgetQuery.data.past.length > 0 ? <View style={{ gap: 2 }}>
@@ -311,7 +341,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
               <Text style={{ ...t.meta, flex: 1, color: c.statusWarning }}>{hooksProblem}</Text>
             </View> : null}
           </FeatureRow>
-          <FeatureRow theme={theme} first={false} icon="CirclePause" title="Pause at the limit" line={guardState.line} tone={guardState.tone} on={guardOn} compact={compact} disabled={guardSettings.saving} onToggle={toggleGuard}
+          <FeatureRow theme={theme} first={false} icon="CirclePause" title="Pause at the limit (Session Guard)" line={guardState.line} tone={guardState.tone} on={guardOn} compact={compact} disabled={guardSettings.saving} onToggle={toggleGuard}
             links={<TextLink theme={theme} compact={compact} label="Settings" onPress={() => client.openSettings(SMART_COMPACT_SETTINGS)} />}>
             {guard !== undefined && guardOn ? <Exceptions theme={theme} layout={layout} status={guard} titleOf={titleOf} /> : null}
           </FeatureRow>
@@ -363,18 +393,29 @@ export function makeOverview(client: PluginClientContext, live: Live) {
   };
 }
 
-/** The sidebar row's right slot: what is paused, else the session window. */
-export function sidebarTrailing(live: Live, now: number): { label: string; tone: Tone | "muted" } | null {
+/** The sidebar row's right slot: what is paused, else the pool of subscriptions, else the session window. */
+export function sidebarTrailing(live: Live, now: number): { label: string; tone: Tone | "muted"; a11y: string } | null {
   const paused = live.paused();
-  if (paused.attention > 0) return { label: `${paused.attention + paused.waiting} paused`, tone: "danger" };
-  if (paused.waiting > 0) return { label: `${paused.waiting} paused`, tone: "warning" };
+  if (paused.attention > 0) return { label: `${paused.attention + paused.waiting} paused`, tone: "danger", a11y: `${paused.attention + paused.waiting} sessions paused` };
+  if (paused.waiting > 0) return { label: `${paused.waiting} paused`, tone: "warning", a11y: `${paused.waiting} sessions paused` };
+  // Under ZeroSub one login is not the story: the row speaks for the pool, and is
+  // amber or red only when the pool, not a single account, runs short.
+  const subs = live.subscriptions();
+  if (hasSubscriptions(subs)) {
+    const pool = leadPool(pools(subs, now), now);
+    if (pool !== null && pool.total > 1) {
+      const slot = poolTrailing(pool, now);
+      const fam = familyName(pool.family);
+      const a11y = slot.tone === "muted" ? `${fam}: ${pool.withRoom} of ${pool.total} subscriptions with room` : `${fam} subscriptions: ${slot.label}`;
+      return { ...slot, a11y };
+    }
+  }
   const windows = live.budget()?.windows ?? [];
   const session = windows.find((w) => w.id === "five_hour");
   if (session === undefined) return null;
   const f = forecastWindow(session, now);
   // Usage is a time: when the window runs out first, the row says when.
-  if (f.state === "short" && f.runsOutAt) return { label: `out ${formatMoment(f.runsOutAt, now)}`, tone: f.tone };
-  if (f.state === "full") return { label: "at limit", tone: "danger" };
-  return { label: `${Math.round(f.pct)}%`, tone: "muted" };
+  if (f.state === "short" && f.runsOutAt) return { label: `out ${formatMoment(f.runsOutAt, now)}`, tone: f.tone, a11y: `Session window runs out ${formatMoment(f.runsOutAt, now)}` };
+  if (f.state === "full") return { label: "at limit", tone: "danger", a11y: "Session window at the limit" };
+  return { label: `${Math.round(f.pct)}%`, tone: "muted", a11y: `Session window ${Math.round(f.pct)}% used` };
 }
-

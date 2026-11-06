@@ -1,6 +1,6 @@
-# Pause at the limit
+# Pause at the limit (Session Guard)
 
-Pause at the limit (formerly the Session Guard plugin, and still called Session Guard in the code and data paths) pauses agents at their provider's session limit and continues the same conversations after the window resets, even while the Paseo app is closed. It began as the standalone [paseo-session-guard](https://github.com/tomgrin10/paseo-session-guard) plugin and now ships inside Smart Session. See the [README](../README.md) for installation.
+Pause at the limit (Session Guard) (the standalone Session Guard plugin, now part of Smart Session) pauses agents at their provider's session limit and continues the same conversations after the window resets, even while the Paseo app is closed. It began as the standalone [paseo-session-guard](https://github.com/tomgrin10/paseo-session-guard) plugin and now ships inside Smart Session. See the [README](../README.md) for installation.
 
 ## Turning it on
 

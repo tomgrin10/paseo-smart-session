@@ -66,9 +66,75 @@ export const budgetStatus = defineRpc({
         readAt: z.string().nullable(),
       })
       .optional(),
+    /**
+     * All of the agent's provider's ZeroSub subscriptions together, when there are
+     * several: how many have room, how long they last at this pace, and which takes
+     * over next. Names only, never emails. Absent without ZeroSub.
+     */
+    pool: z
+      .object({
+        family: z.enum(["claude", "codex"]),
+        accounts: z.number(),
+        withRoom: z.number(),
+        /** The pool's pace in session-window points per hour; null when nothing is in use. */
+        pacePctPerHour: z.number().nullable(),
+        /** When no account has room at this pace; null when it lasts the forecast's day. */
+        runsOutAt: z.string().nullable(),
+        next: z.object({ name: z.string(), at: z.string() }).nullable(),
+        /** After it runs dry, the first account back. */
+        back: z.object({ name: z.string(), at: z.string() }).nullable(),
+        /** Accounts whose reading is over 30 minutes old. */
+        staleReadings: z.number(),
+      })
+      .optional(),
     /** Finished session windows from the last 14 days, oldest first. */
     past: z.array(PastWindowSchema).optional(),
     recorder: RecorderStatusSchema,
+    error: z.string().nullable(),
+  }),
+});
+
+const SubscriptionWindowSchema = z.object({
+  id: z.string(),
+  pct: z.number(),
+  resetsAt: z.string().nullable(),
+  burnPctPerHour: z.number().nullable(),
+});
+
+/** One ZeroSub account. Names are the person's own or neutral ("CLI login", "Account 2"); never an email. */
+export const SubscriptionSchema = z.object({
+  id: z.string(),
+  family: z.enum(["claude", "codex"]),
+  kind: z.enum(["main", "managed"]),
+  name: z.string(),
+  named: z.boolean(),
+  isDefault: z.boolean(),
+  signedIn: z.boolean(),
+  disabled: z.boolean(),
+  limitedUntil: z.string().nullable(),
+  /** When the account has room again (the guard's own rule); null while it has room. */
+  outUntil: z.string().nullable().optional(),
+  createdAt: z.string().nullable(),
+  agents: z.number(),
+  readAt: z.string().nullable(),
+  windows: z.array(SubscriptionWindowSchema),
+  credits: z.object({ balance: z.number().nullable(), unlimited: z.boolean() }).nullable(),
+  history: z.array(z.object({ t: z.string(), pct: z.number() })).optional(),
+});
+
+/**
+ * Every ZeroSub subscription on this host, with its windows and pace. `zerosub` is
+ * false (and the lists empty) when ZeroSub is not enabled: then nothing changes.
+ */
+export const subscriptionsStatus = defineRpc({
+  name: "smart-session.subscriptions",
+  input: z.object({}),
+  output: z.object({
+    zerosub: z.boolean(),
+    autoSwitch: z.boolean(),
+    accounts: z.array(SubscriptionSchema),
+    /** Which account each live session runs on, by agent id. */
+    agents: z.record(z.string(), z.string()),
     error: z.string().nullable(),
   }),
 });

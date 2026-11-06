@@ -30,6 +30,8 @@ export interface ZeroSubAccount {
   readonly disabled: boolean;
   readonly limitedUntil: string | null;
   readonly limitKind: "window" | "budget" | null;
+  /** When it was added; ZeroSub's last tie-break between accounts with equal room. */
+  readonly createdAt: string | null;
 }
 
 export interface ZeroSubWindow {
@@ -43,6 +45,8 @@ export interface ZeroSubReading {
   readonly fetchedAt: string;
   readonly cached: boolean;
   readonly windows: readonly ZeroSubWindow[];
+  /** Prepaid credits past full windows (ChatGPT credits for Codex), when reported. */
+  readonly credits: { readonly balance: number | null; readonly unlimited: boolean } | null;
 }
 
 export interface ZeroSubSnapshot {
@@ -54,6 +58,8 @@ export interface ZeroSubSnapshot {
   readonly readings: Readonly<Record<string, ZeroSubReading>>;
   /** ZeroSub's "Automatic switching" preference. */
   readonly autoSwitch: boolean;
+  /** The account each family opens new sessions on, when the person chose one. */
+  readonly defaults: Readonly<Record<ZeroSubFamily, string | null>>;
 }
 
 /** ZeroSub's ids for the CLI's own login (`server/state.ts` `MAIN_ACCOUNT_ID`). */
@@ -89,6 +95,7 @@ function parseAccount(value: unknown): ZeroSubAccount | null {
     disabled: raw.disabled === true,
     limitedUntil: text(raw.limitedUntil),
     limitKind: raw.limitKind === "window" || raw.limitKind === "budget" ? raw.limitKind : null,
+    createdAt: text(raw.createdAt),
   };
 }
 
@@ -104,7 +111,13 @@ function parseReading(value: unknown): ZeroSubReading | null {
     if (!window || !id || usedPct === null) continue;
     windows.push({ id, usedPct, resetsAt: text(window.resetsAt), minutes: finite(window.minutes) });
   }
-  return { fetchedAt, cached: raw.cached === true, windows };
+  const credits = record(raw.credits);
+  return {
+    fetchedAt,
+    cached: raw.cached === true,
+    windows,
+    credits: credits ? { balance: finite(credits.balance), unlimited: credits.unlimited === true } : null,
+  };
 }
 
 /**
@@ -141,7 +154,9 @@ export function parseZeroSub(state: unknown, usage: unknown, preferences: unknow
 
   // Paseo stores plugin settings as `{ version, values }`; missing means ZeroSub's default (on).
   const values = record(record(preferences)?.values);
-  return { accounts, sessions, continuedElsewhere, readings, autoSwitch: values?.autoSwitch !== false };
+  const chosen = record(raw.defaults);
+  const defaults = { claude: text(chosen?.claude), codex: text(chosen?.codex) };
+  return { accounts, sessions, continuedElsewhere, readings, autoSwitch: values?.autoSwitch !== false, defaults };
 }
 
 /** The ZeroSub family a Paseo provider belongs to, if ZeroSub manages it. */
@@ -199,7 +214,7 @@ const pctOf = (window: UsageWindow): number | null =>
  * window: the session window the guard watches can show room while the account is
  * out for days. A recorded budget limit counts too: the account takes no turn.
  */
-function outUntil(row: ProviderUsage, account: ZeroSubAccount, now: number): number | null {
+export function outUntil(row: ProviderUsage, account: ZeroSubAccount, now: number): number | null {
   const ends: number[] = [];
   const until = time(account.limitedUntil);
   if (until !== null && until > now) ends.push(until);
