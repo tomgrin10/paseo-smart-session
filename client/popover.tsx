@@ -175,7 +175,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       if (protection.kind === "unknown") return null;
       if (protection.kind === "on") {
         const meta = protection.protected
-          ? `Pauses at ${protection.thresholdPct}% of the session window, ${protection.autoResume ? "continues after the reset" : "you continue it after the reset"}`
+          ? `Pauses at ${protection.thresholdPct}%, ${protection.autoResume ? "continues after the reset" : "you continue after the reset"}`
           : "Off for this session · at the limit the provider refuses work and nothing continues it";
         const source = protection.override === null ? (protection.byDefault ? "Your default" : "Your default is off") : "Changed for this session";
         return <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
@@ -228,7 +228,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
         {compactOn ? <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <View style={{ flex: 1, gap: 2 }}>
             <Text style={t.label}>Smart Compact</Text>
-            <Text style={t.meta}>{enrolled ? `Asked to compact itself once past ${head?.compactAtPct ?? "its"}%${head === null ? " line" : ""}. Never forced.` : "Never asked to compact. The agent can still request it."}</Text>
+            <Text style={t.meta}>{enrolled ? `Asked once past ${head?.compactAtPct ?? "its"}%${head === null ? " line" : ""}. Never forced.` : "Never asked to compact. The agent can still request it."}</Text>
           </View>
           <Switch theme={theme} label="Smart Compact for this session" hideLabel value={enrolled} disabled={saving !== null} compact={compact} onChange={(next) => void toggleCompact(next)} />
         </View> : <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
