@@ -318,3 +318,12 @@ test("out uses the guard's own rule: a full week holds the account even with roo
   // The pool agrees: no room there until the week resets.
   assert.equal(poolForecast(view.accounts, "claude", NOW, { autoSwitch: true }).lanes["claude-w"]![0]!.kind, "limit");
 });
+
+test("at the limit: an old reading says so instead of reading as current", () => {
+  const old = [account("claude-main", { p5: 20, rate: 5, agents: 1, readAt: iso(NOW - 47 * 60_000) }), account("work", { p5: 10, name: "Personal" })];
+  const text = atTheLimit(old, "claude-main", NOW, { autoSwitch: true, protectedHere: false }).text;
+  assert.match(text, /this reading is 47m old$/);
+  assert.doesNotMatch(text, /at this pace/);
+  const target = [account("claude-main", { p5: 100 }), account("work", { p5: 10, name: "Personal", readAt: iso(NOW - 2 * H) })];
+  assert.match(atTheLimit(target, "claude-main", NOW, { autoSwitch: true, protectedHere: false }).text, /ZeroSub moves it to Personal · its reading is 2h( 0m)? old$/);
+});

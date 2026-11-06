@@ -166,7 +166,10 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     useEffect(() => { if (guardValues !== undefined) refreshGuard(); }, [guardValues]);
 
     const settings = settingsQuery.data?.settings;
-    const forecasts = (budgetQuery.data?.windows ?? []).filter(isInteresting).map((w) => forecastWindow(w, now)).sort((a, b) => ORDER(a.id) - ORDER(b.id) || b.pct - a.pct);
+    // A limit ZeroSub recorded on the CLI login is newer than the recorder's last reading: the session window is full until then.
+    const forecasts = (budgetQuery.data?.windows ?? []).filter(isInteresting)
+      .map((w) => w.id === "five_hour" && cliState?.kind === "limit" && cliState.until !== null ? { ...w, pct: 100, resetsAt: new Date(cliState.until).toISOString(), burnPctPerHour: null } : w)
+      .map((w) => forecastWindow(w, now)).sort((a, b) => ORDER(a.id) - ORDER(b.id) || b.pct - a.pct);
     const lead = leadWindow(forecasts);
     const head = budgetQuery.data === undefined ? null : headline(lead, now);
     const session = budgetQuery.data?.windows.find((w) => w.id === "five_hour");

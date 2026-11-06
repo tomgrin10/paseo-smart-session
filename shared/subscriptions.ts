@@ -468,7 +468,7 @@ export function accountOutlook(pool: PoolForecast, account: Subscription, now: n
  * when it runs out at this pace and where ZeroSub moves the work then, or that
  * nothing has room and the pause (when on) holds it until its own reset.
  */
-export function atTheLimit(
+function limitSentence(
   accounts: readonly Subscription[],
   accountId: string,
   now: number,
@@ -516,4 +516,25 @@ export function atTheLimit(
   const target = options.autoSwitch ? mostRoom(sims, now, sims[0]) : null;
   if (target) return { text: `If it fills, ZeroSub moves it to ${target.a.name}`, tone: "default", target: target.a.id };
   return { text: options.protectedHere ? `If it fills: ${lead.toLowerCase()}, so ${pause}` : `If it fills: ${lead.toLowerCase()}`, tone: "default", target: null };
+}
+
+/**
+ * What happens when this session's account hits the limit, for the pill's popover,
+ * with a word on old readings: a forecast over numbers ZeroSub has not refreshed for
+ * half an hour says so rather than reading as current.
+ */
+export function atTheLimit(
+  accounts: readonly Subscription[],
+  accountId: string,
+  now: number,
+  options: { autoSwitch: boolean; protectedHere: boolean; hour12?: boolean },
+): { text: string; tone: Tone; target: string | null } {
+  const said = limitSentence(accounts, accountId, now, options);
+  const own = accounts.find((a) => a.id === accountId);
+  const target = accounts.find((a) => a.id === said.target);
+  const ownAge = own ? readingAge(own, now) : null;
+  const targetAge = target ? readingAge(target, now) : null;
+  if (ownAge !== null) return { ...said, text: `${said.text.replace(/ at this pace$/, "")} · this reading is ${formatDuration(ownAge)} old` };
+  if (targetAge !== null) return { ...said, text: `${said.text} · its reading is ${formatDuration(targetAge)} old` };
+  return said;
 }
