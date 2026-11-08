@@ -28,7 +28,22 @@ export const MAX_ASKS = 3;
  */
 export const RE_ASK_GROWTH_PCT = 10;
 
-const EMPTY = { askCount: 0, lastAskedAt: null, askedAtPct: null, deferredUntil: null, deferReason: null };
+/**
+ * `now*` is the upper line's own record. It is kept apart from the end-of-turn ask
+ * so that having been asked politely at the lower line never silences the one ask
+ * that says "stop pushing on", and `deferredAt` survives an answered ask so the
+ * upper line can tell "deferred after I asked" from "never answered".
+ */
+const EMPTY = {
+  askCount: 0,
+  lastAskedAt: null,
+  askedAtPct: null,
+  deferredUntil: null,
+  deferReason: null,
+  deferredAt: null,
+  nowAskCount: 0,
+  nowAskedAt: null,
+};
 
 /**
  * Keyed by Paseo agent id where there is one, because that survives compaction
@@ -84,7 +99,7 @@ export function resetLedger(sessionId) {
 export function defer(sessionId, minutes, reason) {
   const ledger = readLedger(sessionId);
   const until = new Date(Date.now() + minutes * 60_000).toISOString();
-  writeLedger(sessionId, { ...ledger, deferredUntil: until, deferReason: reason });
+  writeLedger(sessionId, { ...ledger, deferredUntil: until, deferReason: reason, deferredAt: new Date().toISOString() });
   return until;
 }
 
@@ -93,11 +108,14 @@ export function defer(sessionId, minutes, reason) {
  *
  * `pct` is the occupancy now; `askedAtPct` the occupancy the last ask was about.
  */
+function deferred(ledger, now) {
+  if (ledger.deferredUntil === null) return false;
+  const until = Date.parse(ledger.deferredUntil);
+  return Number.isFinite(until) && now < until;
+}
+
 export function shouldAsk(ledger, pct, now = Date.now()) {
-  if (ledger.deferredUntil !== null) {
-    const until = Date.parse(ledger.deferredUntil);
-    if (Number.isFinite(until) && now < until) return false;
-  }
+  if (deferred(ledger, now)) return false;
   if (ledger.askCount >= MAX_ASKS) return false;
   if (ledger.askedAtPct === null) return true;
   return pct >= ledger.askedAtPct + RE_ASK_GROWTH_PCT;
@@ -111,6 +129,35 @@ export function recordAsk(sessionId, ledger, pct) {
     lastAskedAt: new Date().toISOString(),
     askedAtPct: pct,
     // An answered ask clears the deferral it was waiting out.
+    deferredUntil: null,
+    deferReason: null,
+  });
+}
+
+/**
+ * Whether to ask right away, mid-turn, at the upper line.
+ *
+ * Once per compaction epoch. It comes back only if the agent answered the last one
+ * with a deferral and that deferral has run out — ignoring it earns no repeat, so a
+ * long turn hears it once rather than after every tool call — and never more than
+ * `MAX_ASKS` times in all. Any live deferral, from either ask, holds it off: the
+ * agent's "not now" is one answer, not one per line.
+ */
+export function shouldAskNow(ledger, now = Date.now()) {
+  if (deferred(ledger, now)) return false;
+  if (ledger.nowAskCount === 0 || ledger.nowAskedAt === null) return true;
+  if (ledger.nowAskCount >= MAX_ASKS) return false;
+  const asked = Date.parse(ledger.nowAskedAt);
+  const answered = ledger.deferredAt === null ? Number.NaN : Date.parse(ledger.deferredAt);
+  return Number.isFinite(asked) && Number.isFinite(answered) && answered >= asked;
+}
+
+/** Records that the upper line's question was put to the model. */
+export function recordNowAsk(sessionId, ledger) {
+  writeLedger(sessionId, {
+    ...ledger,
+    nowAskCount: ledger.nowAskCount + 1,
+    nowAskedAt: new Date().toISOString(),
     deferredUntil: null,
     deferReason: null,
   });

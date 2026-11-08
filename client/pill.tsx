@@ -4,7 +4,7 @@
  *
  * Normally it answers how full this session's context is and whether Smart Compact
  * will ask it to compact itself: the icon is a ring that fills with the context and
- * carries a tick at the compact line, the label is the percentage. Protection adds
+ * carries a tick at each compact line (end of turn, then mid-turn), the label is the percentage. Protection adds
  * nothing while it simply protects; the quiet case stays quiet. When this session is
  * paused at the session limit the pill turns into the pause itself, an amber pause
  * glyph and the moment it resumes, and it stays on the composer even when the pill
@@ -56,7 +56,7 @@ function makeIcon(agents: AgentDirectory) {
     const enrolled = current.compactOn && current.enrolled.has(agentId);
     const view = pillPresentation(agents.current().get(agentId), enrolled, current.thresholds, current.compactOn);
     const color = view.tone !== "default" ? toneFill(c, view.tone) : enrolled ? c.foreground : c.foregroundMuted;
-    return <Ring size={props.size} color={color} fraction={view.fraction} mark={enrolled ? view.mark : null} />;
+    return <Ring size={props.size} color={color} fraction={view.fraction} mark={enrolled ? view.mark : null} upper={view.upper} />;
   };
 }
 

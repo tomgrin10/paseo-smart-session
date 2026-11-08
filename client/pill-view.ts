@@ -18,16 +18,17 @@ export function pillPresentation(agent: Pick<DirectoryAgent, "usedTokens" | "max
     return {
       label: compactOn ? "Smart Compact" : "Context",
       title: `${compactWords ?? "Smart Compact on"} · no context reading yet`,
-      fraction: 0, mark: null as number | null, tone: "default" as const, pct: null as number | null,
+      fraction: 0, mark: null as number | null, upper: null as number | null, tone: "default" as const, pct: null as number | null,
     };
   }
-  const compactAtPct = profileFor(agent.maxTokens!, thresholds ?? undefined).compact;
-  const outlook = contextOutlook({ usedTokens: agent.usedTokens!, maxTokens: agent.maxTokens!, compactAtPct });
+  const profile = profileFor(agent.maxTokens!, thresholds ?? undefined);
+  const outlook = contextOutlook({ usedTokens: agent.usedTokens!, maxTokens: agent.maxTokens!, compactAtPct: profile.compact, compactNowAtPct: profile.now });
   const pct = Math.round(outlook.pct);
+  // Short on purpose: the phone sheet uses the title as its one-line header.
   return {
     label: `${pct}%`,
-    title: `Context ${pct}% full · ${compactWords ?? `Smart Compact asks at ${compactAtPct}%`}`,
-    fraction: outlook.pct / 100, mark: compactAtPct / 100, tone: outlook.tone, pct,
+    title: `Context ${pct}% full · ${compactWords ?? `asks at ${profile.compact}%, mid-turn at ${profile.now}%`}`,
+    fraction: outlook.pct / 100, mark: profile.compact / 100, upper: profile.now / 100 as number | null, tone: outlook.tone, pct,
   };
 }
 

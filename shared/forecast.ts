@@ -181,18 +181,29 @@ export function leadWindow(windows: readonly WindowForecast[]): WindowForecast |
 export interface ContextReading {
   readonly usedTokens: number;
   readonly maxTokens: number;
+  /** The lower line: Smart Compact asks at the end of a turn. */
   readonly compactAtPct: number;
+  /** The upper line: Smart Compact asks mid-turn. Absent from older daemons. */
+  readonly compactNowAtPct?: number | null;
   readonly growthTokensPerHour?: number | null;
 }
 
 export interface ContextOutlook {
   readonly pct: number;
   readonly compactAt: number;
-  /** Tokens at the compact line. */
+  /** Tokens at the lower line. */
   readonly compactTokens: number;
+  /** Past the lower line. */
   readonly past: boolean;
-  /** Time until the compact line at the measured growth; null when not growing or already past. */
+  /** Time until the lower line at the measured growth; null when not growing or already past. */
   readonly untilCompactMs: number | null;
+  /** The upper line, or null when the reading has none. */
+  readonly nowAt: number | null;
+  readonly nowTokens: number | null;
+  /** Past the upper line, where the agent is asked mid-turn. */
+  readonly pastNow: boolean;
+  /** Time until the upper line at the measured growth; null when not growing, already past or unknown. */
+  readonly untilNowMs: number | null;
   readonly tone: Tone;
 }
 
@@ -201,17 +212,24 @@ export function contextOutlook(reading: ContextReading): ContextOutlook {
   const compactTokens = Math.round((reading.compactAtPct / 100) * reading.maxTokens);
   const past = pct >= reading.compactAtPct;
   const growth = reading.growthTokensPerHour ?? null;
-  const untilCompactMs = past || growth === null || growth <= 0 ? null : ((compactTokens - reading.usedTokens) / growth) * HOUR;
-  return { pct, compactAt: reading.compactAtPct, compactTokens, past, untilCompactMs, tone: pct >= 90 ? "danger" : past ? "warning" : "default" };
+  const growing = growth !== null && growth > 0;
+  const untilCompactMs = past || !growing ? null : ((compactTokens - reading.usedTokens) / growth) * HOUR;
+  const nowAt = typeof reading.compactNowAtPct === "number" ? reading.compactNowAtPct : null;
+  const nowTokens = nowAt === null ? null : Math.round((nowAt / 100) * reading.maxTokens);
+  const pastNow = nowAt !== null && pct >= nowAt;
+  const untilNowMs = nowTokens === null || pastNow || !growing ? null : ((nowTokens - reading.usedTokens) / growth) * HOUR;
+  // Amber past the lower line, red past the upper one (or a nearly full window).
+  const tone = pct >= 90 || pastNow ? "danger" : past ? "warning" : "default";
+  return { pct, compactAt: reading.compactAtPct, compactTokens, past, untilCompactMs, nowAt, nowTokens, pastNow, untilNowMs, tone };
 }
 
 /**
  * The context ring: a faint full track, an arc for the share of the window used, and a
- * tick across the ring at the compact line. Inline SVG in the surface's own colour, so
+ * tick at each compact line: inward at the end-of-turn line, outward at the mid-turn line. Inline SVG in the surface's own colour, so
  * the host `Icon` can draw it anywhere a Lucide glyph fits. Quantized to 1/48 so a
  * ticking view rarely redraws.
  */
-export function contextRing(fraction: number, mark: number | null, track = 0.28): string {
+export function contextRing(fraction: number, mark: number | null, track = 0.28, upper: number | null = null): string {
   const steps = 48;
   const f = Math.round(Math.min(1, Math.max(0, fraction)) * steps) / steps;
   const r = 8.5;
@@ -223,11 +241,19 @@ export function contextRing(fraction: number, mark: number | null, track = 0.28)
     const [x, y] = point(f, r);
     arc = `<path d="M${c} ${c - r}A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${x} ${y}"/>`;
   }
-  let tick = "";
-  if (mark !== null && mark > 0 && mark < 1) {
-    const [x1, y1] = point(mark, r - 3.6);
-    const [x2, y2] = point(mark, r + 3.2);
-    tick = `<path d="M${x1} ${y1}L${x2} ${y2}" stroke-width="1.8"/>`;
-  }
+  // The end-of-turn tick points inward from the ring and the mid-turn tick outward, so the pair sits
+  // on opposite sides of the stroke and stays apart at pill size, where two ticks 36° apart that
+  // both crossed the ring merged with the arc's end into one hooked smudge.
+  const tickAt = (at: number | null, from: number, to: number) => {
+    if (at === null || !(at > 0 && at < 1)) return "";
+    const [x1, y1] = point(at, from);
+    const [x2, y2] = point(at, to);
+    return `<path d="M${x1} ${y1}L${x2} ${y2}" stroke-width="1.8"/>`;
+  };
+  // A muted ring (no lower line) has no upper one either.
+  const inward = tickAt(mark, r - 3.8, r);
+  // r + 2.6 plus the 0.9 round cap ends exactly at the 24-unit box edge, so the stub is never clipped.
+  const outward = upper !== null && upper !== mark ? tickAt(upper, r, r + 2.6) : "";
+  const tick = mark === null ? "" : inward + outward;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><circle cx="${c}" cy="${c}" r="${r}" stroke-opacity="${track}"/>${arc}${tick}</svg>`;
 }

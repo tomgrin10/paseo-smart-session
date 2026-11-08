@@ -338,7 +338,17 @@ const TOOLS = {
       if (mine.growthTokensPerHour !== null) {
         lines.push(`Filling at roughly ${Math.round(mine.growthTokensPerHour).toLocaleString()} tokens/hour.`);
       }
-      if (mine.usedPct >= mine.compactAtPct) {
+      const upper = typeof mine.compactNowAtPct === "number" ? mine.compactNowAtPct : null;
+      if (upper !== null) {
+        lines.push(
+          `Its upper line is ${upper}% (${Math.round((upper / 100) * mine.maxTokens).toLocaleString()} tokens): past that, Smart Compact asks right away, mid-turn, and you should not start new work before compacting.`,
+        );
+      }
+      if (upper !== null && mine.usedPct >= upper) {
+        lines.push(
+          "You are past the upper line. Finish only the step you are on, call checkpoint, call request_compaction with continue_after_compaction true, and end your turn.",
+        );
+      } else if (mine.usedPct >= mine.compactAtPct) {
         // Already past it: a projection of when it will arrive reads as nonsense.
         lines.push(
           "You are already past that point. Check your task state is on disk and current, then compact at the next clean boundary — call request_compaction when the step you are on is finished.",

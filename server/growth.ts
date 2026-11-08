@@ -59,9 +59,10 @@ export function projectFull(
   maxTokens: number,
   ratePerHour: number | null,
   thresholds?: Thresholds,
+  line: "compact" | "now" = "compact",
 ): string | null {
   if (ratePerHour === null || ratePerHour <= 0) return null;
-  const room = maxTokens * (profileFor(maxTokens, thresholds).compact / 100) - usedTokens;
+  const room = maxTokens * (profileFor(maxTokens, thresholds)[line] / 100) - usedTokens;
   if (room <= 0) return new Date().toISOString();
   return new Date(Date.now() + (room / ratePerHour) * 3_600_000).toISOString();
 }

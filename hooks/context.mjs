@@ -29,8 +29,8 @@ const TAIL_BYTES = 256 * 1024;
  */
 export const DEFAULT_THRESHOLDS = {
   largeWindowFrom: 400_000,
-  large: { notice: 15, closing: 22, compact: 30 },
-  small: { notice: 60, closing: 75, compact: 85 },
+  large: { notice: 15, closing: 22, compact: 30, now: 40 },
+  small: { notice: 60, closing: 75, compact: 85, now: 90 },
 };
 
 export const BANDS = ["notice", "closing", "compact"];
@@ -60,13 +60,27 @@ export function readSettings() {
           : DEFAULT_SETTINGS.freshStateMinutes,
       thresholds: {
         largeWindowFrom: merged.largeWindowFrom ?? DEFAULT_THRESHOLDS.largeWindowFrom,
-        large: { ...DEFAULT_THRESHOLDS.large, ...(merged.large ?? {}) },
-        small: { ...DEFAULT_THRESHOLDS.small, ...(merged.small ?? {}) },
+        large: withUpperLine(merged.large, DEFAULT_THRESHOLDS.large),
+        small: withUpperLine(merged.small, DEFAULT_THRESHOLDS.small),
       },
     };
   } catch {
     return DEFAULT_SETTINGS;
   }
+}
+
+/**
+ * A saved profile, with the upper line filled in when it predates one.
+ *
+ * Mirrors `normalizeProfile` in thresholds.ts: the saved lower line is kept, and an
+ * absent upper line keeps the default's distance above it, never falling below it.
+ */
+export function withUpperLine(saved, fallback) {
+  const profile = { ...fallback, ...(saved ?? {}) };
+  const compact = profile.compact;
+  const migrated = Math.min(99, Math.max(fallback.now, compact + (fallback.now - fallback.compact)));
+  const raw = typeof saved?.now === "number" && Number.isFinite(saved.now) ? saved.now : migrated;
+  return { ...profile, now: Math.min(99, Math.max(Math.min(99, compact + 1), raw)) };
 }
 
 export function profileFor(maxTokens, thresholds) {

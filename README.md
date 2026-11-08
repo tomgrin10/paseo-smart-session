@@ -31,7 +31,7 @@ On first load it registers its Claude Code hooks, touching only entries that poi
 - **Smart Compact and Pause at the limit.** One switch each, what they will do next, and the sessions you changed from your default.
 - **Tokens, last 30 days.** Billable tokens, the cache hit rate and the subagent share, per day, by hour of the week, by workspace and by model, reconstructed from Claude Code's transcripts.
 
-Each session has one pill above its message box: a ring of its context, with a tick at its compact line. Press it to see the detail, when it last saved its task state and compacted, and to switch Smart Compact and Pause at the limit for that session. When the session is paused at the limit the same pill turns amber and says when it resumes, and it stays up even if you hide the pill.
+Each session has one pill above its message box: a ring of its context, with a tick at each of its two compact lines. Press it to see the detail, when it last saved its task state and compacted, and to switch Smart Compact and Pause at the limit for that session. When the session is paused at the limit the same pill turns amber and says when it resumes, and it stays up even if you hide the pill.
 
 ![Pressing the context ring above the message box, then following it to the Smart Session screen and sweeping the window chart: recorded usage up to now, the projection at this pace, and the stretch after it runs out](docs/media/smart-session-flow.gif)
 
@@ -53,7 +53,7 @@ The usual flow is `context_status → checkpoint → request_compaction`, then s
 
 ## How Smart Compact works
 
-As a session fills, hooks send context notices. At the compact line, the agent is asked at the end of its turn whether it wants to compact. Nothing is forced: the agent can compact, defer with a reason, or keep working. A request is delivered only when the agent is idle and its state file is current; `request_compaction` refuses a missing or stale one.
+As a session fills, hooks send context notices. Each window size has two lines. Past the first (the end-of-turn line), the agent is asked at the end of its turn whether it wants to compact. Past the second (the mid-turn line), it is asked straight away, to finish only the step it is on, checkpoint, request the compaction and end its turn so the compaction can land. Nothing is forced: the agent can compact, defer with a reason, or keep working. A request is delivered only when the agent is idle and its state file is current; `request_compaction` refuses a missing or stale one.
 
 After compaction, the agent chooses to stop (`continue_after_compaction: false`), continue with the default prompt to re-read its state, or continue with its own `continue_message`. A `/compact` typed by a person never gets a plugin continuation.
 
@@ -97,8 +97,10 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | --- | --- | --- | --- |
 | Smart Compact | Smart Compact | On | Context notices and agent-requested compaction |
 | | Enrol sessions automatically | On | Enrol a session once it writes task state |
-| When to ask | Windows of 400k or more | 30% | Where large windows are asked to compact |
-| | Smaller windows | 85% | Where smaller windows are asked to compact |
+| When to ask | 400k+ windows · end of turn | 30% | Where large windows are asked when a turn ends |
+| | 400k+ windows · mid-turn | 40% | Where large windows are asked mid-turn; must be above the end-of-turn line |
+| | Smaller windows · end of turn | 85% | Where smaller windows are asked when a turn ends |
+| | Smaller windows · mid-turn | 90% | Where smaller windows are asked mid-turn |
 | Pause at the limit (Session Guard) | Pause at the limit (Session Guard) | Off | Pause sessions at the session limit |
 | | Sessions | Every session | Or only the ones you turn on from their pill |
 | | Continue after the reset | On | Off, you continue each one by hand |

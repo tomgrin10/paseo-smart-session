@@ -5,6 +5,7 @@ import { useRpc, type PluginButtonContentProps, type PluginClientContext } from 
 import { useQuery } from "@tanstack/react-query";
 
 import { formatClock, formatCompactTokens, formatDuration, formatRelative } from "../shared/format";
+import { linesSummary, outlookSentence } from "../shared/compact-lines";
 import { contextOutlook } from "../shared/forecast";
 import { listCompactions, setEnrolment, type CompactionRequest } from "../shared/governor";
 import { cancelResumeRpc, dismissPauseRpc, resumeNowRpc, setProtectionRpc, statusRpc } from "../shared/guard/contracts";
@@ -99,16 +100,14 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
 
     const head = (() => {
       if (used === null || max === null) return null;
-      const compactAtPct = row?.compactAtPct ?? profileFor(max, pills.thresholds ?? undefined).compact;
-      return { compactAtPct, outlook: contextOutlook({ usedTokens: used, maxTokens: max, compactAtPct, growthTokensPerHour: row?.growthTokensPerHour ?? null }) };
+      const profile = profileFor(max, pills.thresholds ?? undefined);
+      const compactAtPct = row?.compactAtPct ?? profile.compact;
+      const nowAtPct = row?.compactNowAtPct ?? profile.now;
+      return { compactAtPct, nowAtPct, outlook: contextOutlook({ usedTokens: used, maxTokens: max, compactAtPct, compactNowAtPct: nowAtPct, growthTokensPerHour: row?.growthTokensPerHour ?? null }) };
     })();
     const sentence = head === null
       ? { line: "No context reading yet. A session reports one after its first turn.", tone: "default" as const }
-      : head.outlook.past
-        ? { line: enrolled ? "Past its compact line. Smart Compact asks it at the end of a turn whether to compact." : compactOn ? "Past its compact line, but not enrolled, so nothing will ask it." : "Past its compact line. Smart Compact is off, so nothing will ask it.", tone: head.outlook.tone }
-        : head.outlook.untilCompactMs !== null
-          ? { line: `Reaches its compact line in about ${formatDuration(head.outlook.untilCompactMs)} at +${formatCompactTokens(row!.growthTokensPerHour!)}/h.`, tone: "default" as const }
-          : { line: "Below its compact line and not growing right now.", tone: "default" as const };
+      : outlookSentence(head.outlook, { enrolled, compactOn, growthPerHour: row?.growthTokensPerHour ?? null });
     const latest = compactions.data?.items[0];
     const state = row?.stateWrittenAt ?? null;
     const facts: [string, string][] = [
@@ -205,16 +204,16 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       {pausePart}
       <View style={[{ gap: 12 }, pausePart === null ? null : part]}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-          <Ring size={pausePart === null ? 40 : 28} color={ringColor} fraction={head === null ? 0 : head.outlook.pct / 100} mark={head === null || !enrolled ? null : head.compactAtPct / 100} />
+          <Ring size={pausePart === null ? 40 : 28} color={ringColor} fraction={head === null ? 0 : head.outlook.pct / 100} mark={head === null || !enrolled ? null : head.compactAtPct / 100} upper={head === null ? null : head.nowAtPct / 100} />
           <View style={{ flex: 1, gap: 1 }}>
             <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
               <Text style={{ color: c.foreground, fontSize: pausePart === null ? 22 : 15, lineHeight: pausePart === null ? 28 : 20, fontWeight: "600", ...tabular }}>{head === null ? "—" : `${Math.round(head.outlook.pct)}%`}</Text>
               <Text style={t.meta}>{max === null ? "context" : `of ${formatCompactTokens(max)} context`}</Text>
             </View>
-            <Text style={t.meta}>{head === null || used === null ? "Waiting for a reading" : `${formatCompactTokens(used)} tokens · compacts at ${head.compactAtPct}% (${formatCompactTokens(head.outlook.compactTokens)})`}</Text>
+            <Text style={t.meta}>{head === null || used === null ? "Waiting for a reading" : `${formatCompactTokens(used)} tokens · ${linesSummary(head.compactAtPct, head.nowAtPct)}`}</Text>
           </View>
         </View>
-        {head === null || pausePart !== null ? null : <Meter theme={theme} pct={head.outlook.pct} tone={head.outlook.tone} mark={head.compactAtPct} height={6} label={`Context ${Math.round(head.outlook.pct)}% full, compacts at ${head.compactAtPct}%`} />}
+        {head === null || pausePart !== null ? null : <Meter theme={theme} pct={head.outlook.pct} tone={head.outlook.tone} mark={head.compactAtPct} upper={head.nowAtPct} height={6} label={`Context ${Math.round(head.outlook.pct)}% full. Smart Compact ${linesSummary(head.compactAtPct, head.nowAtPct)}`} />}
         {pausePart !== null ? null : <Text style={{ ...t.body, color: sentence.tone === "default" ? c.foreground : toneColor(c, sentence.tone) }}>{sentence.line}</Text>}
       </View>
       {pausePart !== null ? null : <View style={part}>
@@ -228,7 +227,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
         {compactOn ? <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <View style={{ flex: 1, gap: 2 }}>
             <Text style={t.label}>Smart Compact</Text>
-            <Text style={t.meta}>{enrolled ? `Asked once past ${head?.compactAtPct ?? "its"}%${head === null ? " line" : ""}. Never forced.` : "Never asked to compact. The agent can still request it."}</Text>
+            <Text style={t.meta}>{enrolled ? "Asked at the end of a turn, then mid-turn. Never forced." : "Never asked to compact. The agent can still request it."}</Text>
           </View>
           <Switch theme={theme} label="Smart Compact for this session" hideLabel value={enrolled} disabled={saving !== null} compact={compact} onChange={(next) => void toggleCompact(next)} />
         </View> : <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
