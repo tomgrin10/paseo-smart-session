@@ -227,7 +227,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
         {compactOn ? <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <View style={{ flex: 1, gap: 2 }}>
             <Text style={t.label}>Smart Compact</Text>
-            <Text style={t.meta}>{enrolled ? (head === null ? "Asked past its compact lines. Never forced." : `At the end of a turn past ${head.compactAtPct}%, right away past ${head.nowAtPct}%. Never forced.`) : "Never asked to compact. The agent can still request it."}</Text>
+            <Text style={t.meta}>{enrolled ? "Asked at the end of a turn, then mid-turn. Never forced." : "Never asked to compact. The agent can still request it."}</Text>
           </View>
           <Switch theme={theme} label="Smart Compact for this session" hideLabel value={enrolled} disabled={saving !== null} compact={compact} onChange={(next) => void toggleCompact(next)} />
         </View> : <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>

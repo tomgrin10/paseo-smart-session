@@ -147,7 +147,7 @@
   compacted; `queue.add` is reached only from an agent's `request_compaction` or a person. The ask
   lives in the hooks and rides the agent's own turn. There are two lines per window profile
   (`compact` and `now` in `shared/thresholds.ts`, mirrored in `hooks/context.mjs`): past the lower,
-  end-of-turn line `hooks/ask-compact.mjs` asks on `Stop`; past the upper, right-away line
+  end-of-turn line `hooks/ask-compact.mjs` asks on `Stop`; past the upper, mid-turn line
   `hooks/context-threshold.mjs` asks on `PostToolUse`, mid-turn, once per compaction epoch and again
   only after a deferral runs out. Both go through `hooks/ask.mjs` (text and guards) and
   `hooks/asks.mjs` (ledger), so they never disagree about whether to speak. A saved settings file

@@ -220,9 +220,8 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const pastUpper = agents.filter((agent) => enrolled.has(agent.agentId) && contextOutlook(agent).pastNow).length;
     const compactLine: ReactNode = settings === undefined ? "…" : !settings.enabled ? "Off · nothing is asked or compacted"
       // Only the clause that is state wears the state colour.
-      : pastUpper > 0 ? <>{`${enrolled.size} enrolled · `}<Text style={{ color: c.statusDanger }}>{`${pastUpper} past ${pastUpper === 1 ? "its" : "their"} right-away line, asked mid-turn`}</Text>{pastLine > 0 ? <Text style={{ color: c.statusWarning }}>{` · ${pastLine} asked at the end of a turn`}</Text> : null}</>
-        : pastLine > 0 ? <>{`${enrolled.size} enrolled · `}<Text style={{ color: c.statusWarning }}>{`${pastLine} past ${pastLine === 1 ? "its" : "their"} end-of-turn line, asked at the end of a turn`}</Text></>
-          : `${enrolled.size} enrolled · asked at ${settings.thresholds.large.compact}% and right away at ${settings.thresholds.large.now}% of a ${formatCompactTokens(settings.thresholds.largeWindowFrom)}+ window, ${settings.thresholds.small.compact}% and ${settings.thresholds.small.now}% of a smaller one`;
+      : pastUpper + pastLine > 0 ? <>{`${enrolled.size} enrolled`}{pastUpper > 0 ? <Text style={{ color: c.statusDanger }}>{` · ${pastUpper} asked mid-turn`}</Text> : null}{pastLine > 0 ? <Text style={{ color: c.statusWarning }}>{` · ${pastLine} asked at the end of a turn`}</Text> : null}</>
+        : `${enrolled.size} enrolled · asked at ${settings.thresholds.large.compact}% / ${settings.thresholds.large.now}% of a ${formatCompactTokens(settings.thresholds.largeWindowFrom)}+ window, ${settings.thresholds.small.compact}% / ${settings.thresholds.small.now}% of a smaller one`;
     const guardState: { line: string; tone: Tone } = (() => {
       if (guardOn === null) return { line: "…", tone: "default" };
       if (!guardOn) return { line: paused.length > 0 ? `Off · ${paused.length} paused still ${paused.length === 1 ? "waits" : "wait"} for the reset` : "Off · sessions run into the limit", tone: "default" };
@@ -312,7 +311,10 @@ export function makeOverview(client: PluginClientContext, live: Live) {
                 const outlook = contextOutlook(agent);
                 const on = enrolled.has(agent.agentId);
                 const upper = agent.compactNowAtPct ?? null;
-                const parts = [`${formatCompactTokens(agent.usedTokens)} of ${formatCompactTokens(agent.maxTokens)}`, upper === null ? `compacts at ${agent.compactAtPct}%` : `asks at ${agent.compactAtPct}% · ${upper}%`];
+                // A session nobody enrolled is never asked, so it gets no lines and no ticks.
+                const parts = [`${formatCompactTokens(agent.usedTokens)} of ${formatCompactTokens(agent.maxTokens)}`];
+                if (!on) { if (compact) parts.push("not enrolled"); }
+                else parts.push(upper === null ? `compacts at ${agent.compactAtPct}%` : `asks at ${agent.compactAtPct}%, mid-turn at ${upper}%`);
                 if (agent.growthTokensPerHour !== null && agent.growthTokensPerHour > 0) parts.push(`+${formatCompactTokens(agent.growthTokensPerHour)}/h`);
                 const outlookLine = outlookShort(outlook, on);
                 return <CardRow key={agent.agentId} theme={theme} first={i === 0} style={{ gap: 6 }}
@@ -326,7 +328,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
                     <Ring size={16} color={outlook.tone !== "default" ? toneFill(c, outlook.tone) : on ? c.foreground : c.foregroundMuted} fraction={outlook.pct / 100} mark={on ? agent.compactAtPct / 100 : null} upper={upper === null ? null : upper / 100} />
                     <Text style={{ color: c.foreground, fontSize: 15, lineHeight: 20, fontWeight: "600", minWidth: 36, textAlign: "right", ...tabular }}>{`${Math.round(outlook.pct)}%`}</Text>
                   </View>
-                  <Meter theme={theme} pct={outlook.pct} tone={outlook.tone} mark={agent.compactAtPct} upper={upper} height={6} label={`${agent.title ?? "Session"}: ${Math.round(outlook.pct)}% of its context, asked at ${agent.compactAtPct}%${upper === null ? "" : ` and right away at ${upper}%`}`} />
+                  <Meter theme={theme} pct={outlook.pct} tone={outlook.tone} mark={on ? agent.compactAtPct : null} upper={on ? upper : null} height={6} label={`${agent.title ?? "Session"}: ${Math.round(outlook.pct)}% of its context${on ? `, asked at ${agent.compactAtPct}%${upper === null ? "" : ` and mid-turn at ${upper}%`}` : ", not enrolled"}`} />
                   <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 10, rowGap: 2 }}>
                     <Text style={t.meta}>{parts.join(" · ")}</Text>
                     {outlookLine ? <Text style={{ ...t.meta, color: outlook.past ? toneColor(c, outlook.tone) : c.foregroundMuted }}>{outlookLine}</Text> : null}

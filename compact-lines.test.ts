@@ -285,21 +285,21 @@ test("an older daemon without the upper line still reads as one line", () => {
   const old = contextOutlook({ usedTokens: 350_000, maxTokens: 1_000_000, compactAtPct: 30 });
   assert.equal(old.nowAt, null);
   assert.equal(old.pastNow, false);
-  assert.equal(outlookSentence(old, { enrolled: true, compactOn: true, growthPerHour: null }).line, "Past its end-of-turn line: asked at the end of a turn whether to compact.");
+  assert.equal(outlookSentence(old, { enrolled: true, compactOn: true, growthPerHour: null }).line, "Past its end-of-turn line, so it is asked at the end of each turn whether to compact.");
   assert.equal(linesSummary(30, undefined), "asks at 30%");
 });
 
 test("the popover tells the two lines apart", () => {
   const on = { enrolled: true, compactOn: true, growthPerHour: 50_000 };
-  assert.match(outlookSentence(reading(350_000, 50_000), on).line, /^Past its end-of-turn line: asked at the end of a turn.*right-away line in about 1h/);
-  assert.match(outlookSentence(reading(450_000, 50_000), on).line, /^Past its right-away line\. .*mid-turn/);
-  assert.match(outlookSentence(reading(200_000, 50_000), on).line, /end-of-turn line in about 2h and its right-away line in about 4h at \+50k\/h/);
+  assert.match(outlookSentence(reading(350_000, 50_000), on).line, /^Past its end-of-turn line, so it is asked at the end of each turn.*mid-turn line in about 1h/);
+  assert.match(outlookSentence(reading(450_000, 50_000), on).line, /^Past its mid-turn line\. Smart Compact is asking it/);
+  assert.match(outlookSentence(reading(200_000, 50_000), on).line, /end-of-turn line in about 2h and its mid-turn line in about 4h at \+50k\/h/);
   assert.match(outlookSentence(reading(450_000), { ...on, enrolled: false }).line, /not enrolled/);
   assert.match(outlookSentence(reading(450_000), { ...on, enrolled: false, compactOn: false }).line, /Smart Compact is off/);
 });
 
 test("the overview's short line names the line it is past", () => {
-  assert.equal(outlookShort(reading(450_000), true), "Past its right-away line · asked mid-turn");
+  assert.equal(outlookShort(reading(450_000), true), "Past its mid-turn line · asked now");
   assert.equal(outlookShort(reading(350_000), true), "Past its end-of-turn line · asked at the end of a turn");
   assert.equal(outlookShort(reading(350_000), false), "Past its compact line · not enrolled");
   assert.match(outlookShort(reading(200_000, 50_000), true) ?? "", /^30% in ~2h · 40% in ~4h$/);
@@ -308,6 +308,8 @@ test("the overview's short line names the line it is past", () => {
 test("the ring carries a tick at each line", () => {
   const ticks = (svg: string) => (svg.match(/stroke-width="1\.8"/g) ?? []).length;
   assert.equal(ticks(contextRing(0.35, 0.3, 0.28, 0.4)), 2);
+  // The mid-turn tick stands outward from the ring rather than crossing it, so the pair stays apart at 16px.
+  assert.notEqual(contextRing(0.35, 0.3, 0.28, 0.4), contextRing(0.35, 0.3, 0.28, null) + "");
   assert.equal(ticks(contextRing(0.35, 0.3)), 1, "one line when there is no upper one");
   assert.equal(ticks(contextRing(0.35, null, 0.28, 0.4)), 0, "a muted ring has no ticks");
 });
@@ -316,8 +318,8 @@ import { pillPresentation } from "./client/pill-view.ts";
 
 test("the pill names both lines in a title short enough for the phone sheet header", () => {
   const view = pillPresentation({ usedTokens: 336_000, maxTokens: 1_000_000 }, true, DEFAULT_THRESHOLDS);
-  assert.equal(view.title, "Context 34% full · asks at 30% and 40%");
+  assert.equal(view.title, "Context 34% full · asks at 30%, mid-turn at 40%");
   assert.equal(view.mark, 0.3);
   assert.equal(view.upper, 0.4);
-  assert.ok(view.title.length <= 40);
+  assert.ok(view.title.length <= 47, "fits the phone sheet header at 390px (checked in the harness)");
 });

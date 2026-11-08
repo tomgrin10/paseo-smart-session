@@ -19,7 +19,7 @@ import { Button, errorText } from "./kit";
 import { refreshPills } from "./pill-store";
 
 /** A whole number from 1 to 99, or null. */
-/** The four editable lines: the end-of-turn and right-away line for each window size. */
+/** The four editable lines: the end-of-turn and mid-turn line for each window size. */
 interface Lines<T> { large: T; largeNow: T; small: T; smallNow: T }
 
 function stringLines(lines: Lines<number>): Lines<string> {
@@ -147,28 +147,28 @@ export function makeSettings(client: PluginClientContext) {
     const pillOn = settings.showPill && (display.status !== "ready" || display.values.enable_composer_button);
 
     return <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingVertical: 8, gap: 24 }}>
-      <SettingsSection title="Smart Compact" info="A session is never compacted unless it agrees. Past its first line it is asked at the end of a turn; past its second it is asked right away, mid-turn. Either way it can compact, put it off with a reason, or keep working.">
+      <SettingsSection title="Smart Compact" info="A session is never compacted unless it agrees. Past its end-of-turn line it is asked when its turn ends; past its mid-turn line it is asked straight away and told not to start anything new. Either way it can compact, put it off with a reason, or keep working.">
         <SettingsCard>
-          <SettingsSwitch label="Smart Compact" hint={settings.enabled ? "On. Context notices, and the question at each compact line." : "Off. Nothing is asked and nothing is compacted."}
+          <SettingsSwitch label="Smart Compact" hint={settings.enabled ? "On. Context notices, and the question at the end-of-turn and mid-turn lines." : "Off. Nothing is asked and nothing is compacted."}
             value={settings.enabled} disabled={saving} onValueChange={(enabled) => void save({ enabled }, enabled ? "Smart Compact on" : "Smart Compact off")} />
           <SettingsSwitch label="Enrol sessions automatically" hint="A session that saves its task state with the checkpoint tool is enrolled by that alone. Off, enrol each one from its pill."
             value={settings.autoEnrol} disabled={off} onValueChange={(autoEnrol) => void save({ autoEnrol }, autoEnrol ? "Sessions enrol themselves" : "Sessions are enrolled one at a time")} />
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="When to ask" info="Two lines per window size. At the first, the session is asked when its turn ends. At the second, it is asked straight away and told not to start anything new. What wears a session down is its absolute size, not its share of the window, so large windows are asked much earlier.">
+      <SettingsSection title="When to ask" info="Two lines per window size: the end-of-turn line, where a session is asked when its turn ends, and the mid-turn line above it, where it is asked straight away. What wears a session down is its absolute size, not its share of the window, so large windows are asked much earlier.">
         <SettingsCard>
-          <SettingsInput key={`large-${inputKey}`} label={`Windows of ${from} or more · ask at the end of a turn (%)`} hint={`At ${large ?? "—"}%, about ${large === null ? "—" : formatCompactTokens((large / 100) * 1_000_000)} tokens of a 1M window, the session is asked when its turn ends. Default ${DEFAULT_THRESHOLDS.large.compact}.`}
+          <SettingsInput key={`large-${inputKey}`} label={`${from}+ windows · end of turn (%)`} hint={`At ${large ?? "—"}% (about ${large === null ? "—" : formatCompactTokens((large / 100) * 1_000_000)} tokens of a 1M window) a session is asked whether to compact when its turn ends. Default ${DEFAULT_THRESHOLDS.large.compact}.`}
             initialValue={String(savedLines.large)} disabled={off} error={fieldProblem(large)} onChangeText={edit("large")} />
-          <SettingsInput key={`largeNow-${inputKey}`} label={`Windows of ${from} or more · ask right away (%)`} hint={`At ${largeNow ?? "—"}%, about ${largeNow === null ? "—" : formatCompactTokens((largeNow / 100) * 1_000_000)} tokens, it is asked mid-turn to finish its step and compact. Default ${DEFAULT_THRESHOLDS.large.now}.`}
+          <SettingsInput key={`largeNow-${inputKey}`} label={`${from}+ windows · mid-turn (%)`} hint={`At ${largeNow ?? "—"}% (about ${largeNow === null ? "—" : formatCompactTokens((largeNow / 100) * 1_000_000)} tokens) it is asked straight away to finish its step and compact. Default ${DEFAULT_THRESHOLDS.large.now}.`}
             initialValue={String(savedLines.largeNow)} disabled={off} error={fieldProblem(largeNow) ?? largePair} onChangeText={edit("largeNow")} />
-          <SettingsInput key={`small-${inputKey}`} label="Smaller windows · ask at the end of a turn (%)" hint={`At ${small ?? "—"}% of a window under ${from}. Default ${DEFAULT_THRESHOLDS.small.compact}.`}
+          <SettingsInput key={`small-${inputKey}`} label="Smaller windows · end of turn (%)" hint={`At ${small ?? "—"}% (about ${small === null ? "—" : formatCompactTokens((small / 100) * 200_000)} tokens of a 200k window) a session is asked when its turn ends. Default ${DEFAULT_THRESHOLDS.small.compact}.`}
             initialValue={String(savedLines.small)} disabled={off} error={fieldProblem(small)} onChangeText={edit("small")} />
-          <SettingsInput key={`smallNow-${inputKey}`} label="Smaller windows · ask right away (%)" hint={`At ${smallNow ?? "—"}%, mid-turn. Default ${DEFAULT_THRESHOLDS.small.now}.`}
+          <SettingsInput key={`smallNow-${inputKey}`} label="Smaller windows · mid-turn (%)" hint={`At ${smallNow ?? "—"}% (about ${smallNow === null ? "—" : formatCompactTokens((smallNow / 100) * 200_000)} tokens) it is asked straight away to finish its step and compact. Default ${DEFAULT_THRESHOLDS.small.now}.`}
             initialValue={String(savedLines.smallNow)} disabled={off} error={fieldProblem(smallNow) ?? smallPair} onChangeText={edit("smallNow")} />
           {draft !== null ? <>
             <SettingsAction label="Apply the new lines" hint={changed ? `Large ${large}% then ${largeNow}% · small ${small}% then ${smallNow}%` : valid ? "Nothing to apply yet" : "Fix the lines above first"} actionLabel="Save" disabled={!changed || off}
-              onPress={() => void save({ thresholds: { ...settings.thresholds, large: withCompactThreshold(settings.thresholds.large, large!, largeNow!), small: withCompactThreshold(settings.thresholds.small, small!, smallNow!) } }, `Smart Compact asks at ${large}% and ${small}%, right away at ${largeNow}% and ${smallNow}%`)} />
+              onPress={() => void save({ thresholds: { ...settings.thresholds, large: withCompactThreshold(settings.thresholds.large, large!, largeNow!), small: withCompactThreshold(settings.thresholds.small, small!, smallNow!) } }, `Smart Compact asks at ${large}% / ${largeNow}% and ${small}% / ${smallNow}%`)} />
             <SettingsAction label="Keep the saved lines" actionLabel="Discard" disabled={saving} onPress={() => { setDraft(null); setInputKey((k) => k + 1); }} />
           </> : null}
         </SettingsCard>

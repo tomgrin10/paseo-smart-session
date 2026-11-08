@@ -3,7 +3,7 @@
  *
  * The lower line is the **end-of-turn line**: past it, the `Stop` hook asks the
  * agent at the end of a turn whether to compact. The upper line is the
- * **right-away line**: past it, the `PostToolUse` hook asks mid-turn, and the agent
+ * **mid-turn line**: past it, the `PostToolUse` hook asks mid-turn, and the agent
  * is told to finish only the step it is on. The pill, its popover and the overview
  * all read these, so they cannot describe the same session two ways.
  */
@@ -11,9 +11,9 @@
 import { formatCompactTokens, formatDuration } from "./format.ts";
 import type { ContextOutlook, Tone } from "./forecast.ts";
 
-/** "asks at 30%, right away at 40%", or the lower line alone when there is no upper one. */
+/** "asks at 30%, mid-turn at 40%", or the lower line alone when there is no upper one. */
 export function linesSummary(lower: number, upper: number | null | undefined): string {
-  return typeof upper === "number" ? `asks at ${lower}%, right away at ${upper}%` : `asks at ${lower}%`;
+  return typeof upper === "number" ? `asks at ${lower}%, mid-turn at ${upper}%` : `asks at ${lower}%`;
 }
 
 /** The popover's one sentence about where this session stands. */
@@ -29,16 +29,16 @@ export function outlookSentence(
     };
   }
   if (outlook.pastNow) {
-    return { line: "Past its right-away line. Smart Compact asks it mid-turn to finish the step it is on and compact.", tone: outlook.tone };
+    return { line: "Past its mid-turn line. Smart Compact is asking it to finish the step it is on and compact.", tone: outlook.tone };
   }
   if (outlook.past) {
     const next = outlook.untilNowMs !== null
-      ? ` Reaches the right-away line in about ${formatDuration(outlook.untilNowMs)}${pace}.`
-      : outlook.nowAt !== null ? ` From ${outlook.nowAt}% it is asked right away.` : "";
-    return { line: `Past its end-of-turn line: asked at the end of a turn whether to compact.${next}`, tone: outlook.tone };
+      ? ` Reaches its mid-turn line in about ${formatDuration(outlook.untilNowMs)}${pace}.`
+      : outlook.nowAt !== null ? ` From ${outlook.nowAt}% it is asked mid-turn.` : "";
+    return { line: `Past its end-of-turn line, so it is asked at the end of each turn whether to compact.${next}`, tone: outlook.tone };
   }
   if (outlook.untilCompactMs !== null) {
-    const upper = outlook.untilNowMs !== null ? ` and its right-away line in about ${formatDuration(outlook.untilNowMs)}` : "";
+    const upper = outlook.untilNowMs !== null ? ` and its mid-turn line in about ${formatDuration(outlook.untilNowMs)}` : "";
     return { line: `Reaches its end-of-turn line in about ${formatDuration(outlook.untilCompactMs)}${upper}${pace}.`, tone: "default" };
   }
   return { line: outlook.nowAt !== null ? "Below both compact lines and not growing right now." : "Below its compact line and not growing right now.", tone: "default" };
@@ -47,10 +47,10 @@ export function outlookSentence(
 /** The overview row's short line, or null when there is nothing to add. */
 export function outlookShort(outlook: ContextOutlook, enrolled: boolean): string | null {
   if (outlook.past && !enrolled) return "Past its compact line · not enrolled";
-  if (outlook.pastNow) return "Past its right-away line · asked mid-turn";
+  if (outlook.pastNow) return "Past its mid-turn line · asked now";
   if (outlook.past) {
     return outlook.untilNowMs !== null
-      ? `Past its end-of-turn line · right away in ~${formatDuration(outlook.untilNowMs)}`
+      ? `Past its end-of-turn line · mid-turn in ~${formatDuration(outlook.untilNowMs)}`
       : "Past its end-of-turn line · asked at the end of a turn";
   }
   if (outlook.untilCompactMs === null) return null;

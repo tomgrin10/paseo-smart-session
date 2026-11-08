@@ -155,7 +155,7 @@ export const ContextStatusSchema = z.object({
   projectedFullAt: z.string().nullable(),
   /** The percentage at which this window is considered ready to compact. */
   compactAtPct: z.number(),
-  /** The upper line: past it, Smart Compact asks right away, mid-turn. Optional for older daemons. */
+  /** The upper line: past it, Smart Compact asks mid-turn. Optional for older daemons. */
   compactNowAtPct: z.number().optional(),
   /** When this agent would reach the upper line, at that rate. */
   projectedNowAt: z.string().nullable().optional(),
@@ -178,7 +178,7 @@ const ThresholdProfileSchema = z.object({
   notice: z.number().finite().min(1).max(99),
   closing: z.number().finite().min(1).max(99),
   compact: z.number().finite().min(1).max(99),
-  /** The upper line, where Smart Compact asks right away, mid-turn. */
+  /** The upper line, where Smart Compact asks mid-turn. */
   now: z.number().finite().min(1).max(99),
 });
 

@@ -4,7 +4,7 @@
  *
  * Normally it answers how full this session's context is and whether Smart Compact
  * will ask it to compact itself: the icon is a ring that fills with the context and
- * carries a tick at each compact line (end of turn, then right away), the label is the percentage. Protection adds
+ * carries a tick at each compact line (end of turn, then mid-turn), the label is the percentage. Protection adds
  * nothing while it simply protects; the quiet case stays quiet. When this session is
  * paused at the session limit the pill turns into the pause itself, an amber pause
  * glyph and the moment it resumes, and it stays on the composer even when the pill

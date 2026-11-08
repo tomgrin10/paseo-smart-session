@@ -27,7 +27,7 @@ export function pillPresentation(agent: Pick<DirectoryAgent, "usedTokens" | "max
   // Short on purpose: the phone sheet uses the title as its one-line header.
   return {
     label: `${pct}%`,
-    title: `Context ${pct}% full · ${compactWords ?? `asks at ${profile.compact}% and ${profile.now}%`}`,
+    title: `Context ${pct}% full · ${compactWords ?? `asks at ${profile.compact}%, mid-turn at ${profile.now}%`}`,
     fraction: outlook.pct / 100, mark: profile.compact / 100, upper: profile.now / 100 as number | null, tone: outlook.tone, pct,
   };
 }

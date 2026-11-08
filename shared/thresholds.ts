@@ -25,7 +25,7 @@ export interface ThresholdProfile {
    */
   readonly compact: number;
   /**
-   * The upper line, "right away": the `PostToolUse` hook asks mid-turn, and the
+   * The upper line, "mid-turn": the `PostToolUse` hook asks mid-turn, and the
    * agent is told to finish only the step it is on. Always at or above `compact`.
    */
   readonly now: number;
@@ -105,7 +105,7 @@ export function normalizeProfile(raw: Partial<ThresholdProfile> | undefined, fal
 /** Why a pair of lines cannot be saved, or null when it can. */
 export function linesProblem(lower: number | null, upper: number | null): string | null {
   if (lower === null || upper === null) return "Enter a whole number from 1 to 99.";
-  if (upper <= lower) return "The right-away line has to be above the end-of-turn line.";
+  if (upper <= lower) return "The mid-turn line has to be above the end-of-turn line.";
   return null;
 }
 
