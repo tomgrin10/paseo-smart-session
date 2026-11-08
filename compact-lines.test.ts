@@ -311,3 +311,13 @@ test("the ring carries a tick at each line", () => {
   assert.equal(ticks(contextRing(0.35, 0.3)), 1, "one line when there is no upper one");
   assert.equal(ticks(contextRing(0.35, null, 0.28, 0.4)), 0, "a muted ring has no ticks");
 });
+
+import { pillPresentation } from "./client/pill-view.ts";
+
+test("the pill names both lines in a title short enough for the phone sheet header", () => {
+  const view = pillPresentation({ usedTokens: 336_000, maxTokens: 1_000_000 }, true, DEFAULT_THRESHOLDS);
+  assert.equal(view.title, "Context 34% full · asks at 30% and 40%");
+  assert.equal(view.mark, 0.3);
+  assert.equal(view.upper, 0.4);
+  assert.ok(view.title.length <= 40);
+});
