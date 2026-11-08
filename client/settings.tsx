@@ -12,13 +12,20 @@ import { isPending, type Policy } from "../shared/guard/policy";
 import { checkTiming, timingOf, type Timing } from "../shared/guard/timing";
 import { governorNotice } from "../shared/guard/presentation";
 import { getSettings, installStatus, setSettings } from "../shared/smart-session";
-import { withCompactThreshold } from "../shared/thresholds";
+import { DEFAULT_THRESHOLDS, linesProblem, withCompactThreshold } from "../shared/thresholds";
 import { broadcastDisplay } from "./display";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
 import { Button, errorText } from "./kit";
 import { refreshPills } from "./pill-store";
 
 /** A whole number from 1 to 99, or null. */
+/** The four editable lines: the end-of-turn and right-away line for each window size. */
+interface Lines<T> { large: T; largeNow: T; small: T; smallNow: T }
+
+function stringLines(lines: Lines<number>): Lines<string> {
+  return { large: String(lines.large), largeNow: String(lines.largeNow), small: String(lines.small), smallNow: String(lines.smallNow) };
+}
+
 function percent(value: string): number | null {
   const parsed = Number(value.trim());
   return Number.isInteger(parsed) && parsed >= 1 && parsed <= 99 ? parsed : null;
@@ -47,12 +54,12 @@ export function makeSettings(client: PluginClientContext) {
     const display = useSettings(displayPreferences);
     const status = useSyncExternalStore(subscribeGuard, guardSnapshot, guardSnapshot);
     const [saving, setSaving] = useState(false);
-    const [draft, setDraft] = useState<{ large: string; small: string } | null>(null);
+    const [draft, setDraft] = useState<Lines<string> | null>(null);
     const [inputKey, setInputKey] = useState(0);
     const [timing, setTiming] = useState<{ draft: Timing; revision: string } | null>(null);
     const [timingTried, setTimingTried] = useState(false);
     const settings = query.data?.settings;
-    useEffect(() => { setDraft(null); }, [settings?.thresholds.large.compact, settings?.thresholds.small.compact]);
+    useEffect(() => { setDraft(null); }, [settings?.thresholds.large.compact, settings?.thresholds.small.compact, settings?.thresholds.large.now, settings?.thresholds.small.now]);
 
     // The pill and sidebar follow these documents; `useSettings` hears every client's change.
     const guardValues = guard.status === "ready" ? guard.values : undefined;
@@ -93,9 +100,22 @@ export function makeSettings(client: PluginClientContext) {
       else toast.show(next ? "Pill shown on every session" : "Pill hidden");
     }
 
-    const large = draft === null ? settings.thresholds.large.compact : percent(draft.large);
-    const small = draft === null ? settings.thresholds.small.compact : percent(draft.small);
-    const changed = draft !== null && large !== null && small !== null && (large !== settings.thresholds.large.compact || small !== settings.thresholds.small.compact);
+    const savedLines: Lines<number> = {
+      large: settings.thresholds.large.compact, largeNow: settings.thresholds.large.now,
+      small: settings.thresholds.small.compact, smallNow: settings.thresholds.small.now,
+    };
+    const lines: Lines<number | null> = draft === null ? savedLines
+      : { large: percent(draft.large), largeNow: percent(draft.largeNow), small: percent(draft.small), smallNow: percent(draft.smallNow) };
+    const { large, largeNow, small, smallNow } = lines;
+    // A blank or fractional field is its own error; an upper line not above its lower one is the pair's.
+    const fieldProblem = (value: number | null) => (draft !== null && value === null ? "Enter a whole number from 1 to 99." : null);
+    const pairProblem = (lower: number | null, upper: number | null) => (draft !== null && lower !== null && upper !== null ? linesProblem(lower, upper) : null);
+    const largePair = pairProblem(large, largeNow);
+    const smallPair = pairProblem(small, smallNow);
+    const valid = large !== null && largeNow !== null && small !== null && smallNow !== null && largePair === null && smallPair === null;
+    const changed = draft !== null && valid && (Object.keys(savedLines) as (keyof Lines<number>)[]).some((key) => lines[key] !== savedLines[key]);
+    const edit = (key: keyof Lines<string>) => (value: string) =>
+      setDraft((previous) => ({ ...(previous ?? stringLines(savedLines)), [key]: value }));
     const off = !settings.enabled || saving;
     const report = install.data?.report;
     const hooksHint = report === undefined ? "Keeps this plugin's context and compaction hooks in ~/.claude/settings.json."
@@ -127,26 +147,28 @@ export function makeSettings(client: PluginClientContext) {
     const pillOn = settings.showPill && (display.status !== "ready" || display.values.enable_composer_button);
 
     return <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingVertical: 8, gap: 24 }}>
-      <SettingsSection title="Smart Compact" info="A session is never compacted unless it agrees. At the end of a turn past its line, it is asked whether to compact; it can compact, put it off with a reason, or keep working.">
+      <SettingsSection title="Smart Compact" info="A session is never compacted unless it agrees. Past its first line it is asked at the end of a turn; past its second it is asked right away, mid-turn. Either way it can compact, put it off with a reason, or keep working.">
         <SettingsCard>
-          <SettingsSwitch label="Smart Compact" hint={settings.enabled ? "On. Context notices, and the question at the compact line." : "Off. Nothing is asked and nothing is compacted."}
+          <SettingsSwitch label="Smart Compact" hint={settings.enabled ? "On. Context notices, and the question at each compact line." : "Off. Nothing is asked and nothing is compacted."}
             value={settings.enabled} disabled={saving} onValueChange={(enabled) => void save({ enabled }, enabled ? "Smart Compact on" : "Smart Compact off")} />
           <SettingsSwitch label="Enrol sessions automatically" hint="A session that saves its task state with the checkpoint tool is enrolled by that alone. Off, enrol each one from its pill."
             value={settings.autoEnrol} disabled={off} onValueChange={(autoEnrol) => void save({ autoEnrol }, autoEnrol ? "Sessions enrol themselves" : "Sessions are enrolled one at a time")} />
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="When to ask" info="What wears a session down is its absolute size, not its share of the window, so large windows are asked much earlier. Earlier context notices move down with the line.">
+      <SettingsSection title="When to ask" info="Two lines per window size. At the first, the session is asked when its turn ends. At the second, it is asked straight away and told not to start anything new. What wears a session down is its absolute size, not its share of the window, so large windows are asked much earlier.">
         <SettingsCard>
-          <SettingsInput key={`large-${inputKey}`} label={`Windows of ${from} or more (%)`} hint={`Asked at ${large ?? "—"}%, about ${large === null ? "—" : formatCompactTokens((large / 100) * 1_000_000)} tokens of a 1M window. Default 30.`}
-            initialValue={String(settings.thresholds.large.compact)} disabled={off} error={draft !== null && large === null ? "Enter a whole number from 1 to 99." : null}
-            onChangeText={(value) => setDraft((previous) => ({ large: value, small: previous?.small ?? String(settings.thresholds.small.compact) }))} />
-          <SettingsInput key={`small-${inputKey}`} label="Smaller windows (%)" hint={`Asked at ${small ?? "—"}% of a window under ${from}. Default 85.`}
-            initialValue={String(settings.thresholds.small.compact)} disabled={off} error={draft !== null && small === null ? "Enter a whole number from 1 to 99." : null}
-            onChangeText={(value) => setDraft((previous) => ({ small: value, large: previous?.large ?? String(settings.thresholds.large.compact) }))} />
+          <SettingsInput key={`large-${inputKey}`} label={`Windows of ${from} or more · ask at the end of a turn (%)`} hint={`At ${large ?? "—"}%, about ${large === null ? "—" : formatCompactTokens((large / 100) * 1_000_000)} tokens of a 1M window, the session is asked when its turn ends. Default ${DEFAULT_THRESHOLDS.large.compact}.`}
+            initialValue={String(savedLines.large)} disabled={off} error={fieldProblem(large)} onChangeText={edit("large")} />
+          <SettingsInput key={`largeNow-${inputKey}`} label={`Windows of ${from} or more · ask right away (%)`} hint={`At ${largeNow ?? "—"}%, about ${largeNow === null ? "—" : formatCompactTokens((largeNow / 100) * 1_000_000)} tokens, it is asked mid-turn to finish its step and compact. Default ${DEFAULT_THRESHOLDS.large.now}.`}
+            initialValue={String(savedLines.largeNow)} disabled={off} error={fieldProblem(largeNow) ?? largePair} onChangeText={edit("largeNow")} />
+          <SettingsInput key={`small-${inputKey}`} label="Smaller windows · ask at the end of a turn (%)" hint={`At ${small ?? "—"}% of a window under ${from}. Default ${DEFAULT_THRESHOLDS.small.compact}.`}
+            initialValue={String(savedLines.small)} disabled={off} error={fieldProblem(small)} onChangeText={edit("small")} />
+          <SettingsInput key={`smallNow-${inputKey}`} label="Smaller windows · ask right away (%)" hint={`At ${smallNow ?? "—"}%, mid-turn. Default ${DEFAULT_THRESHOLDS.small.now}.`}
+            initialValue={String(savedLines.smallNow)} disabled={off} error={fieldProblem(smallNow) ?? smallPair} onChangeText={edit("smallNow")} />
           {draft !== null ? <>
-            <SettingsAction label="Apply the new lines" hint={changed ? `Large ${large}% · small ${small}%` : "Nothing to apply yet"} actionLabel="Save" disabled={!changed || off}
-              onPress={() => void save({ thresholds: { ...settings.thresholds, large: withCompactThreshold(settings.thresholds.large, large!), small: withCompactThreshold(settings.thresholds.small, small!) } }, `Smart Compact asks at ${large}% and ${small}%`)} />
+            <SettingsAction label="Apply the new lines" hint={changed ? `Large ${large}% then ${largeNow}% · small ${small}% then ${smallNow}%` : valid ? "Nothing to apply yet" : "Fix the lines above first"} actionLabel="Save" disabled={!changed || off}
+              onPress={() => void save({ thresholds: { ...settings.thresholds, large: withCompactThreshold(settings.thresholds.large, large!, largeNow!), small: withCompactThreshold(settings.thresholds.small, small!, smallNow!) } }, `Smart Compact asks at ${large}% and ${small}%, right away at ${largeNow}% and ${smallNow}%`)} />
             <SettingsAction label="Keep the saved lines" actionLabel="Discard" disabled={saving} onPress={() => { setDraft(null); setInputKey((k) => k + 1); }} />
           </> : null}
         </SettingsCard>

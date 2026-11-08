@@ -3,6 +3,7 @@
  * one, and its label and title. Kept apart from `pill.tsx` so tests can run them.
  */
 import { formatClock } from "../shared/format.ts";
+import { linesSummary } from "../shared/compact-lines.ts";
 import { contextOutlook } from "../shared/forecast.ts";
 import { pausePill } from "../shared/guard/presentation.ts";
 import { profileFor, type Thresholds } from "../shared/thresholds.ts";
@@ -18,16 +19,16 @@ export function pillPresentation(agent: Pick<DirectoryAgent, "usedTokens" | "max
     return {
       label: compactOn ? "Smart Compact" : "Context",
       title: `${compactWords ?? "Smart Compact on"} · no context reading yet`,
-      fraction: 0, mark: null as number | null, tone: "default" as const, pct: null as number | null,
+      fraction: 0, mark: null as number | null, upper: null as number | null, tone: "default" as const, pct: null as number | null,
     };
   }
-  const compactAtPct = profileFor(agent.maxTokens!, thresholds ?? undefined).compact;
-  const outlook = contextOutlook({ usedTokens: agent.usedTokens!, maxTokens: agent.maxTokens!, compactAtPct });
+  const profile = profileFor(agent.maxTokens!, thresholds ?? undefined);
+  const outlook = contextOutlook({ usedTokens: agent.usedTokens!, maxTokens: agent.maxTokens!, compactAtPct: profile.compact, compactNowAtPct: profile.now });
   const pct = Math.round(outlook.pct);
   return {
     label: `${pct}%`,
-    title: `Context ${pct}% full · ${compactWords ?? `Smart Compact asks at ${compactAtPct}%`}`,
-    fraction: outlook.pct / 100, mark: compactAtPct / 100, tone: outlook.tone, pct,
+    title: `Context ${pct}% full · ${compactWords ?? `Smart Compact ${linesSummary(profile.compact, profile.now)}`}`,
+    fraction: outlook.pct / 100, mark: profile.compact / 100, upper: profile.now / 100 as number | null, tone: outlook.tone, pct,
   };
 }
 

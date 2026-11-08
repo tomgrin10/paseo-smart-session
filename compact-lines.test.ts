@@ -252,3 +252,62 @@ test("settings validation refuses an upper line that is not above the lower one"
   assert.match(linesProblem(50, 40) ?? "", /above/);
   assert.match(linesProblem(null, 40) ?? "", /whole number/);
 });
+
+/* -------------------------------------------------------------------------- */
+/* What the views say: forecast, copy and the ring.                            */
+
+import { linesSummary, outlookSentence, outlookShort } from "./shared/compact-lines.ts";
+import { contextOutlook, contextRing } from "./shared/forecast.ts";
+
+const reading = (used: number, growth: number | null = null) =>
+  contextOutlook({ usedTokens: used, maxTokens: 1_000_000, compactAtPct: 30, compactNowAtPct: 40, growthTokensPerHour: growth });
+
+test("the forecast says when each line arrives", () => {
+  const below = reading(200_000, 50_000);
+  assert.equal(below.untilCompactMs, 2 * 3_600_000);
+  assert.equal(below.untilNowMs, 4 * 3_600_000);
+  const between = reading(350_000, 50_000);
+  assert.equal(between.past, true);
+  assert.equal(between.untilCompactMs, null);
+  assert.equal(between.untilNowMs, 3_600_000);
+  const above = reading(450_000, 50_000);
+  assert.equal(above.pastNow, true);
+  assert.equal(above.untilNowMs, null);
+});
+
+test("amber past the end-of-turn line, red past the right-away line", () => {
+  assert.equal(reading(200_000).tone, "default");
+  assert.equal(reading(350_000).tone, "warning");
+  assert.equal(reading(450_000).tone, "danger");
+});
+
+test("an older daemon without the upper line still reads as one line", () => {
+  const old = contextOutlook({ usedTokens: 350_000, maxTokens: 1_000_000, compactAtPct: 30 });
+  assert.equal(old.nowAt, null);
+  assert.equal(old.pastNow, false);
+  assert.equal(outlookSentence(old, { enrolled: true, compactOn: true, growthPerHour: null }).line, "Past its end-of-turn line: asked at the end of a turn whether to compact.");
+  assert.equal(linesSummary(30, undefined), "asks at 30%");
+});
+
+test("the popover tells the two lines apart", () => {
+  const on = { enrolled: true, compactOn: true, growthPerHour: 50_000 };
+  assert.match(outlookSentence(reading(350_000, 50_000), on).line, /^Past its end-of-turn line: asked at the end of a turn.*right-away line in about 1h/);
+  assert.match(outlookSentence(reading(450_000, 50_000), on).line, /^Past its right-away line\. .*mid-turn/);
+  assert.match(outlookSentence(reading(200_000, 50_000), on).line, /end-of-turn line in about 2h and its right-away line in about 4h at \+50k\/h/);
+  assert.match(outlookSentence(reading(450_000), { ...on, enrolled: false }).line, /not enrolled/);
+  assert.match(outlookSentence(reading(450_000), { ...on, enrolled: false, compactOn: false }).line, /Smart Compact is off/);
+});
+
+test("the overview's short line names the line it is past", () => {
+  assert.equal(outlookShort(reading(450_000), true), "Past its right-away line · asked mid-turn");
+  assert.equal(outlookShort(reading(350_000), true), "Past its end-of-turn line · asked at the end of a turn");
+  assert.equal(outlookShort(reading(350_000), false), "Past its compact line · not enrolled");
+  assert.match(outlookShort(reading(200_000, 50_000), true) ?? "", /^30% in ~2h · 40% in ~4h$/);
+});
+
+test("the ring carries a tick at each line", () => {
+  const ticks = (svg: string) => (svg.match(/stroke-width="1\.8"/g) ?? []).length;
+  assert.equal(ticks(contextRing(0.35, 0.3, 0.28, 0.4)), 2);
+  assert.equal(ticks(contextRing(0.35, 0.3)), 1, "one line when there is no upper one");
+  assert.equal(ticks(contextRing(0.35, null, 0.28, 0.4)), 0, "a muted ring has no ticks");
+});

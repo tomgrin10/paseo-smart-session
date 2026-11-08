@@ -36,11 +36,11 @@ function hover(set: (value: number | null) => void, index: number) {
 
 /**
  * A meter: the used share, an optional faint projection of where it lands at the
- * reset, an optional muted pace tick (where an even spend would be) and an optional
- * mark (the compact line on a context bar).
+ * reset, an optional muted pace tick (where an even spend would be) and optional
+ * marks (the two compact lines on a context bar).
  */
-export function Meter({ theme, pct, tone = "default", projected, pace, mark, height = 8, label }: {
-  theme: Theme; pct: number; tone?: Tone; projected?: number | null; pace?: number | null; mark?: number | null; height?: number; label: string;
+export function Meter({ theme, pct, tone = "default", projected, pace, mark, upper, height = 8, label }: {
+  theme: Theme; pct: number; tone?: Tone; projected?: number | null; pace?: number | null; mark?: number | null; upper?: number | null; height?: number; label: string;
 }) {
   const c = theme.colors;
   const used = Math.max(0, Math.min(100, pct));
@@ -57,13 +57,14 @@ export function Meter({ theme, pct, tone = "default", projected, pace, mark, hei
     </View>
     {pace !== null && pace !== undefined ? tick(pace, c.foregroundMuted, "pace") : null}
     {mark !== null && mark !== undefined ? tick(mark, c.foreground, "mark") : null}
+    {upper !== null && upper !== undefined && upper !== mark ? tick(upper, c.foreground, "upper") : null}
   </View>;
 }
 
 /** The context ring glyph, the same object as the composer pill's icon. */
-export function Ring({ size, color, fraction, mark }: { size: number; color: string; fraction: number; mark: number | null }) {
+export function Ring({ size, color, fraction, mark, upper = null }: { size: number; color: string; fraction: number; mark: number | null; upper?: number | null }) {
   // A stronger track at pill size, so the ring reads as a gauge and not as the host's spinner.
-  return <Icon icon={{ svg: contextRing(fraction, mark, size <= 18 ? 0.5 : 0.28) }} size={size} color={color} />;
+  return <Icon icon={{ svg: contextRing(fraction, mark, size <= 18 ? 0.5 : 0.28, mark === null ? null : upper) }} size={size} color={color} />;
 }
 
 /** The percentage held at `t`: readings only climb within a window, so the last one before it stands. */
