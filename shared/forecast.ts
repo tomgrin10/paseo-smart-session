@@ -252,7 +252,8 @@ export function contextRing(fraction: number, mark: number | null, track = 0.28,
   };
   // A muted ring (no lower line) has no upper one either.
   const inward = tickAt(mark, r - 3.8, r);
-  const outward = upper !== null && upper !== mark ? tickAt(upper, r, r + 3.6) : "";
+  // r + 2.6 plus the 0.9 round cap ends exactly at the 24-unit box edge, so the stub is never clipped.
+  const outward = upper !== null && upper !== mark ? tickAt(upper, r, r + 2.6) : "";
   const tick = mark === null ? "" : inward + outward;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><circle cx="${c}" cy="${c}" r="${r}" stroke-opacity="${track}"/>${arc}${tick}</svg>`;
 }
