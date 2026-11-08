@@ -152,7 +152,7 @@ export function makeSettings(client: PluginClientContext) {
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Pause at the limit" info="When the provider's session window is spent, a running session is paused instead of failing, then continued in the same conversation once the window resets. Formerly the Session Guard plugin; its choices and waiting pauses carry over.">
+      <SettingsSection title="Pause at the limit (Session Guard)" info="When the provider's session window is spent, a running session is paused instead of failing, then continued in the same conversation once the window resets. Choices and waiting pauses from the standalone Session Guard plugin carry over.">
         {guard.status === "loading" ? <ActivityIndicator accessibilityLabel="Loading Pause at the limit settings" color={c.foregroundMuted} style={{ padding: 16 }} />
           : guard.status !== "ready" ? <View style={{ gap: 8 }}>
             <Text accessibilityRole="alert" style={{ color: c.statusDanger }}>{guard.error}</Text>
@@ -163,7 +163,7 @@ export function makeSettings(client: PluginClientContext) {
           </View>
             : <SettingsCard>
               {elsewhere ? <SettingsRow label={elsewhere.title} hint={elsewhere.hint} /> : null}
-              <SettingsSwitch label="Pause at the limit" hint={guard.values.enabled ? `On. Sessions pause at ${guard.values.thresholdPct}% of the session window. Works while the app is closed.` : "Off until you turn it on. Turning it off lets frozen workers go; waiting continuations hold until you turn it back on or cancel them."}
+              <SettingsSwitch label="Pause at the limit (Session Guard)" hint={guard.values.enabled ? `On. Sessions pause at ${guard.values.thresholdPct}% of the session window. Works while the app is closed.` : "Off until you turn it on. Turning it off lets frozen workers go; waiting continuations hold until you turn it back on or cancel them."}
                 value={guard.values.enabled} disabled={guardBusy} onValueChange={(enabled) => changeGuard({ enabled }, enabled ? "Sessions pause at the limit" : "Pause at the limit off")} />
               <SettingsSelect label="Sessions" hint="Change any one session from its pill."
                 value={guard.values.protectByDefault ? "all" : "opt-in"} options={[{ label: "Every session", value: "all" }, { label: "Only ones I turn on", value: "opt-in" }]}
@@ -188,7 +188,7 @@ export function makeSettings(client: PluginClientContext) {
             </SettingsCard>
           </View>
             : <SettingsCard>
-              <SettingsSwitch label="Sidebar row" hint="Smart Session in the sidebar, with the session window's use, or how many sessions are paused."
+              <SettingsSwitch label="Sidebar row" hint="Smart Session in the sidebar, with the session window's use (with ZeroSub, how your subscriptions last), or how many sessions are paused."
                 value={display.values.showSidebar} disabled={display.saving} onValueChange={(showSidebar) => void display.save({ ...display.values, showSidebar }, display.revision)} />
               <SettingsSwitch label="Pill on every session" hint="The context ring above each message box. A paused session keeps its pill either way."
                 value={pillOn} disabled={saving || display.saving} onValueChange={(next) => void setPill(next)} />

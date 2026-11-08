@@ -73,7 +73,18 @@ export interface ContextSample {
   readonly title: string | null;
 }
 
-type LogKind = "usage" | "context";
+/**
+ * One ZeroSub account's reading, as ZeroSub took it (`usage.json`), kept so each
+ * account gets a pace and a forecast. Shaped like a usage sample, so the same block
+ * logic reads it, plus the account it belongs to: ZeroSub's id, never an email.
+ */
+export interface AccountSample extends Omit<UsageSample, "src"> {
+  readonly src: "zerosub";
+  readonly accountId: string;
+  readonly family: "claude" | "codex";
+}
+
+type LogKind = "usage" | "context" | "accounts";
 
 /** Monthly files: small enough to read whole, coarse enough to stay few. */
 function logPath(kind: LogKind, at: string): string {
@@ -111,6 +122,10 @@ export async function appendUsage(sample: UsageSample): Promise<void> {
 
 export async function appendContext(sample: ContextSample): Promise<void> {
   await append("context", sample.at, sample);
+}
+
+export async function appendAccount(sample: AccountSample): Promise<void> {
+  await append("accounts", sample.at, sample);
 }
 
 /**
@@ -167,6 +182,14 @@ export async function readUsage(options: { sinceMs?: number } = {}): Promise<Usa
   const since = options.sinceMs ?? null;
   const rows = await readLog<UsageSample>("usage", since);
   return since === null ? rows : rows.filter((row) => Date.parse(row.at) >= since);
+}
+
+export async function readAccounts(options: { sinceMs?: number } = {}): Promise<AccountSample[]> {
+  const since = options.sinceMs ?? null;
+  const rows = await readLog<AccountSample>("accounts", since);
+  // Defensive: a row from a future shape, or a hand-edited one, is skipped, not thrown on.
+  return rows.filter((row) => typeof row?.accountId === "string" && typeof row.at === "string" && typeof row.windows === "object" && row.windows !== null
+    && (since === null || Date.parse(row.at) >= since));
 }
 
 export async function readContext(options: { sinceMs?: number } = {}): Promise<ContextSample[]> {

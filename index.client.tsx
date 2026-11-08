@@ -11,6 +11,7 @@ import { createLive } from "./client/live";
 import { OVERVIEW_SCREEN, PAUSED_SCREEN, SMART_COMPACT_SETTINGS, makeOverview } from "./client/overview";
 import { contributeClient } from "./client/pill";
 import { makeSettings } from "./client/settings";
+import { watchSubscriptions } from "./client/subscriptions";
 import { budgetStatus } from "./shared/smart-session";
 
 export default function contribute(host: PluginClientContext) {
@@ -37,11 +38,14 @@ export default function contribute(host: PluginClientContext) {
   // One agent observation and one protection poll for the one pill.
   const agents = observeAgents(client);
   const stopGuard = watchGuard(client, live);
+  // ZeroSub's subscriptions, for the overview, the sidebar row and the popover; rare without ZeroSub.
+  const stopSubscriptions = watchSubscriptions(client, (next) => live.setSubscriptions(next));
   // The pill registers on the host's own client: a paused session keeps it even when pills are hidden.
   const removeClient = contributeClient(host, agents);
   return () => {
     clearInterval(budgetTimer);
     stopGuard();
+    stopSubscriptions();
     removeClient();
     for (const remove of removers.splice(0)) void remove();
     visibility.dispose();

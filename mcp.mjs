@@ -281,6 +281,27 @@ function accountLines(account) {
 }
 
 /**
+ * All of this provider's ZeroSub subscriptions together, when there are several:
+ * how long they last at this pace and which takes over next. Names are the person's
+ * own or neutral ("CLI login", "Account 2"); the RPC never carries an email.
+ */
+function poolLines(pool) {
+  if (pool === undefined || pool === null) return [];
+  const fam = pool.family === "codex" ? "Codex" : "Claude";
+  const stale = pool.staleReadings > 0 ? ` (${pool.staleReadings} reading${pool.staleReadings === 1 ? " is" : "s are"} over 30 min old, so this is rough)` : "";
+  const head = `All ${pool.accounts} ${fam} subscriptions: ${pool.withRoom} with room now`;
+  if (pool.runsOutAt !== null && Date.parse(pool.runsOutAt) <= Date.now()) {
+    return [`${head}. Every one is at a limit${pool.back ? `; ${pool.back.name} is back ${describeRelative(pool.back.at)}` : ""}${stale}.`];
+  }
+  const next = pool.next ? ` ${pool.next.name} takes over ${describeRelative(pool.next.at)}.` : "";
+  if (pool.runsOutAt !== null) {
+    return [`${head}. At the current pace (${pool.pacePctPerHour}%/h of a session window) they run out ${describeRelative(pool.runsOutAt)}${pool.back ? `, and ${pool.back.name} is back ${describeRelative(pool.back.at)}` : ""}.${next}${stale}`];
+  }
+  if (pool.pacePctPerHour !== null) return [`${head}. At the current pace they last the next 24 hours.${next}${stale}`];
+  return [`${head}${stale}.`];
+}
+
+/**
  * Session Guard's word on this session, for `budget_status`.
  *
  * Read-only, and only for the session asking: the plugin resolves it from
@@ -351,6 +372,7 @@ const TOOLS = {
       if (result.error) return `Could not read plan usage: ${result.error}`;
       const guard = await guardSummary();
       const account = accountLines(result.account);
+      account.tail.push(...poolLines(result.pool));
       const interesting = (result.windows ?? []).filter(
         (window) => window.id === "five_hour" || window.id === "seven_day" || window.pct > 0,
       );

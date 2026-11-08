@@ -26,6 +26,7 @@ import {
   noteNewestUsage,
   type ContextSample,
 } from "./store.ts";
+import { forgetAccounts, recordAccounts } from "./subscriptions.ts";
 import { fetchUpstreamUsage } from "./upstream.ts";
 import {
   acceptReading,
@@ -182,6 +183,15 @@ async function pollUpstream(): Promise<void> {
   if (sample !== null) await record(sample);
 }
 
+/** ZeroSub's other accounts, kept as ZeroSub reads them; nothing happens without ZeroSub. */
+async function pollAccounts(): Promise<void> {
+  try {
+    await recordAccounts();
+  } catch (error) {
+    console.error("[smart-session] could not record ZeroSub's account readings", String(error));
+  }
+}
+
 async function pollDaemon(): Promise<void> {
   await withDaemon(async (client) => {
     const at = new Date().toISOString();
@@ -232,6 +242,7 @@ function startRecorder(): void {
       await pollUpstream();
       await pollDaemon();
       await pollClaudeJson();
+      await pollAccounts();
       await pollSpend();
     } catch (error) {
       // A daemon restart, a lost socket, a machine asleep — none of these should
@@ -251,6 +262,7 @@ function startRecorder(): void {
     clearInterval(timer);
     lastContext.clear();
     clearCaches();
+    forgetAccounts();
   });
 }
 

@@ -1,6 +1,7 @@
 import { contributeGuard } from "./server/guard/index.ts";
 import { zerosubBudgetAccount } from "./server/guard/zerosub.ts";
 import { contributeSessionMcp } from "./server/session-mcp.ts";
+import { budgetPool, subscriptionsView } from "./server/subscriptions.ts";
 import { displayPreferences } from "./shared/display";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 
@@ -17,6 +18,7 @@ import {
   installStatus,
   setSettings,
   spendSummary,
+  subscriptionsStatus,
 } from "./shared/smart-session.ts";
 
 import {
@@ -76,9 +78,12 @@ export default function contribute(server: PluginServerContext) {
       const newestInstant = newest === null ? null : effectiveAt(newest);
       // Under ZeroSub the agent may run on another account than the one recorded.
       const account = agentId === undefined ? null : await zerosubBudgetAccount(agentId).catch(() => null);
+      // …and with several subscriptions, how long they last together.
+      const pool = agentId === undefined ? null : await budgetPool(agentId).catch(() => null);
       return {
         windows: account?.windows ?? windows,
         ...(account ? { account: account.account } : {}),
+        ...(pool ? { pool } : {}),
         past,
         recorder: {
           newestAt: newestInstant,
@@ -104,6 +109,14 @@ export default function contribute(server: PluginServerContext) {
         },
         error: error instanceof Error ? error.message : String(error),
       };
+    }
+  });
+
+  server.handle(subscriptionsStatus, async () => {
+    try {
+      return { ...(await subscriptionsView()), error: null };
+    } catch (error) {
+      return { zerosub: false, autoSwitch: false, accounts: [], agents: {}, error: error instanceof Error ? error.message : String(error) };
     }
   });
 
