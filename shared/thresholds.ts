@@ -19,8 +19,16 @@ export interface ThresholdProfile {
   readonly notice: number;
   /** Percentage at which to stop opening new work. */
   readonly closing: number;
-  /** Percentage at which to recommend compacting. */
+  /**
+   * The lower line, "when convenient": the `Stop` hook asks at the end of a turn.
+   * Kept under its old name so saved settings and older daemons still read it.
+   */
   readonly compact: number;
+  /**
+   * The upper line, "right away": the `PostToolUse` hook asks mid-turn, and the
+   * agent is told to finish only the step it is on. Always at or above `compact`.
+   */
+  readonly now: number;
 }
 
 export interface Thresholds {
@@ -42,9 +50,20 @@ export interface Thresholds {
  */
 export const DEFAULT_THRESHOLDS: Thresholds = {
   largeWindowFrom: 400_000,
-  large: { notice: 15, closing: 22, compact: 30 },
-  small: { notice: 60, closing: 75, compact: 85 },
+  large: { notice: 15, closing: 22, compact: 30, now: 40 },
+  small: { notice: 60, closing: 75, compact: 85, now: 90 },
 };
+
+/**
+ * Where the upper line goes when a saved profile predates it.
+ *
+ * The saved lower line is kept as it is, and the upper line keeps the default's
+ * distance above it, so a person who moved their compact line to 50% does not get
+ * an upper line at 40% — below it — the moment they upgrade.
+ */
+export function defaultNowFor(compact: number, fallback: ThresholdProfile): number {
+  return Math.min(99, Math.max(fallback.now, compact + (fallback.now - fallback.compact)));
+}
 
 export function profileFor(maxTokens: number, thresholds: Thresholds = DEFAULT_THRESHOLDS): ThresholdProfile {
   return maxTokens >= thresholds.largeWindowFrom ? thresholds.large : thresholds.small;
@@ -77,7 +96,17 @@ export function normalizeProfile(raw: Partial<ThresholdProfile> | undefined, fal
   const compact = clamp(raw?.compact, fallback.compact);
   const closing = Math.min(compact, clamp(raw?.closing, fallback.closing));
   const notice = Math.min(closing, clamp(raw?.notice, fallback.notice));
-  return { notice, closing, compact };
+  // The upper line must stay above the lower one; a saved file from before it
+  // existed gets the default distance above whatever lower line it kept.
+  const now = Math.max(Math.min(99, compact + 1), clamp(raw?.now, defaultNowFor(compact, fallback)));
+  return { notice, closing, compact, now: Math.min(99, now) };
+}
+
+/** Why a pair of lines cannot be saved, or null when it can. */
+export function linesProblem(lower: number | null, upper: number | null): string | null {
+  if (lower === null || upper === null) return "Enter a whole number from 1 to 99.";
+  if (upper <= lower) return "The right-away line has to be above the end-of-turn line.";
+  return null;
 }
 
 /**
@@ -87,9 +116,14 @@ export function normalizeProfile(raw: Partial<ThresholdProfile> | undefined, fal
  * compact all fire together. Scale the earlier bands with it when necessary;
  * raising it leaves the existing advance notice intact.
  */
-export function withCompactThreshold(profile: ThresholdProfile, value: number): ThresholdProfile {
+export function withCompactThreshold(profile: ThresholdProfile, value: number, nowValue?: number): ThresholdProfile {
   const compact = Number.isFinite(value) ? Math.round(Math.min(99, Math.max(1, value))) : profile.compact;
-  if (compact >= profile.closing) return { ...profile, compact };
+  // An explicit upper line wins; otherwise it keeps its distance above the lower one.
+  const now =
+    nowValue !== undefined && Number.isFinite(nowValue)
+      ? Math.round(Math.min(99, Math.max(1, nowValue)))
+      : Math.min(99, Math.max(profile.now, compact + (profile.now - profile.compact)));
+  if (compact >= profile.closing) return normalizeProfile({ ...profile, compact, now }, profile);
 
   const scale = compact / profile.compact;
   return normalizeProfile(
@@ -97,6 +131,7 @@ export function withCompactThreshold(profile: ThresholdProfile, value: number): 
       notice: Math.max(1, Math.round(profile.notice * scale)),
       closing: Math.max(1, Math.round(profile.closing * scale)),
       compact,
+      now,
     },
     profile,
   );

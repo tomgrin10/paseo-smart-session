@@ -141,6 +141,8 @@ export default function contribute(server: PluginServerContext) {
           growthTokensPerHour: growth.get(row.id) ?? null,
           projectedFullAt: projectFull(row.usedTokens!, row.maxTokens!, growth.get(row.id) ?? null, thresholds),
           compactAtPct: profileFor(row.maxTokens!, thresholds).compact,
+          compactNowAtPct: profileFor(row.maxTokens!, thresholds).now,
+          projectedNowAt: projectFull(row.usedTokens!, row.maxTokens!, growth.get(row.id) ?? null, thresholds, "now"),
           stateWrittenAt: stateWrittenAt(row.id),
         }))
         .sort((a, b) => b.usedPct - a.usedPct);
