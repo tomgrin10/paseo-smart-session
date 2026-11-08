@@ -95,10 +95,10 @@
   all in the one client bundle; that is what makes a toggle redraw immediately instead of waiting out
   a poll. A registration bakes in the workspace and cannot be patched, so an agent that moves
   workspace needs a new one, and one that closes must be dropped. The pill is a context ring (the
-  arc is the session's context, the tick its compact line, muted when the session is not enrolled)
+  arc is the session's context, the ticks its two compact lines, muted when the session is not enrolled)
   with the percentage as its label; context comes from the shared agent directory's `lastUsage`, so
   it moves every turn without a poll of its own. Pressing it opens `client/popover.tsx`: context,
-  compact line, task state, last compaction, the enrolment switch and the per-session **Pause at the
+  compact lines, task state, last compaction, the enrolment switch and the per-session **Pause at the
   limit** switch. While this process governs a pending pause for the session, the pill becomes the
   pause (amber glyph, "Resumes 5:58 PM") and its popover leads with it; that pill is registered even
   when the pill is hidden, so it goes on the host's own client, not through `button-visibility`.
@@ -145,7 +145,14 @@
   those alone.
 - **Compaction is always agent-mandated.** Nothing in this plugin may decide that a session should be
   compacted; `queue.add` is reached only from an agent's `request_compaction` or a person. The ask
-  lives in `hooks/ask-compact.mjs` on `Stop`, where it rides the agent's own turn.
+  lives in the hooks and rides the agent's own turn. There are two lines per window profile
+  (`compact` and `now` in `shared/thresholds.ts`, mirrored in `hooks/context.mjs`): past the lower,
+  end-of-turn line `hooks/ask-compact.mjs` asks on `Stop`; past the upper, right-away line
+  `hooks/context-threshold.mjs` asks on `PostToolUse`, mid-turn, once per compaction epoch and again
+  only after a deferral runs out. Both go through `hooks/ask.mjs` (text and guards) and
+  `hooks/asks.mjs` (ledger), so they never disagree about whether to speak. A saved settings file
+  without `now` keeps its `compact` as the lower line and gains the default distance above it.
+  User-facing words for both lines live in `shared/compact-lines.ts`.
 - Smart Compact sends an agent at most two things, and `sendToAgent` has exactly two call sites: the
   `/compact` the agent asked for, and, when that agent requests one, a continuation message after it
   lands. Anything else it needs to hear comes from a hook. Adding a third is a design change, not a
