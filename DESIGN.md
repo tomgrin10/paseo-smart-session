@@ -122,7 +122,7 @@ components:
 
 Smart Session extends Paseo's interface and adds no visual world of its own. It inherits the host theme, system sans, icon names and platform layout, and shares Follow-up and Defer's kit (`client/kit.tsx`, `client/theme.ts`, `client/motion.tsx`): raised cards, tinted chips, 97% press. Its one signature is that every meter is paired with the moment it matters. A plan window shows its reset and when it runs out at this pace ("Session runs out around 4:58 PM · 42m before the 5:41 PM reset"). A session's context shows its two compact lines. A pause shows the clock it resumes at. Visitor mode: Operate.
 
-Two objects carry that signature. The window chart draws the open session window from start to reset, with recorded use in ink, the projection at this pace faint, and the stretch with nothing left in amber. The context ring is a 24-unit SVG arc (`contextRing` in `shared/forecast.ts`) with a tick at each compact line: one crossing the ring at the end-of-turn line, an outward stub at the mid-turn line. It is the composer pill's icon, the popover's 40px gauge and the 16px mark on each context row.
+Two objects carry that signature. The window chart draws the open session window from start to reset, with recorded use in ink, the projection at this pace faint, and the stretch with nothing left in amber. The context ring is a 24-unit SVG arc (`contextRing` in `shared/forecast.ts`) with a tick at each compact line: inward from the ring at the end-of-turn line, outward at the mid-turn line. It is the composer pill's icon, the popover's 40px gauge and the 16px mark on each context row.
 
 Density is dashboard-quiet: one status headline and one meta sentence, then cards of hairline-divided rows. Settings live in Paseo's Settings → Plugins, not on the dashboard. Feature rows link to them.
 
@@ -202,7 +202,7 @@ Depth is a ring, not a shadow stack. `raised(colors)` gives a light theme a hair
 
 ## Shapes
 
-Corners are soft and few. Cards are 10px, chat and pause cards 12px. Controls are 6px (8px compact), inputs 8px, and chips, meters and the switch fully round. Chart bars carry 2px top corners (3px on daily bars), and heatmap cells 2px. Ticks are 2px wide with 1px rounding and overhang the meter by 3px each side. The ring is a round-capped 2.6-unit stroke on a 24-unit box, with its track at 28% (50% at pill size, so it reads as a gauge and not as the host spinner). Its arc is quantised to 1/48, and its compact ticks are 1.8-unit radial strokes: the end-of-turn tick crosses the ring, the mid-turn tick stands outward from it (so the pair stays apart at 16px).
+Corners are soft and few. Cards are 10px, chat and pause cards 12px. Controls are 6px (8px compact), inputs 8px, and chips, meters and the switch fully round. Chart bars carry 2px top corners (3px on daily bars), and heatmap cells 2px. Ticks are 2px wide with 1px rounding and overhang the meter by 3px each side. The ring is a round-capped 2.6-unit stroke on a 24-unit box, with its track at 28% (50% at pill size, so it reads as a gauge and not as the host spinner). Its arc is quantised to 1/48, and its compact ticks are 1.8-unit radial strokes: the end-of-turn tick points inward from the ring, the mid-turn tick outward (so the pair stays apart at 16px).
 
 ## Components
 

@@ -225,7 +225,7 @@ export function contextOutlook(reading: ContextReading): ContextOutlook {
 
 /**
  * The context ring: a faint full track, an arc for the share of the window used, and a
- * tick at each compact line: across the ring at the end-of-turn line, outward at the mid-turn line. Inline SVG in the surface's own colour, so
+ * tick at each compact line: inward at the end-of-turn line, outward at the mid-turn line. Inline SVG in the surface's own colour, so
  * the host `Icon` can draw it anywhere a Lucide glyph fits. Quantized to 1/48 so a
  * ticking view rarely redraws.
  */
@@ -241,17 +241,18 @@ export function contextRing(fraction: number, mark: number | null, track = 0.28,
     const [x, y] = point(f, r);
     arc = `<path d="M${c} ${c - r}A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${x} ${y}"/>`;
   }
-  // Both lines cross the ring the same way, so they read as one kind of mark: the end-of-turn
-  // line and, further round, the mid-turn line.
-  // The end-of-turn tick crosses the ring; the mid-turn tick is an outward stub, so the two stay
-  // apart at pill size, where a pair of crossing ticks 36° apart merges into one smudge.
-  const tickAt = (at: number | null, inner: number) => {
+  // The end-of-turn tick points inward from the ring and the mid-turn tick outward, so the pair sits
+  // on opposite sides of the stroke and stays apart at pill size, where two ticks 36° apart that
+  // both crossed the ring merged with the arc's end into one hooked smudge.
+  const tickAt = (at: number | null, from: number, to: number) => {
     if (at === null || !(at > 0 && at < 1)) return "";
-    const [x1, y1] = point(at, r - inner);
-    const [x2, y2] = point(at, r + 3.2);
+    const [x1, y1] = point(at, from);
+    const [x2, y2] = point(at, to);
     return `<path d="M${x1} ${y1}L${x2} ${y2}" stroke-width="1.8"/>`;
   };
   // A muted ring (no lower line) has no upper one either.
-  const tick = mark === null ? "" : tickAt(mark, 3.6) + (upper !== null && upper !== mark ? tickAt(upper, 0) : "");
+  const inward = tickAt(mark, r - 3.8, r);
+  const outward = upper !== null && upper !== mark ? tickAt(upper, r, r + 3.6) : "";
+  const tick = mark === null ? "" : inward + outward;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><circle cx="${c}" cy="${c}" r="${r}" stroke-opacity="${track}"/>${arc}${tick}</svg>`;
 }
