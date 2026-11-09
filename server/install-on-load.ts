@@ -13,7 +13,8 @@
  * machine's real Claude Code settings just because something imported a function.
  */
 
-import { install } from "./install.ts";
+import { install, resolvePluginDir } from "./install.ts";
+import { removeGlobalRegistrations } from "./mcp-registrations.ts";
 
 void install()
   .then((report) => {
@@ -33,3 +34,16 @@ void install()
     }
   })
   .catch((error: unknown) => console.error("[smart-session] hook install failed", String(error)));
+
+// Older versions registered the agent tools globally; they are attached per launch now. Only an
+// install Paseo actually loads from this PASEO_HOME does this, so a check that loads the bundle
+// against a sandbox (check-teardown.mjs) never reaches the machine's real Claude and Codex homes.
+void resolvePluginDir()
+  .then((directory) => (directory === null ? [] : removeGlobalRegistrations()))
+  .then((results) => {
+    for (const result of results) {
+      if (result.status === "removed") console.log(`[smart-session] removed the global MCP registration from ${result.path} (backup beside it)`);
+      if (result.status === "error" || result.status === "unavailable") console.error(`[smart-session] could not remove the global MCP registration from ${result.path}: ${result.error ?? "no claude CLI on PATH"}`);
+    }
+  })
+  .catch(() => undefined);

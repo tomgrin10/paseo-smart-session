@@ -9,6 +9,10 @@ const out = (text: string) => ({ type: "unknown", input: {}, output: { content: 
 test("only Smart Session's own tools are claimed, under Claude's and Codex's names", () => {
   assert.equal(smartSessionTool("mcp__smart-session__request_compaction"), "request_compaction");
   assert.equal(smartSessionTool("smart-session.checkpoint"), "checkpoint");
+  // Served through Paseo's own MCP (1 the Claude form, 2 the Codex form).
+  assert.equal(smartSessionTool("mcp__paseo__smart_request_compaction"), "request_compaction");
+  assert.equal(smartSessionTool("paseo.smart_checkpoint"), "checkpoint");
+  assert.equal(smartSessionTool("mcp__paseo__checkpoint"), null);
   assert.equal(smartSessionTool("mcp__other__checkpoint"), null);
   assert.equal(smartSessionTool("checkpoint"), null);
   assert.equal(smartSessionTool("mcp__smart-session__unknown_tool"), null);

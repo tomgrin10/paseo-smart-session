@@ -15,7 +15,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { isEnrolled, occupancy, readSettings } from "./context.mjs";
+import { forTools, isEnrolled, occupancy, readSettings } from "./context.mjs";
+import { fileURLToPath } from "node:url";
+import { dirname as parentOf } from "node:path";
+
+/** The one-call bridge a detached session is pointed at (beside this plugin's hooks). */
+export const BRIDGE = join(parentOf(fileURLToPath(import.meta.url)), "..", "mcp.mjs");
 import { pluginDir, stateAgeSeconds, statePath } from "./pointer.mjs";
 import { readLedger } from "./asks.mjs";
 
@@ -101,7 +106,7 @@ export function askAtTurnEnd(reading, path, age, freshMinutes) {
     "2. Or, if this is the wrong moment — mid-refactor, a tool sequence half finished, an answer the user is waiting on — call defer_compaction with a reason and you will not be asked again for a while.",
     "Either way, do it now and then stop. A queued compaction is delivered as a real /compact once this session goes idle; a follow-up turn is sent only if you requested one.",
   );
-  return lines.join("\n");
+  return forTools(lines.join("\n"), BRIDGE);
 }
 
 /**
@@ -125,7 +130,7 @@ export function askRightAway(reading, upper, path, age, freshMinutes) {
     "3. End your turn. The compaction is delivered as a real /compact once this session goes idle, so it cannot land while you keep working.",
     "If stopping now would leave something broken that the next turn could not pick up, call defer_compaction with that reason instead — you will be asked again when it runs out. Do not defer just to keep going.",
   );
-  return lines.join("\n");
+  return forTools(lines.join("\n"), BRIDGE);
 }
 
 /**
@@ -135,11 +140,11 @@ export function askRightAway(reading, upper, path, age, freshMinutes) {
  * turn would be the nagging these hooks exist to avoid.
  */
 export function thrashAdvice({ used, pct }) {
-  return [
+  return forTools([
     `Smart Compact: this session refilled to ${used.toLocaleString()} tokens (${pct}%) within minutes of its last compaction.`,
     "Compacting again would not help — something in this loop is reading far more than it keeps, so the window would refill just as fast and you would pay for another summary.",
     "Write what you have learned to your state file with checkpoint, then either change the approach so it stops re-reading the same material, or finish and let a fresh session take the rest.",
-  ].join("\n");
+  ].join("\n"), BRIDGE);
 }
 
 /**

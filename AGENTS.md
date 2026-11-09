@@ -67,16 +67,22 @@
   add, update or remove entries whose command points at this checkout's `hooks/*.mjs`; it must never
   write a path it has not confirmed exists, must not write at all when reconciling changes nothing,
   and must leave a malformed file alone rather than rewriting it from a partial parse. MCP
-  attachment goes through `server.before("agent.session_open")`. Global registration is an explicit
-  legacy operation through `claude mcp add-json`; never edit `~/.claude.json`, which holds credentials.
+  attachment goes through `server.before("agent.session_open")`. Never register globally: a user-scope
+  entry starts `mcp.mjs` in every Claude session on the machine. `server/mcp-registrations.ts` removes an
+  older version's entry from every Claude and Codex home Paseo launches with (defaults, provider `env`,
+  ZeroSub's homes), backing each file up first, and only from an install Paseo actually loads (never from a
+  check's sandbox). Never edit `~/.claude.json`, which holds credentials: removal goes through
+  `claude mcp remove` with `CLAUDE_CONFIG_DIR` pointing at the home.
 - The load-time call lives in `server/install-on-load.ts`, not in `server/install.ts`. Importing the
   reconciler must stay free of side effects, or a test that imports it writes to the machine's real
   Claude Code settings — which is not hypothetical; it happened, and `install.test.ts` has the
   regression test for it.
-- `hooks/*.mjs` and `mcp.mjs` are dependency-free Node scripts run by Claude Code, not by Paseo.
+- `hooks/*.mjs` and `mcp.mjs` are dependency-free Node scripts run by Claude Code, not by Paseo. The libraries
+  they share with the server bundle (`context.mjs`, `asks.mjs`, `pointer.mjs`) live in `server/hooklib/`,
+  because Paseo's compiler only bundles `client/`, `server/` and `shared/`; `hooks/` keeps re-export shims.
   They must stay runnable with no `node_modules` and must never fail the turn they are describing:
   wrap bookkeeping in `try`/`catch` and stay silent rather than erroring.
-- `hooks/pointer.mjs` owns the exactly-once handoff between `PostCompact` and `SessionStart`.
+- `server/hooklib/pointer.mjs` owns the exactly-once handoff between `PostCompact` and `SessionStart`.
   `PostCompact` is **not** in Claude Code's `hookSpecificOutput` union, so anything it returns there
   is rejected wholesale and injects nothing (`RESEARCH.md` §3.3); it records and queues, and
   `SessionStart` with `source: "compact"` speaks. The two fire milliseconds apart for the same
@@ -133,7 +139,8 @@
   per-hour pace that would last. Every view and `forecast.test.ts` read the same rules. Charts in
   `client/charts.tsx` are drawn with Views (plugins get no SVG library; the host `Icon` draws the
   square ring); magnitude is neutral ink, and amber/red mean a limit will bite or did.
-- `client/chat.tsx` turns Smart Session's own MCP calls (`mcp__smart-session__*`, `smart-session.*`)
+- `client/chat.tsx` turns Smart Session's own MCP calls (`mcp__smart-session__*`, `smart-session.*`, and natively
+  `mcp__paseo__smart_*`, `paseo.smart_*`)
   into one-line rows and the messages it sends (the agent's `/compact`, the continuation, Session
   Guard's continuation and Resume now) into cards. The parsing is in `shared/chat.ts` and tested in
   `chat.test.ts`; change it with the strings in `shared/governor.ts`, `mcp.mjs` and the guard engine.
@@ -146,11 +153,11 @@
 - **Compaction is always agent-mandated.** Nothing in this plugin may decide that a session should be
   compacted; `queue.add` is reached only from an agent's `request_compaction` or a person. The ask
   lives in the hooks and rides the agent's own turn. There are two lines per window profile
-  (`compact` and `now` in `shared/thresholds.ts`, mirrored in `hooks/context.mjs`): past the lower,
+  (`compact` and `now` in `shared/thresholds.ts`, mirrored in `server/hooklib/context.mjs`): past the lower,
   end-of-turn line `hooks/ask-compact.mjs` asks on `Stop`; past the upper, mid-turn line
   `hooks/context-threshold.mjs` asks on `PostToolUse`, mid-turn, once per compaction epoch and again
   only after a deferral runs out. Both go through `hooks/ask.mjs` (text and guards) and
-  `hooks/asks.mjs` (ledger), so they never disagree about whether to speak. A saved settings file
+  `server/hooklib/asks.mjs` (ledger), so they never disagree about whether to speak. A saved settings file
   without `now` keeps its `compact` as the lower line and gains the default distance above it.
   User-facing words for both lines live in `shared/compact-lines.ts`.
 - Smart Compact sends an agent at most two things, and `sendToAgent` has exactly two call sites: the
@@ -218,8 +225,8 @@
   never open an account home.
 - The pill shows protection only while this process is the active governor; a pending pause keeps
   a session's pill up (even with the pill hidden) only while this process governs it.
-- Agents see it only through `budget_status` in `mcp.mjs`, which asks
-  `smart-session.guard.agent` about the calling `PASEO_AGENT_ID`. It is read-only: no agent-facing
+- Agents see it only through `budget_status` (`server/agent-tools.mjs`), which asks
+  `smart-session.guard.agent` about the calling agent (the daemon's caller id natively, `PASEO_AGENT_ID` in `mcp.mjs`). It is read-only: no agent-facing
   path may opt a session out or resume a pause.
 
 ## Verify changes
@@ -328,6 +335,25 @@ Never move or rewrite a published tag. Ship corrections as a new patch release.
 
 The npm release workflow supports `workflow_dispatch` with an existing `tag` for recovery without rewriting tags. It checks that the checked-out tag is on `main` and matches package versions. Use Node 24 and npm 11.20.0 with GitHub OIDC; do not set `registry-url` on setup-node or configure token-placeholder authentication. Retrying an already-published package requires its registry integrity to match the packed snapshot. A new publish is verified against the registry before downstream release steps continue.
 
-## Paseo 0.14 session tools
+## Agent tools
 
-`server/session-mcp.ts` attaches the MCP only to interactive Claude/Codex sessions. Preserve the caller identity and other launch contributions. Do not register a global MCP during load. Tests cover history opens, opt-out, disabled settings and all open reasons.
+The tools live in `server/agent-tools.mjs`, shared by both transports. `server/session-mcp.ts` attaches them only to
+interactive Claude/Codex sessions:
+
+- **Native (Paseo 0.15+).** `server/native-tools.ts` puts them on `request.tools` as `smart_*`; the daemon serves them
+  through the agent's own Paseo MCP and calls them in this process (`index.server.ts` records every RPC handler so
+  they run in-process). The caller's id is the daemon's. Names keep the `smart_` prefix: a collision with Paseo's own
+  tools fails the agent's whole Paseo tool list.
+- **Stdio fallback** for this launch only, when `request.tools` is absent (0.14), the daemon's MCP or its injection
+  is off, or the provider's `paseoTools` disables them.
+- `SMART_SESSION_TOOLS=native|stdio` in the agent env tells the hooks which names to use (`named`/`forTools` in
+  `server/hooklib/context.mjs`); sessions opened before the change keep the bare names.
+- **Updates detach native tools.** A plugin reload drops them from open sessions until each reopens, which Paseo 0.15.2
+  does only before the agent's next prompt. The worker records its instance (`tools-instance.json`) and each attach its
+  instance (`tools/native-<agentId>.json`); a mismatch is "detached", and the asks and a failed `smart_*` call point
+  the agent at `node mcp.mjs call <tool> '<json>'` meanwhile.
+
+`check-native-tools.mjs` (`npm run test:native`, in CI) proves it against an isolated daemon: no per-agent server,
+the tools answer as the calling agent, and across a plugin reload the native call fails mid-turn, the bridge works,
+and the native call works again after the next prompt. `--start-time` measures opening an unloaded Claude agent with
+no tools, the stdio server and native tools (local only; needs a logged-in `claude`).

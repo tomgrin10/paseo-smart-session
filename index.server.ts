@@ -3,7 +3,8 @@ import { zerosubBudgetAccount } from "./server/guard/zerosub.ts";
 import { contributeSessionMcp } from "./server/session-mcp.ts";
 import { budgetPool, subscriptionsView } from "./server/subscriptions.ts";
 import { displayPreferences } from "./shared/display";
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
+import type { Invoke } from "./server/native-tools.ts";
 
 import { readAgents, withDaemon } from "./server/daemon.ts";
 import { contextGrowth, projectFull } from "./server/growth.ts";
@@ -43,8 +44,34 @@ import { queue } from "./server/governor.ts";
 // reports "on" and does nothing at all.
 import "./server/install-on-load.ts";
 
-export default function contribute(server: PluginServerContext) {
-  const removeSessionMcp = contributeSessionMcp(server);
+/**
+ * The host's server context, with every RPC handler also recorded by name, so the native agent
+ * tools call the same handlers in-process that `mcp.mjs` reaches over the daemon.
+ */
+function recording(host: PluginServerContext): { server: PluginServerContext; invoke: Invoke } {
+  const handlers = new Map<string, (input: unknown, context: PluginHandlerContext) => unknown>();
+  const handle: PluginServerContext["handle"] = (contract, handler) => {
+    handlers.set(contract.name, (input, context) => handler(contract.input.parse(input), context));
+    host.handle(contract, handler);
+  };
+  const server = new Proxy(host, {
+    get(target, key) {
+      if (key === "handle") return handle;
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const invoke: Invoke = async (method, input, context) => {
+    const handler = handlers.get(method);
+    if (!handler) throw new Error(`No handler for ${method}`);
+    return handler(input, { paseo: context.paseo });
+  };
+  return { server, invoke };
+}
+
+export default function contribute(host: PluginServerContext) {
+  const { server, invoke } = recording(host);
+  const removeSessionMcp = contributeSessionMcp(server, invoke);
   server.registerSettings(displayPreferences);
   // Pauses work at a provider's session limit; off until someone turns it on.
   const removeGuard = contributeGuard(server);
