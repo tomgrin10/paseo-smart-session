@@ -8,9 +8,13 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-import { mcpDefinition, mcpPointsAtPlugin, reconcile } from "./server/install.ts";
+import { commandFor, mcpDefinition, mcpPointsAtPlugin, reconcile } from "./server/install.ts";
+import { PLUGIN_VERSION } from "./shared/version.ts";
 
 const DIR = "/plugins/paseo-smart-session";
+/** Where the stable shims live: Smart Session's data directory, never an install. */
+const SHIMS = "/paseo/plugin-data/smart-session/hooks";
+const cmd = (script: string, dir = SHIMS) => commandFor(dir, script);
 
 /** A hook entry someone else owns, which must survive every reconciliation. */
 const foreign = { type: "command", command: "/Users/x/.claude/hooks/paseo-hook.sh Stop", timeout: 10 };
@@ -79,13 +83,50 @@ test("a node registration is stale once the plugin runs under the desktop app", 
 });
 
 test("an empty settings file gains exactly the four managed entries", () => {
-  const next = reconcile({}, DIR);
+  const next = reconcile({}, SHIMS);
   assert.deepEqual(Object.keys(next).sort(), ["PostCompact", "PostToolUse", "SessionStart", "Stop"]);
-  assert.deepEqual(commandsFor(next, "Stop"), [`node ${DIR}/hooks/ask-compact.mjs`]);
+  assert.deepEqual(commandsFor(next, "Stop"), [cmd("ask-compact.mjs")]);
   // The one that cannot inject and the one that can, same script, two events.
-  assert.deepEqual(commandsFor(next, "PostCompact"), [`node ${DIR}/hooks/post-compact.mjs`]);
-  assert.deepEqual(commandsFor(next, "SessionStart"), [`node ${DIR}/hooks/post-compact.mjs`]);
+  assert.deepEqual(commandsFor(next, "PostCompact"), [cmd("post-compact.mjs")]);
+  assert.deepEqual(commandsFor(next, "SessionStart"), [cmd("post-compact.mjs")]);
   assert.equal(next.SessionStart?.[0]?.matcher, "compact");
+});
+
+test("reconcile writes the guarded stable shim, never an install directory", () => {
+  // Paseo deletes an install directory on every update, so a command naming one fails
+  // on every turn of every session from the moment it does. The guard makes a missing
+  // shim a silent no-op instead.
+  const next = reconcile({}, SHIMS);
+  assert.deepEqual(commandsFor(next, "PostToolUse"), [
+    "if [ -f '/paseo/plugin-data/smart-session/hooks/context-threshold.mjs' ]; then node '/paseo/plugin-data/smart-session/hooks/context-threshold.mjs'; fi",
+  ]);
+  for (const event of ["PostToolUse", "Stop", "PostCompact", "SessionStart"]) {
+    for (const command of commandsFor(next, event)) assert.doesNotMatch(command, /\/plugins\/|node_modules|checkout/);
+  }
+});
+
+test("both older absolute forms migrate to the shim, once each", () => {
+  // npm installs (…/<install>/node_modules/paseo-smart-session) and Git installs
+  // (…/<install>/checkout), as written by 3.6.0 and earlier, plus a hand-added quoted one.
+  const npm = "/home/u/.paseo/plugins/smart-session/0409fe47/node_modules/paseo-smart-session";
+  const git = "/home/u/.paseo/plugins/smart-session/98ae937d/checkout";
+  const before = {
+    PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: `node ${npm}/hooks/context-threshold.mjs`, timeout: 10 }] }],
+    Stop: [{ matcher: "", hooks: [foreign, { type: "command", command: `node ${git}/hooks/ask-compact.mjs`, timeout: 10 }] }],
+    PostCompact: [{ matcher: "", hooks: [{ type: "command", command: `node "${npm}/hooks/post-compact.mjs"` }] }],
+    SessionStart: [{ matcher: "compact", hooks: [{ type: "command", command: `node ${git}/hooks/post-compact.mjs` }] }],
+  };
+  const next = reconcile(before, SHIMS);
+  assert.deepEqual(commandsFor(next, "PostToolUse"), [cmd("context-threshold.mjs")]);
+  assert.deepEqual(commandsFor(next, "Stop"), [foreign.command, cmd("ask-compact.mjs")]);
+  assert.deepEqual(commandsFor(next, "PostCompact"), [cmd("post-compact.mjs")]);
+  assert.deepEqual(commandsFor(next, "SessionStart"), [cmd("post-compact.mjs")]);
+  assert.equal(next.SessionStart?.length, 1);
+  assert.match(cmd("ask-compact.mjs"), /^if \[ -f '\/paseo\/plugin-data\/smart-session\/hooks\/ask-compact\.mjs' \]/);
+});
+
+test("a shim path with a quote in it stays one shell word", () => {
+  assert.equal(commandFor("/o'brien/hooks", "ask-compact.mjs"), "if [ -f '/o'\\''brien/hooks/ask-compact.mjs' ]; then node '/o'\\''brien/hooks/ask-compact.mjs'; fi");
 });
 
 test("hooks belonging to anyone else are left exactly as they were", () => {
@@ -94,7 +135,7 @@ test("hooks belonging to anyone else are left exactly as they were", () => {
     Stop: [{ matcher: "", hooks: [foreign] }],
     PreToolUse: [{ matcher: "mcp__.*", hooks: [{ type: "command", command: "check-auth.sh" }] }],
   };
-  const next = reconcile(before, DIR);
+  const next = reconcile(before, SHIMS);
   assert.ok(commandsFor(next, "Stop").includes(foreign.command));
   assert.deepEqual(commandsFor(next, "PreToolUse"), ["check-auth.sh"]);
   assert.equal(next.PreToolUse?.[0]?.matcher, "mcp__.*");
@@ -104,30 +145,30 @@ test("entries added by hand are adopted, not duplicated", () => {
   // The README used to tell people to write these themselves; an install that
   // appended to them would run every hook twice for the life of the session.
   const byHand = {
-    Stop: [{ matcher: "", hooks: [foreign, { type: "command", command: `node ${DIR}/hooks/ask-compact.mjs` }] }],
+    Stop: [{ matcher: "", hooks: [foreign, { type: "command", command: cmd("ask-compact.mjs") }] }],
   };
-  const next = reconcile(byHand, DIR);
-  assert.deepEqual(commandsFor(next, "Stop"), [foreign.command, `node ${DIR}/hooks/ask-compact.mjs`]);
+  const next = reconcile(byHand, SHIMS);
+  assert.deepEqual(commandsFor(next, "Stop"), [foreign.command, cmd("ask-compact.mjs")]);
 });
 
 test("an entry left behind by an older install path is removed, not kept alongside", () => {
   const moved = {
     Stop: [{ matcher: "", hooks: [{ type: "command", command: "node /old/checkout/hooks/ask-compact.mjs" }] }],
   };
-  const next = reconcile(moved, DIR);
-  assert.deepEqual(commandsFor(next, "Stop"), [`node ${DIR}/hooks/ask-compact.mjs`]);
+  const next = reconcile(moved, SHIMS);
+  assert.deepEqual(commandsFor(next, "Stop"), [cmd("ask-compact.mjs")]);
 });
 
 test("reconciling twice changes nothing the second time", () => {
-  const once = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, DIR);
-  assert.deepEqual(reconcile(once, DIR), once);
+  const once = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS);
+  assert.deepEqual(reconcile(once, SHIMS), once);
 });
 
 test("a null plugin directory removes ours and keeps everyone else's", () => {
   // This is what switching the setting off does, and what happens when the hook
   // scripts cannot be found — in which case writing the paths anyway would leave
   // every session running a command that fails on every turn.
-  const installed = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, DIR);
+  const installed = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS);
   const removed = reconcile(installed, null);
   assert.deepEqual(commandsFor(removed, "Stop"), [foreign.command]);
   assert.equal(removed.PostCompact, undefined);
@@ -135,7 +176,7 @@ test("a null plugin directory removes ours and keeps everyone else's", () => {
 });
 
 test("a matcher group that only ever held our hook is dropped, not left empty", () => {
-  const installed = reconcile({}, DIR);
+  const installed = reconcile({}, SHIMS);
   assert.deepEqual(reconcile(installed, null), {});
 });
 
@@ -143,14 +184,21 @@ test("a matcher group that only ever held our hook is dropped, not left empty", 
  * The whole reconciliation, against real files.
  * -------------------------------------------------------------------------- */
 
+/** An install directory holding every script a shim can name, at a given version. */
+function stubInstall(dir: string, version: string): void {
+  mkdirSync(join(dir, "hooks"), { recursive: true });
+  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs"]) {
+    writeFileSync(join(dir, "hooks", script), "// stub\n", "utf8");
+  }
+  writeFileSync(join(dir, "mcp.mjs"), "// stub\n", "utf8");
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "paseo-smart-session", version }), "utf8");
+}
+
 /** A Paseo home whose config points at a checkout containing the hook scripts. */
 function fakeInstall(): { paseoHome: string; claudeDir: string; pluginDir: string } {
   const root = mkdtempSync(join(tmpdir(), "ss-install-"));
   const pluginDir = join(root, "checkout");
-  mkdirSync(join(pluginDir, "hooks"), { recursive: true });
-  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs"]) {
-    writeFileSync(join(pluginDir, "hooks", script), "// stub\n", "utf8");
-  }
+  stubInstall(pluginDir, PLUGIN_VERSION);
   const paseoHome = join(root, "paseo");
   mkdirSync(paseoHome, { recursive: true });
   writeFileSync(
@@ -183,7 +231,7 @@ test("the first load writes the hooks; the second writes nothing at all", async 
   const written = JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8"));
   // Whatever else was in the file is still in the file.
   assert.equal(written.model, "opus[1m]");
-  assert.equal(written.hooks.Stop[0].hooks[0].command, `node ${pluginDir}/hooks/ask-compact.mjs`);
+  assert.equal(written.hooks.Stop[0].hooks[0].command, cmd("ask-compact.mjs", join(paseoHome, "plugin-data", "smart-session", "hooks")));
 
   // Every reload after the first must be a no-op, or this rewrites a file it does
   // not own on a fifteen-second timer forever.
@@ -226,13 +274,13 @@ test("no hook scripts found means no hooks written, and a reason given", async (
 });
 
 test("a settings file that does not exist yet is created", async () => {
-  const { paseoHome, claudeDir, pluginDir } = fakeInstall();
+  const { paseoHome, claudeDir } = fakeInstall();
   const installer = await freshInstaller(paseoHome, claudeDir);
 
   const report = await installer.install({ registerMcp: false });
   assert.equal(report.changed, true);
   const written = JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8"));
-  assert.equal(written.hooks.PostToolUse[0].hooks[0].command, `node ${pluginDir}/hooks/context-threshold.mjs`);
+  assert.equal(written.hooks.PostToolUse[0].hooks[0].command, cmd("context-threshold.mjs", join(paseoHome, "plugin-data", "smart-session", "hooks")));
 });
 
 test("importing the installer writes nothing; only the load module does", async () => {

@@ -12,15 +12,20 @@
  * a queued compaction is still delivered once the session goes idle.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { forTools, isEnrolled, occupancy, readSettings } from "./context.mjs";
 import { fileURLToPath } from "node:url";
 import { dirname as parentOf } from "node:path";
 
-/** The one-call bridge a detached session is pointed at (beside this plugin's hooks). */
-export const BRIDGE = join(parentOf(fileURLToPath(import.meta.url)), "..", "mcp.mjs");
+/**
+ * The one-call bridge a detached session is pointed at. The stable shim in the data
+ * directory when it exists, since this install's own path is gone after the next update;
+ * otherwise the `mcp.mjs` beside these hooks.
+ */
+const BRIDGE_SHIM = join(pluginDir(), "hooks", "mcp.mjs");
+export const BRIDGE = existsSync(BRIDGE_SHIM) ? BRIDGE_SHIM : join(parentOf(fileURLToPath(import.meta.url)), "..", "mcp.mjs");
 import { pluginDir, stateAgeSeconds, statePath } from "./pointer.mjs";
 import { readLedger } from "./asks.mjs";
 
