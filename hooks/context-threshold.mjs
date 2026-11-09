@@ -23,7 +23,8 @@ import { dirname, join } from "node:path";
 
 import { askable, compose } from "./ask.mjs";
 import { recordNowAsk, shouldAskNow } from "./asks.mjs";
-import { BANDS, DEFAULT_THRESHOLDS, occupancy, readSettings } from "./context.mjs";
+import { BANDS, DEFAULT_THRESHOLDS, detachedNotice, occupancy, readSettings, toolsMode } from "./context.mjs";
+import { BRIDGE } from "./ask.mjs";
 import { clearPending, pluginDir, readPending, statePath } from "./pointer.mjs";
 
 function latchPathFor(sessionId) {
@@ -107,6 +108,8 @@ async function main() {
   const parts = [];
   const pending = readPending(sessionId);
   if (pending !== null) parts.push(pending);
+  // A smart_* call that just failed because a plugin update detached the tools: say how to reach them meanwhile.
+  if (/^mcp__paseo__smart_/.test(String(event.tool_name ?? "")) && toolsMode() === "detached") parts.push(detachedNotice(BRIDGE));
 
   const now = occupancy(transcriptPath, readSettings());
   if (now === null) return emit(sessionId, parts, pending);

@@ -86,7 +86,7 @@ try {
   // The checkout: only what a Git install actually ships, no node_modules.
   const checkout = join(staging, "checkout");
   mkdirSync(checkout, { recursive: true });
-  for (const name of ["mcp.mjs", "hooks", "server/daemon-password.mjs"]) {
+  for (const name of ["mcp.mjs", "hooks", "server/daemon-password.mjs", "server/agent-tools.mjs", "server/hooklib"]) {
     cpSync(join(DIR, name), join(checkout, name), { recursive: true });
   }
 

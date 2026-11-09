@@ -20,7 +20,7 @@ Screenshots use synthetic usage history and sessions.
 paseo plugin install paseo-smart-session
 ```
 
-On first load it registers its Claude Code hooks, touching only entries that point at its own scripts. Paseo attaches its MCP server when an interactive session opens.
+On first load it registers its Claude Code hooks, touching only entries that point at its own scripts. Its agent tools are attached when an interactive session opens: on Paseo 0.15+ they are served through the agent's own Paseo MCP (`smart_checkpoint`, `smart_request_compaction`, …) with no process per agent, and on 0.14 each session gets its own `mcp.mjs` stdio server. Nothing is registered globally; an older version's global `smart-session` entry is removed on load, with a backup beside the file.
 
 ## Use
 

@@ -10,7 +10,7 @@
  * Runs against an isolated PASEO_HOME so the real queue is never touched.
  */
 import * as esbuild from "esbuild";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,9 +82,16 @@ const scenarios = [
   { name: "Session Guard on", values: { enabled: true }, settleMs: 500 },
 ];
 
+// A stand-in for the machine's home, holding an old global registration: loading the bundle
+// against a sandbox must never touch it (only a real install removes old registrations).
+const fakeHome = join(sandbox, "home");
+mkdirSync(fakeHome, { recursive: true });
+const registration = JSON.stringify({ mcpServers: { "smart-session": { type: "stdio", command: "node", args: ["/x/paseo-smart-session/mcp.mjs"] } } });
+writeFileSync(join(fakeHome, ".claude.json"), registration);
+
 for (const scenario of scenarios) {
   const child = spawn(process.execPath, [harnessPath, JSON.stringify(scenario.values), String(scenario.settleMs)], {
-    env: { ...process.env, PASEO_HOME: sandbox, PASEO_DAEMON_URL: "ws://127.0.0.1:9/ws" },
+    env: { ...process.env, HOME: fakeHome, PASEO_HOME: sandbox, PASEO_DAEMON_URL: "ws://127.0.0.1:9/ws" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "";
@@ -110,5 +117,11 @@ for (const scenario of scenarios) {
   } else {
     console.log(`  ✓ teardown (${scenario.name}): subprocess exited after cleanup`);
   }
+}
+if (readFileSync(join(fakeHome, ".claude.json"), "utf8") !== registration || existsSync(join(fakeHome, ".claude.json.smart-session-unregister.bak"))) {
+  console.error("  ✗ loading the bundle against a sandbox touched the home's Claude config");
+  process.exitCode = 1;
+} else {
+  console.log("  ✓ a sandboxed load leaves the home's Claude and Codex config alone");
 }
 rmSync(sandbox, { recursive: true, force: true });

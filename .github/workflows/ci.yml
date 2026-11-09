@@ -18,4 +18,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The native agent tools check starts an isolated Paseo daemon; pin the CLI it runs.
+      - run: npm install -g @getpaseo/cli@0.15.2
       - run: npm run verify
+      - run: npm run test:native

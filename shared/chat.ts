@@ -31,9 +31,13 @@ export const PromptCardSchema = z.object({
 });
 export type PromptCard = z.infer<typeof PromptCardSchema>;
 
-/** Claude records mcp__smart-session__context_status; Codex records smart-session.context_status. */
+/**
+ * Claude records mcp__smart-session__context_status and Codex smart-session.context_status from the
+ * stdio server; served natively through Paseo's MCP they are mcp__paseo__smart_context_status and
+ * paseo.smart_context_status.
+ */
 export function smartSessionTool(name: string): SmartSessionTool | null {
-  const match = /^(?:mcp__)?smart-session(?:__|\.|\/|:)([a-z_]+)$/.exec(name);
+  const match = /^(?:mcp__)?(?:smart-session(?:__|\.|\/|:)|paseo(?:__|\.|\/|:)smart_)([a-z_]+)$/.exec(name);
   return match && (SMART_SESSION_TOOLS as readonly string[]).includes(match[1]!) ? (match[1] as SmartSessionTool) : null;
 }
 

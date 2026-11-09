@@ -321,12 +321,13 @@ async function stopHook(
   home: string,
   used: number,
   event: Record<string, unknown> = {},
+  env: Record<string, string> = {},
 ): Promise<string> {
   const path = transcript(mkdtempSync(join(tmpdir(), "ss-tx-")), used, "claude-opus-5");
   return runHook(
     "hooks/ask-compact.mjs",
     { session_id: "s1", transcript_path: path, cwd: home, hook_event_name: "Stop", stop_hook_active: false, ...event },
-    { PASEO_HOME: home, PASEO_AGENT_ID: AGENT, SMART_SESSION_CONTEXT_WINDOW: "1000000" },
+    { PASEO_HOME: home, PASEO_AGENT_ID: AGENT, SMART_SESSION_CONTEXT_WINDOW: "1000000", ...env },
   );
 }
 
@@ -344,6 +345,47 @@ test("at the compact band it asks, names the tools, and leaves the choice open",
   // The whole point of the redesign: the plugin asks, it does not announce.
   assert.match(advice, /your call/i);
   assert.doesNotMatch(advice, /you will be compacted/i);
+});
+
+test("the ask names the tools the session actually has", async () => {
+  // Opened on Paseo 0.15+: Smart Session's tools come through Paseo's MCP as smart_*.
+  const native = await adviceFrom(await stopHook(enrolledHome({ stateAgeMinutes: 90 }), 340_000, {}, { SMART_SESSION_TOOLS: "native" }));
+  assert.match(native, /Call smart_checkpoint/);
+  assert.match(native, /call smart_request_compaction/);
+  assert.match(native, /call smart_defer_compaction/);
+  // Opened before the upgrade, or on the stdio fallback: the bare names it still has.
+  const stdio = await adviceFrom(await stopHook(enrolledHome({ stateAgeMinutes: 90 }), 340_000, {}, { SMART_SESSION_TOOLS: "stdio" }));
+  assert.match(stdio, /Call checkpoint/);
+  assert.doesNotMatch(stdio, /smart_/);
+});
+
+test("after a plugin update mid-turn, a detached session is pointed at the bridge, with plain tool names", async () => {
+  const home = enrolledHome({ stateAgeMinutes: 90 });
+  const dir = join(home, "plugin-data", "smart-session");
+  mkdirSync(join(dir, "tools"), { recursive: true });
+  // This session's tools were attached by worker "old"; the update started worker "new".
+  writeFileSync(join(dir, "tools-instance.json"), JSON.stringify({ instance: "new" }));
+  writeFileSync(join(dir, "tools", `native-${AGENT}.json`), JSON.stringify({ instance: "old" }));
+  const detached = await adviceFrom(await stopHook(home, 340_000, {}, { SMART_SESSION_TOOLS: "native" }));
+  assert.match(detached, /smart_\* tools are detached/);
+  assert.match(detached, /mcp\.mjs" call <tool>/);
+  assert.match(detached, /Call checkpoint/);
+  assert.doesNotMatch(detached, /Call smart_checkpoint/);
+  // A failing smart_ call mid-turn gets the same pointer.
+  const failed = await runHook("hooks/context-threshold.mjs", { session_id: "s9", transcript_path: join(home, "none.jsonl"), cwd: home, tool_name: "mcp__paseo__smart_checkpoint" }, { PASEO_HOME: home, PASEO_AGENT_ID: AGENT, SMART_SESSION_TOOLS: "native" });
+  assert.match(await adviceFrom(failed), /tools are detached/);
+  // Reopened under the new worker: native names, no notice.
+  writeFileSync(join(dir, "tools", `native-${AGENT}.json`), JSON.stringify({ instance: "new" }));
+  writeFileSync(join(dir, "asks", `${AGENT}.json`), "{}");
+  const attached = await adviceFrom(await stopHook(home, 340_000, {}, { SMART_SESSION_TOOLS: "native" }));
+  assert.match(attached, /Call smart_checkpoint/); assert.doesNotMatch(attached, /detached/);
+});
+
+test("the bridge runs one tool call as the calling agent", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ss-bridge-"));
+  const { stdout } = await execFileAsync(process.execPath, ["mcp.mjs", "call", "checkpoint", JSON.stringify({ goal: "Synthetic goal", current_step: "Synthetic step" })], { env: { ...process.env, PASEO_HOME: home, PASEO_AGENT_ID: "agent-bridge", SMART_SESSION_STATE_FILE: "" } });
+  assert.match(stdout, /Task state written to .*agent-bridge\.md/);
+  await assert.rejects(execFileAsync(process.execPath, ["mcp.mjs", "call", "no_such_tool", "{}"], { env: { ...process.env, PASEO_HOME: home, PASEO_AGENT_ID: "a" } }), /Unknown tool/);
 });
 
 test("a stale state file is named, so the agent checkpoints before it asks", async () => {
