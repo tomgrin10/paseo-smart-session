@@ -15,6 +15,7 @@ async function fixture(t: test.TestContext, config: Record<string, unknown> = {}
   const directory = join(home, "plugin");
   await mkdir(join(directory, "hooks"), { recursive: true });
   for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs"]) await writeFile(join(directory, "hooks", script), "// fixture");
+  await writeFile(join(directory, "mcp.mjs"), "// fixture");
   await writeFile(join(home, "config.json"), JSON.stringify({ plugins: { "smart-session": { path: directory } }, ...config }));
   let callback: any, removed = false;
   const remove = contributeSessionMcp({ before(name, handler) { assert.equal(name, "agent.session_open"); callback = handler; return () => { removed = true; }; } } as PluginServerContext, async () => ({}));
@@ -60,4 +61,13 @@ test("falls back to a stdio server for this launch when the host won't serve plu
     assert.equal(result.tools, tools, why);
   }
   assert.equal(Object.keys(base.mcpServers).length, 1);
+});
+
+test("the stdio server runs through the stable shim once it points at this install", async t => {
+  // A session opened just before an update must not hold a path Paseo is about to delete.
+  const { home, directory, open } = await fixture(t);
+  const { pointShimsAt } = await import("./server/hook-path.ts");
+  await pointShimsAt(directory);
+  const server = (await open(base)).mcpServers["smart-session"];
+  assert.deepEqual(server.args, [join(home, "plugin-data", "smart-session", "hooks", "mcp.mjs")]);
 });

@@ -64,7 +64,7 @@
   daemon. Every timer and resource must be released through `shared/lifecycle.ts`;
   `check-teardown.mjs` enforces it.
 - `server/install.ts` writes to `~/.claude/settings.json`, which the plugin does not own. It may only
-  add, update or remove entries whose command points at this checkout's `hooks/*.mjs`; it must never
+  add, update or remove entries whose command points at one of our `hooks/*.mjs`; it must never
   write a path it has not confirmed exists, must not write at all when reconciling changes nothing,
   and must leave a malformed file alone rather than rewriting it from a partial parse. MCP
   attachment goes through `server.before("agent.session_open")`. Never register globally: a user-scope
@@ -73,6 +73,16 @@
   ZeroSub's homes), backing each file up first, and only from an install Paseo actually loads (never from a
   check's sandbox). Never edit `~/.claude.json`, which holds credentials: removal goes through
   `claude mcp remove` with `CLAUDE_CONFIG_DIR` pointing at the home.
+- Nothing outside the plugin names an install directory: Paseo installs every update into a fresh
+  one and deletes the old, which on 2026-11-09 left every hook failing with MODULE_NOT_FOUND for
+  hours. `server/hook-path.ts` writes shims into `plugin-data/smart-session/hooks/` (the three hooks
+  and `mcp.mjs`) that read `current.json` beside them and `import()` the real script, exiting 0
+  silently when it is missing; `settings.json` names only those shims, each behind `if [ -f … ]`.
+  The stdio MCP server and the bridge the asks name use the same shims. `resolvePluginDir()` picks
+  the install whose `package.json` version is the running bundle's (`shared/version.ts`), because
+  the bundle is evaluated from a string with no path of its own and `config.json` can still name the
+  previous install mid-update. `install-on-load.ts` re-checks the pointer every ten minutes (stats
+  only). `hook-path.test.ts` simulates the update.
 - The load-time call lives in `server/install-on-load.ts`, not in `server/install.ts`. Importing the
   reconciler must stay free of side effects, or a test that imports it writes to the machine's real
   Claude Code settings — which is not hypothetical; it happened, and `install.test.ts` has the
@@ -312,8 +322,9 @@ when you have not looked, and never describe a screenshot you did not take.
 - Use SemVer: patch for compatible fixes, minor for backward-compatible features, major for breaking
   behaviour, storage, or compatibility changes. Anything that changes an on-disk shape is major
   unless it migrates.
-- Update the version in `package.json` and its lockfile, plus the pinned npm and Git versions in the
-  README install section. Keep badge styles consistent; update the Paseo minimum only when
+- Update the version in `package.json` and its lockfile, `PLUGIN_VERSION` in `shared/version.ts`
+  (`version.test.ts` fails until they match), plus the pinned npm and Git versions in the README
+  install section. Keep badge styles consistent; update the Paseo minimum only when
   compatibility changes.
 - Release notes must include a short summary, user-visible changes, the npm install
   command, the minimum Paseo version, and any breaking, migration, security, or upgrade

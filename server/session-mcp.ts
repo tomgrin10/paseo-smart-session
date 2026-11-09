@@ -1,9 +1,10 @@
 import type { PluginServerContext, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readPointer, shimFor } from "./hook-path.ts";
 import { mcpDefinition, resolvePluginDir } from "./install.ts";
 import { type Invoke, nativeTools, nativeToolsAvailable } from "./native-tools.ts";
 import { readSettings } from "./settings.ts";
@@ -48,7 +49,10 @@ export function contributeSessionMcp(server: PluginServerContext, invoke: Invoke
 async function withStdio(request: PluginSessionOpenRequest): Promise<PluginSessionOpenRequest | void> {
   const directory = await resolvePluginDir();
   if (!directory) return;
-  const definition = mcpDefinition(directory);
+  // Through the stable shim when it is in place, so a session opened just before an
+  // update does not hold a path Paseo is about to delete.
+  const shim = shimFor("mcp.mjs");
+  const definition = mcpDefinition(directory, undefined, (await readPointer()) === directory && existsSync(shim) ? shim : undefined);
   return {
     ...request,
     env: { ...request.env, SMART_SESSION_TOOLS: "stdio" },

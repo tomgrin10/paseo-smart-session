@@ -13,7 +13,8 @@
  * machine's real Claude Code settings just because something imported a function.
  */
 
-import { install, resolvePluginDir } from "./install.ts";
+import { lifecycle } from "../shared/lifecycle.ts";
+import { install, refreshPointer, resolvePluginDir } from "./install.ts";
 import { removeGlobalRegistrations } from "./mcp-registrations.ts";
 
 void install()
@@ -47,3 +48,18 @@ void resolvePluginDir()
     }
   })
   .catch(() => undefined);
+
+// Self-heal. The hooks run through shims whose pointer names an install directory, and
+// Paseo deletes an install directory on update. install() above already points the shims
+// at the running version; this repairs the pointer if its target disappears later. A
+// healthy pointer costs a few stat calls and writes nothing, hence ten minutes.
+const HEAL_MS = 10 * 60_000;
+const heal = setInterval(() => {
+  void refreshPointer()
+    .then((moved) => {
+      if (moved) console.log("[smart-session] re-pointed the hook shims at the running install");
+    })
+    .catch(() => undefined);
+}, HEAL_MS);
+heal.unref?.();
+lifecycle.teardowns.push(() => clearInterval(heal));
