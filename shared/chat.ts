@@ -98,6 +98,22 @@ function checkpointDetail(input: Record<string, unknown>): string {
   return clip(lines.join("\n"), 4000);
 }
 
+/**
+ * How each agent tool shows in a chat. Paseo 0.15.2 groups a run only from tool_call and thought items, and a timeline
+ * transform can only return plugin items, so a transformed call always leaves Paseo's group and sits loose. All of
+ * Smart Session's tools are bookkeeping (Paseo shows the compaction itself), so they stay Paseo's own tool calls. A new
+ * tool must be classified here (chat-grouping.test.ts fails otherwise); only a moment the developer must see becomes a row.
+ */
+export const TOOL_PRESENTATION: Record<SmartSessionTool, "routine" | "moment"> = {
+  context_status: "routine", budget_status: "routine", checkpoint: "routine", request_compaction: "routine", defer_compaction: "routine",
+};
+
+/** The chat row for a tool call, or null to leave it as Paseo's own grouped tool call. */
+export function chatToolRow(name: string, status: string, detail: unknown, error: unknown): ToolRow | null {
+  const tool = smartSessionTool(name);
+  return tool !== null && TOOL_PRESENTATION[tool] === "moment" ? toolRow(name, status, detail, error) : null;
+}
+
 /** Builds a row from a tool call, or null when the call is not one of Smart Session's. */
 export function toolRow(name: string, status: string, detail: unknown, error: unknown): ToolRow | null {
   const tool = smartSessionTool(name);
