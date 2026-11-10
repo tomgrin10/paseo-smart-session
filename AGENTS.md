@@ -368,3 +368,10 @@ interactive Claude/Codex sessions:
 the tools answer as the calling agent, and across a plugin reload the native call fails mid-turn, the bridge works,
 and the native call works again after the next prompt. `--start-time` measures opening an unloaded Claude agent with
 no tools, the stdio server and native tools (local only; needs a logged-in `claude`).
+
+## Chat timeline
+
+Timeline transforms must not break Paseo's grouping. Paseo groups only tool_call and thought items, and a transform can
+only return plugin items, so a transformed call always leaves the group and renders loose. Every agent tool is
+classified in `TOOL_PRESENTATION` (`shared/chat.ts`); routine bookkeeping returns null and stays Paseo's own call, and
+only a moment the developer must see becomes a row. Classify a new tool there (`chat-grouping.test.ts` fails otherwise).

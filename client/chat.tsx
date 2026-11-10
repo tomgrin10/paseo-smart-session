@@ -3,7 +3,7 @@ import { Platform, Pressable, Text, View } from "react-native";
 import type { PluginClientContext, PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView } from "@getpaseo/plugin/client/ui";
 
-import { PROMPT_CARD_KIND, PromptCardSchema, TOOL_ROW_KIND, ToolRowSchema, fileName, promptCard, toolRow, type PromptCard, type ToolRow } from "../shared/chat";
+import { PROMPT_CARD_KIND, PromptCardSchema, TOOL_ROW_KIND, ToolRowSchema, fileName, promptCard, chatToolRow, type PromptCard, type ToolRow } from "../shared/chat";
 import { raised } from "./theme";
 
 const ICONS: Record<ToolRow["tool"], string> = {
@@ -99,11 +99,12 @@ function PromptCardView({ item, theme, layout }: PluginTimelineItemProps<PromptC
 
 export function contributeChat(client: PluginClientContext) {
   const removers = [
+    // Bookkeeping stays Paseo's own grouped tool call (a plugin item always seals Paseo's group). See TOOL_PRESENTATION.
     client.addTimelineTransformer({
       id: "smart-session-tool-calls",
       query: { itemType: "tool_call" },
       transform({ item }) {
-        const row = toolRow(item.name, item.status, item.detail, item.error);
+        const row = chatToolRow(item.name, item.status, item.detail, item.error);
         return row === null ? undefined : { items: [{ type: "plugin" as const, kind: TOOL_ROW_KIND, version: 1, data: row }] };
       },
     }),
