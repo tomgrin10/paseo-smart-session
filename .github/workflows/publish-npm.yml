@@ -10,6 +10,11 @@ on:
         description: Existing release tag to retry (for example v1.2.3)
         required: true
         type: string
+      allow_latest:
+        description: Publish a stable version to npm's latest tag. Prereleases always go to beta.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -47,6 +52,17 @@ jobs:
         run: |
           package_version="$(node -p "require('./package.json').version")"
           test "$RELEASE_TAG" = "v$package_version"
+      # Betas only by default: a prerelease goes to `beta`; a stable version refuses unless
+      # someone ran this by hand with allow_latest=true (release-tag.mjs).
+      - name: Choose the npm dist-tag
+        id: dist
+        env:
+          ALLOW_LATEST: ${{ inputs.allow_latest == true && 'true' || 'false' }}
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          if [ "$ALLOW_LATEST" = "true" ]; then tag="$(node release-tag.mjs "$package_version" --allow-latest)"; else tag="$(node release-tag.mjs "$package_version")"; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Publishing $package_version to the npm dist-tag: $tag"
       - name: Verify npm trusted publishing authorization
         run: |
           node --input-type=module <<'JS'
@@ -74,12 +90,16 @@ jobs:
       - run: npm run verify
       - run: npm pack --dry-run
       - name: Publish or verify the existing package
+        env:
+          DIST_TAG: ${{ steps.dist.outputs.tag }}
         run: |
           node --input-type=module <<'JS'
           import { spawnSync } from "node:child_process";
           import { readFileSync } from "node:fs";
           const pkg = JSON.parse(readFileSync("package.json", "utf8"));
           const spec = `${pkg.name}@${pkg.version}`;
+          const distTag = process.env.DIST_TAG;
+          if (distTag !== "beta" && distTag !== "latest") { console.error(`::error::No dist-tag chosen (${distTag}).`); process.exit(1); }
           const run = args => spawnSync("npm", args, { encoding: "utf8" });
           const packed = run(["pack", "--dry-run", "--json"]);
           if (packed.status !== 0) { process.stderr.write(packed.stderr); process.exit(1); }
@@ -95,7 +115,7 @@ jobs:
             let error;
             try { error = JSON.parse(existing.stdout).error; } catch {}
             if (error?.code !== "E404") { process.stderr.write(existing.stderr); process.exit(1); }
-            const result = spawnSync("npm", ["publish", "--access", "public", "--registry", "https://registry.npmjs.org"], { stdio: "inherit" });
+            const result = spawnSync("npm", ["publish", "--access", "public", "--tag", distTag, "--registry", "https://registry.npmjs.org"], { stdio: "inherit" });
             if (result.status !== 0) {
               console.error("::error::npm publication failed. Check this package's GitHub trusted publisher repository, workflow filename, permissions, and environment in npm Settings.");
               process.exit(result.status || 1);
@@ -108,4 +128,14 @@ jobs:
             }
             if (!verified) { console.error(`::error::Registry verification failed for ${spec}.`); process.exit(1); }
           }
+          // The release must sit on its tag, and a beta must never have moved latest.
+          let tags = null;
+          for (let attempt = 0; attempt < 24; attempt++) {
+            const view = run(["view", pkg.name, "dist-tags", "--json", "--prefer-online", "--registry", "https://registry.npmjs.org"]);
+            if (view.status === 0) { tags = JSON.parse(view.stdout); if (tags[distTag] === pkg.version) break; }
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+          console.log(`dist-tags: ${JSON.stringify(tags)}`);
+          if (tags?.[distTag] !== pkg.version) { console.error(`::error::${spec} is not on the ${distTag} dist-tag.`); process.exit(1); }
+          if (distTag === "beta" && tags.latest === pkg.version) { console.error(`::error::${spec} is a beta but npm's latest points at it.`); process.exit(1); }
           JS

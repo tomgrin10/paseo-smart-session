@@ -336,6 +336,12 @@ when you have not looked, and never describe a screenshot you did not take.
   verifies that the tag matches `package.json`, reruns the release checks, inspects the package,
   and publishes through npm Trusted Publishing; do not run `npm publish` manually except to
   recover from a diagnosed workflow failure.
+- **Betas only by default.** `release-tag.mjs` picks the npm dist-tag before anything else: a
+  prerelease version (`X.Y.Z-beta.N`) publishes to `beta`, and a stable version fails the workflow
+  unless someone runs it by hand (`workflow_dispatch`) with `allow_latest=true`. Moving `latest` is
+  always an explicit human step. The workflow then checks that the release sits on its tag and that
+  a beta never moved `latest`. `release-tag.test.ts` holds the rules and pins the workflow to them.
+  A prerelease's GitHub release is marked pre-release.
 - Wait for the publish workflow and npm registry propagation, then verify installation with
   `paseo plugin install npm:paseo-smart-session@X.Y.Z` on Paseo 0.9 or newer. Title the GitHub
   release `paseo-smart-session vX.Y.Z`, and test the public tag-pinned installer and badge URLs.
