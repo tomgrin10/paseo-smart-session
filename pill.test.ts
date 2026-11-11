@@ -120,5 +120,5 @@ test("show or hide the pill flips the one visible switch, turning the display ga
   const toggle = commandItems().find((item) => item.id === "smart-session-pill")!;
   await toggle.onSelect({ rpc } as never);
   assert.equal(showPill, true);
-  assert.deepEqual(writes, [{ values: { enable_composer_button: true, showSidebar: true }, revision: "1" }]);
+  assert.deepEqual(writes, [{ values: { enable_composer_button: true, showSidebar: true, replaceUsageCard: true }, revision: "1" }]);
 });
