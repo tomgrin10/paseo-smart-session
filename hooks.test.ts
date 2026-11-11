@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 
+import { managedFor } from "./server/install.ts";
 import { resumeInstructions } from "./shared/governor.ts";
 import { DEFAULT_THRESHOLDS, profileFor } from "./shared/thresholds.ts";
 
@@ -371,14 +372,80 @@ test("after a plugin update mid-turn, a detached session is pointed at the bridg
   assert.match(detached, /mcp\.mjs" call <tool>/);
   assert.match(detached, /Call checkpoint/);
   assert.doesNotMatch(detached, /Call smart_checkpoint/);
-  // A failing smart_ call mid-turn gets the same pointer.
-  const failed = await runHook("hooks/context-threshold.mjs", { session_id: "s9", transcript_path: join(home, "none.jsonl"), cwd: home, tool_name: "mcp__paseo__smart_checkpoint" }, { PASEO_HOME: home, PASEO_AGENT_ID: AGENT, SMART_SESSION_TOOLS: "native" });
-  assert.match(await adviceFrom(failed), /tools are detached/);
   // Reopened under the new worker: native names, no notice.
   writeFileSync(join(dir, "tools", `native-${AGENT}.json`), JSON.stringify({ instance: "new" }));
   writeFileSync(join(dir, "asks", `${AGENT}.json`), "{}");
   const attached = await adviceFrom(await stopHook(home, 340_000, {}, { SMART_SESSION_TOOLS: "native" }));
   assert.match(attached, /Call smart_checkpoint/); assert.doesNotMatch(attached, /detached/);
+});
+
+/** A home whose session `AGENT` was attached by worker `attachedBy` while worker `current` runs. */
+function workerHome(attachedBy: string, current: string): string {
+  const home = enrolledHome({ stateAgeMinutes: 1 });
+  const dir = join(home, "plugin-data", "smart-session");
+  mkdirSync(join(dir, "tools"), { recursive: true });
+  writeFileSync(join(dir, "tools-instance.json"), JSON.stringify({ instance: current }));
+  writeFileSync(join(dir, "tools", `native-${AGENT}.json`), JSON.stringify({ instance: attachedBy }));
+  return home;
+}
+
+/** Runs whatever script the installer registers for `event` on `toolName`, as Claude Code would. */
+async function fire(home: string, event: string, payload: Record<string, unknown> = {}): Promise<string[]> {
+  const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "";
+  const scripts = managedFor({ compact: true, publish: false })
+    .filter((managed) => managed.event === event && new RegExp(`^(?:${managed.matcher || ".*"})$`).test(toolName))
+    .map((managed) => managed.script);
+  const out = [];
+  for (const script of scripts) {
+    const stdout = await runHook(`hooks/${script}`, { session_id: "s1", transcript_path: join(home, "none.jsonl"), cwd: home, hook_event_name: event, ...payload }, { PASEO_HOME: home, PASEO_AGENT_ID: AGENT, SMART_SESSION_TOOLS: "native" });
+    if (stdout === "") continue;
+    const parsed = JSON.parse(stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+    assert.equal(parsed.hookSpecificOutput.hookEventName, event, "the output names the event it answers");
+    out.push(parsed.hookSpecificOutput.additionalContext);
+  }
+  return out.filter((text) => /tools are detached/.test(text));
+}
+
+// Claude Code 2.1.322, verified end to end: a smart_* call that fails ("Tool smart_x not found", as an isError
+// result or a JSON-RPC error) raises PostToolUseFailure with these fields, and never PostToolUse.
+const FAILED_SMART_CALL = { tool_name: "mcp__paseo__smart_checkpoint", tool_input: {}, tool_use_id: "toolu_1", error: "MCP error -32602: Tool smart_checkpoint not found", is_interrupt: false, mcp_server: "paseo" };
+
+test("a detached session is told once per worker instance, through a hook that actually fires", async () => {
+  // The failing smart_* call itself: the event Claude Code really raises for it.
+  let home = workerHome("old", "new");
+  const told = await fire(home, "PostToolUseFailure", FAILED_SMART_CALL);
+  assert.equal(told.length, 1, "a failed smart_* call is answered with the notice");
+  assert.equal((await fire(home, "PostToolUseFailure", FAILED_SMART_CALL)).length, 0, "once per worker instance");
+  assert.equal((await fire(home, "PostToolUse", { tool_name: "Bash", tool_response: {} })).length, 0);
+  assert.equal((await fire(home, "UserPromptSubmit", { prompt: "next" })).length, 0);
+
+  // A busy agent that never calls smart_* (its client may have dropped them from the list) hears it on any tool.
+  home = workerHome("old", "new");
+  assert.equal((await fire(home, "PostToolUse", { tool_name: "Bash", tool_response: {} })).length, 1);
+  assert.equal((await fire(home, "PostToolUse", { tool_name: "Read", tool_response: {} })).length, 0);
+
+  // Or on the next prompt.
+  home = workerHome("old", "new");
+  assert.equal((await fire(home, "UserPromptSubmit", { prompt: "next" })).length, 1);
+
+  // Another update while still detached: a new instance, told again.
+  writeFileSync(join(home, "plugin-data", "smart-session", "tools-instance.json"), JSON.stringify({ instance: "newer" }));
+  assert.equal((await fire(home, "UserPromptSubmit", { prompt: "again" })).length, 1);
+
+  // Reattached under the current worker: nothing.
+  home = workerHome("new", "new");
+  for (const [event, payload] of [["PostToolUseFailure", FAILED_SMART_CALL], ["PostToolUse", { tool_name: "Bash" }], ["UserPromptSubmit", { prompt: "x" }]] as const) {
+    assert.equal((await fire(home, event, payload)).length, 0, `${event} stays quiet when attached`);
+  }
+});
+
+test("the detached notice is true for a busy agent", async () => {
+  const [notice] = await fire(workerHome("old", "new"), "UserPromptSubmit", { prompt: "next" });
+  // Paseo reopens a session only for a prompt that arrives while the agent is idle; mid-turn messages don't.
+  assert.doesNotMatch(notice, /before your next prompt/);
+  assert.match(notice, /until this session reopens/);
+  assert.match(notice, /prompt that arrives while you are idle/);
+  assert.match(notice, /mcp\.mjs" call <tool>/, "the bridge works meanwhile");
 });
 
 test("the bridge runs one tool call as the calling agent", async () => {
