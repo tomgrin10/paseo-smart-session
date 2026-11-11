@@ -16,6 +16,7 @@
  * `default` unless the pace says it bites before the reset.
  */
 
+import { mergeBuiltin, type BuiltinReading } from "./builtin-usage.ts";
 import { formatDuration } from "./format.ts";
 import { forecastWindow, type Tone } from "./forecast.ts";
 import {
@@ -230,11 +231,15 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 /**
  * The pool, on the lead card. Its label names the subject ("All 3 accounts", "Both
- * accounts") so it never reads as the lead account's own runway.
+ * accounts") so it never reads as the lead account's own runway, and, when they run out,
+ * which limit ("Session · both accounts": every account's 5-hour window, the bar of the
+ * same name), so it never reads as the week.
  */
 export function poolDetail(pool: PoolForecast, now: number): UsageDetailOut | null {
   if (pool.total < 2) return null;
-  const label = pool.total === 2 ? "Both accounts" : `All ${pool.total} accounts`;
+  const subject = pool.total === 2 ? "Both accounts" : `All ${pool.total} accounts`;
+  const which = pool.runsOutAt === null ? null : pool.limit === "session" ? "Session" : pool.limit === "weekly" ? "Weekly" : null;
+  const label = which === null ? subject : `${which} · ${subject.charAt(0).toLowerCase()}${subject.slice(1)}`;
   if (pool.runsOutAt !== null && pool.runsOutAt <= now) {
     const back = pool.backAt === null ? "" : ` · back ${inDuration(pool.backAt - now)}`;
     return { id: "pool", label, value: `at the limit${back}`, tone: "danger" };
@@ -352,6 +357,31 @@ function windowsOf(windows: readonly SubscriptionWindow[], stale: boolean, now: 
     .sort((a, b) => ORDER(a.id) - ORDER(b.id) || a.id.localeCompare(b.id));
 }
 
+// ---------------------------------------------------------------- Paseo's own reading of the same logins
+
+/**
+ * The state with each ZeroSub account's numbers brought up to Paseo's own card for the
+ * same login (`mergeBuiltin`), so the pool, the forecast and the card all start from the
+ * newest reading and our card never shows older numbers than the one it stands in for.
+ */
+export function withBuiltin(state: SourceState, readingOf: (emailHash: string | null) => BuiltinReading | null): SourceState {
+  const zs = state.zerosub;
+  if (!zs) return state;
+  const accounts = zs.accounts.map((account) => {
+    if (account.family !== "claude") return account;
+    const extras = zs.extras[account.id];
+    const labelOf = (id: string) => paseoWindow(id, extras?.windowLabels[id]).label;
+    return mergeBuiltin(account, readingOf(extras?.emailHash ?? null), labelOf);
+  });
+  return { ...state, zerosub: { ...zs, accounts } };
+}
+
+/** An account's login hash, by its Paseo key. */
+export function emailHashOf(state: SourceState, key: string): string | null {
+  const account = state.zerosub?.accounts.find((a) => accountKey(a.id) === key);
+  return account ? (state.zerosub!.extras[account.id]?.emailHash ?? null) : null;
+}
+
 // ---------------------------------------------------------------- the hide
 
 /**
@@ -425,36 +455,7 @@ export function parseExtras(
   return { extras, sessions, homes };
 }
 
-// ---------------------------------------------------------------- the hide (client/usage-hide.ts), as a rule
-
-export const BUILTIN_PREFIX = "usage-report-claude:";
-export const OURS_PREFIX = `usage-report-${USAGE_SOURCE_ID}:`;
-
-export interface RenderedCard {
-  /** The card's test id, e.g. `usage-report-claude:<account>`. */
-  readonly testId: string;
-  /** SHA-256 of the login its footer names, lowercased; null when it names none. */
-  readonly loginHash: string | null;
-}
-
-/**
- * Which built-in cards in one list to hide: those whose login matches one of our
- * cards rendered in the same list that the server currently calls fresh.
- */
-export function cardsToHide(cards: readonly RenderedCard[], fresh: readonly { key: string; emailHash: string }[]): Set<string> {
-  const freshByKey = new Map(fresh.map((card) => [card.key, card.emailHash]));
-  const covered = new Set<string>();
-  for (const card of cards) {
-    if (!card.testId.startsWith(OURS_PREFIX)) continue;
-    const hash = freshByKey.get(card.testId.slice(OURS_PREFIX.length));
-    if (hash) covered.add(hash);
-  }
-  const hide = new Set<string>();
-  for (const card of cards) {
-    if (card.testId.startsWith(BUILTIN_PREFIX) && card.loginHash !== null && covered.has(card.loginHash)) hide.add(card.testId);
-  }
-  return hide;
-}
+// ---------------------------------------------------------------- the hide (client/usage-hide.ts)
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

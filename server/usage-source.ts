@@ -18,6 +18,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
+import { capture, captured, noteBuilt, readBuiltin, realign } from "./builtin-usage.ts";
+import type { DaemonClient } from "./daemon.ts";
 import { zerosubInstallId } from "./guard/zerosub.ts";
 import { readUsage } from "./store.ts";
 import { subscriptionsView, windowsFrom } from "./subscriptions.ts";
@@ -27,8 +29,10 @@ import {
   USAGE_SOURCE_LABEL,
   buildReport,
   discoverAccounts,
+  emailHashOf,
   hideableCards,
   parseExtras,
+  withBuiltin,
   type SourceState,
   type UsageScopeIn,
 } from "../shared/usage-source.ts";
@@ -103,7 +107,15 @@ export function contributeUsageSource(server: PluginServerContext): boolean {
       icon: "assets/icon.svg",
       input: InputSchema,
       discover: async (scope: UsageScopeIn) => discoverAccounts(await sourceState(), scope),
-      fetch: async (input: z.infer<typeof InputSchema>) => buildReport(await sourceState(), input, Date.now()),
+      fetch: async (input: z.infer<typeof InputSchema>) => {
+        const state = await sourceState();
+        const hash = state.zerosub?.extras[input.account]?.emailHash ?? null;
+        // Paseo's own card for this login, from the daemon's cache or the fetch in flight beside ours.
+        const reading = await readBuiltin(hash);
+        const report = buildReport(withBuiltin(state, captured), input, Date.now());
+        noteBuilt(hash, reading);
+        return report;
+      },
     });
     return true;
   } catch (error) {
@@ -115,5 +127,15 @@ export function contributeUsageSource(server: PluginServerContext): boolean {
 
 /** For the client's hide: which of our cards may stand in for Paseo's own Claude card right now. */
 export async function usageCards(now = Date.now()) {
-  return { cards: hideableCards(await sourceState(now), now) };
+  return { cards: hideableCards(withBuiltin(await sourceState(now), captured), now) };
+}
+
+/**
+ * The recorder's minute tick, with the daemon's whole usage listing in hand: keep the
+ * built-in readings, then refresh any report of ours built from an older one.
+ */
+export async function onUsageListing(client: DaemonClient, entries: readonly unknown[]): Promise<void> {
+  const state = await sourceState();
+  capture(entries, (key) => emailHashOf(state, key));
+  await realign(client);
 }

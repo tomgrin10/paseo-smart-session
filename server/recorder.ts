@@ -15,7 +15,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { scanSpend } from "./backfill.ts";
+import { listReports } from "./builtin-usage.ts";
 import { readAgents, readProviderUsage, withDaemon } from "./daemon.ts";
+import { onUsageListing } from "./usage-source.ts";
+import { legacyListing } from "../shared/builtin-usage.ts";
 import { lifecycle } from "../shared/lifecycle.ts";
 import {
   appendContext,
@@ -196,8 +199,12 @@ async function pollDaemon(): Promise<void> {
   await withDaemon(async (client) => {
     const at = new Date().toISOString();
 
-    const usage = fromPaseoProviderUsage(await readProviderUsage(client));
+    // 0.16+: one listing serves both the recorder and our usage card's alignment
+    // (`provider.usage.list` is this same listing underneath there).
+    const entries = await listReports(client);
+    const usage = fromPaseoProviderUsage(entries === null ? await readProviderUsage(client) : legacyListing(entries));
     if (usage !== null) await record(usage);
+    if (entries !== null) await onUsageListing(client, entries).catch((error) => console.error("[smart-session] usage card alignment failed", String(error)));
 
     for (const agent of await readAgents(client)) {
       if (agent.usedTokens === null || agent.maxTokens === null) continue;

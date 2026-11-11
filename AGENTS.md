@@ -146,6 +146,13 @@
   adding no pace. Rows, the lead, the runway and the popover all read their times from that one
   simulation, so they never disagree. `client/subscriptions.ts` is the one poll; without ZeroSub
   (or with a single login) every view stays as it was.
+- Paseo 0.16's usage card (`shared/usage-source.ts`, `server/usage-source.ts`): one source, `smart-session`, never
+  `claude`. Invariant: **Paseo's own Claude card is hidden only while ours, for the same login, shows the same
+  numbers beside it.** Ours takes the built-in's current reading for the login (`shared/builtin-usage.ts`; read from the
+  daemon's cache in our fetch, never `forceRefresh` on a `claude:*` id; logins matched by email SHA-256 in memory only),
+  and the recorder's minute listing refreshes our report when the built-in moved on. The hide (`client/usage-hide.ts`,
+  rule in `shared/usage-hide.ts`) never waits on an RPC: a CSS grace animation holds the built-in back ≤1.5 s, then it is
+  decided synchronously from the DOM. Prove a change frame by frame (requestAnimationFrame), cold and from cache.
 - `shared/forecast.ts` turns a window reading into its moment: when it resets, when it runs out at
   this pace (the last half hour for the session, the window's own average for a week), and the
   per-hour pace that would last. Every view and `forecast.test.ts` read the same rules. Charts in
