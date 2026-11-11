@@ -45,7 +45,8 @@
   `paseo plugin add` breaks; `server/daemon.ts` assembles its specifier at runtime and borrows
   Paseo's own daemon client from the host for exactly that reason — which also keeps the protocol
   version identical to the daemon's. `check-gitinstall.mjs` enforces it.
-- Every direct daemon connection, including `server/daemon.ts`, `mcp.mjs`, and `probe.mjs`, must pass
+- Every direct daemon connection, including `server/daemon.ts`, `server/hooklib/daemon.mjs` (what `mcp.mjs` and
+  `hooks/publish-as.mjs` use), and `probe.mjs`, must pass
   the password from `server/daemon-password.mjs`. Resolution order is `PASEO_PASSWORD`, then
   `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`. Never put the password, its file
   contents, or an underlying filesystem error into logs or error messages.
@@ -66,7 +67,8 @@
 - `server/install.ts` writes to `~/.claude/settings.json`, which the plugin does not own. It may only
   add, update or remove entries whose command points at one of our `hooks/*.mjs`; it must never
   write a path it has not confirmed exists, must not write at all when reconciling changes nothing,
-  and must leave a malformed file alone rather than rewriting it from a partial parse. MCP
+  and must leave a malformed file alone rather than rewriting it from a partial parse. A symlinked settings.json is
+  written through to its target (`writeTarget`), never replaced by a copy (`install.test.ts`). MCP
   attachment goes through `server.before("agent.session_open")`. Never register globally: a user-scope
   entry starts `mcp.mjs` in every Claude session on the machine. `server/mcp-registrations.ts` removes an
   older version's entry from every Claude and Codex home Paseo launches with (defaults, provider `env`,
@@ -378,6 +380,30 @@ interactive Claude/Codex sessions:
 the tools answer as the calling agent, and across a plugin reload the native call fails mid-turn, the bridge works,
 and the native call works again after the next prompt. `--start-time` measures opening an unloaded Claude agent with
 no tools, the stdio server and native tools (local only; needs a logged-in `claude`).
+
+## Publishing as the main account
+
+- An artifact belongs to the account of the session that publishes it. `hooks/publish-as.mjs` (a `PreToolUse` hook,
+  matcher `Artifact`, timeout 180 s; logic in `server/hooklib/publish-as.mjs`) asks the plugin
+  (`smart-session.publish_as.start`/`.wait`) whether to take a publish over, and when it does answers "deny" with the
+  link. That reason leads with the success and says not to retry; `publish-as.test.ts` pins the wording.
+- The decisions are pure, in `shared/publish-as.ts`: only a publish that creates a page, a `type_url` create, or an
+  update/asset upload to a url in `publish-as/pages.json` is taken over, and only for a caller on another Claude account
+  than the target. Everything else, and every url we didn't make, passes through. ZeroSub unreadable: pass, with a note.
+- `server/publish-as.ts` runs the helper: create (background, Haiku, chosen id, label `smart-session.helper=publish-as`,
+  env `SMART_SESSION_PUBLISH_HELPER=1`), pin with ZeroSub's `zerosub.agents.account`, reopen with our own
+  `refreshAgent` (ZeroSub's CLI reload doesn't find a new background agent), confirm ZeroSub's session record says the
+  target, then prompt, wait (capped), and archive in a `finally`. One at a time; each run is logged. Never prompt a
+  helper that isn't confirmed on the target, and never read a credential file.
+- Hooks follow features (`managedFor` in `server/install.ts`): the compaction hooks are registered while Smart Compact is
+  on, `PreToolUse(Artifact)` while publishing as the main account is on, and each is removed when its feature is turned
+  off. So "Register the hooks" stays usable with Smart Compact off, and a fresh install with Smart Compact off still gets
+  the Artifact hook (`install.test.ts`).
+- Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.
+- A seat session reads its ZeroSub home's `settings.json`, which ZeroSub links to the main one. Never write into
+  those homes: per-home copies are how a hook silently stops reaching seat sessions (2026-11-10).
+  `server/settings-links.ts` only checks the links (read-only) and `install()` reports a broken one in `homes`,
+  shown on the settings page and by `publish_as_settings`.
 
 ## Chat timeline
 

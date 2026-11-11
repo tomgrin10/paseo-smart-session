@@ -88,6 +88,17 @@ Paseo's card shows a few things Smart Session's card can't: the plan tier suffix
 
 **Sidebar summary, once:** Paseo pins windows per source. To have the sidebar summary show Smart Session's windows instead of Paseo's, open **Usage**, unpin Claude's Session and Weekly, and pin Smart Session's. The choice is remembered.
 
+## Artifacts on your main account
+
+An artifact belongs to the Claude account of the session that publishes it. Under ZeroSub an agent may run on a seat account, and then you can't open, share or edit the pages it publishes. Smart Session hands those publishes to your main account, so agents don't have to know about it:
+
+- **A hook on the Artifact tool.** When a session on another Claude account publishes a page, a short-lived helper agent (Haiku, in the background) on your main account publishes the same file instead. The agent gets the link back in place of its own publish, with a note that it's done and not to retry. It takes 10 to 30 seconds. The helper is archived as soon as it answers, also when it fails or times out, and only one runs at a time.
+- **Updates follow.** Republishing the same file, or publishing to a url made this way, goes back to the main account and updates that page. A page the session published on its own account before keeps its owner: only that account can update it, so those calls pass through untouched. Reading, listing, quickstart, deleting and pinning always pass through.
+- **What stays with the helper.** Comments on such a page go to your main account, not to the agent that asked for it: the helper that published it, and its comment watch, are gone once it answers.
+- **For agents too.** `publish_as` publishes a file as the main account (or another account) explicitly, and `publish_as_settings` reads or changes the setting.
+
+Without ZeroSub, with one Claude account, or for a session already on the main account, nothing changes. If ZeroSub's registry can't be read, the publish goes out on the session's own account and the agent is told so. Each run is logged (who asked, the helper, how long, the outcome) to `publish-as/runs-YYYY-MM.jsonl`.
+
 ## Pause at the limit (Session Guard)
 
 When the provider's session window is spent, Smart Session pauses running sessions instead of letting them fail, and continues the same conversations once the window resets, even with the app closed. It is **off by default**: turn it on from the overview or in settings. It was the standalone [Session Guard](https://github.com/tomgrin10/paseo-session-guard) plugin, and its per-session choices and waiting pauses carry over.
@@ -119,10 +130,12 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | | Continue after the reset | On | Off, you continue each one by hand |
 | | Include native subagents | On | Freeze nested workers too (Linux) |
 | | Label paused workspaces | On | An amber Paused label in the sidebar |
+| Artifacts | Publish artifacts as the main account | On | With ZeroSub: pages from sessions on other Claude accounts are published on the main one |
+| | Publish as | Main account | Shown with more than one Claude account |
 | Display | Sidebar row | On | |
 | | Pill on every session | On | A paused session keeps its pill either way |
 | | Replace Paseo's Claude usage card | On | Paseo 0.16+, web and desktop |
-| Claude Code | Register the hooks | On | Keep the context and compaction hooks installed |
+| Claude Code | Register the hooks | On | Keep the hooks the features that are on need: context and compaction with Smart Compact, publishing with Publish artifacts as the main account. Turning a feature off removes its hooks. Flags a ZeroSub account home whose settings no longer link to these, so the hooks miss its sessions |
 | Limit timing | Pause at, check interval, wait after reset, spacing, continuation message, providers, windows | 100%, 15s, 30s, 5s | Behind **Edit**; each field is checked on its own |
 
 Hiding the row or the pill never turns a feature off.
@@ -133,7 +146,7 @@ Hiding the row or the pill never turns a feature off.
 
 Everything lives in `$PASEO_HOME/plugin-data/smart-session/`: monthly usage and context logs (and, with ZeroSub, a monthly log of each subscription's readings, keyed by account id), compaction records, an hourly spend index by model, workspace and agent type, and one `state/<agentId>.md` per agent. Logs are append-only, and a damaged line is skipped rather than risking the rest.
 
-Paseo plugins run trusted, unsandboxed code on the daemon host. Smart Session reads local Claude Code usage data, reads ZeroSub's account registry and usage readings when ZeroSub is enabled (never its account homes or credentials), and talks only to the local daemon. For password-protected daemons it reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`, and never writes or logs it.
+Paseo plugins run trusted, unsandboxed code on the daemon host. Smart Session reads local Claude Code usage data, reads ZeroSub's account registry and usage readings when ZeroSub is enabled (never its account homes' contents or credentials; it only checks that each home's `settings.json` is still a link to the main one, and says so when it isn't), and talks only to the local daemon. A linked `settings.json` stays a link: Smart Session writes its hooks through to the file it points at. Publishing as the main account starts helper agents through that daemon and asks ZeroSub to pin each one to the main account. For password-protected daemons it reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`, and never writes or logs it.
 
 ## Development
 

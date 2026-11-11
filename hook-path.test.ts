@@ -52,7 +52,7 @@ function configure(paseoHome: string, pluginDir: string): void {
 function stubInstall(dir: string, version: string, label: string): void {
   mkdirSync(join(dir, "hooks"), { recursive: true });
   const say = (script: string) => `process.stdout.write(${JSON.stringify(`${label}:${script}`)});\n`;
-  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs"]) {
+  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs"]) {
     writeFileSync(join(dir, "hooks", script), say(script));
   }
   writeFileSync(join(dir, "mcp.mjs"), say("mcp.mjs"));
@@ -118,7 +118,7 @@ test("a shim whose pointer names a missing install exits 0 and says nothing", as
   assert.equal(runShim(box, "ask-compact.mjs").stdout, "gone:ask-compact.mjs", "the shim runs its target while it exists");
 
   rmSync(dir, { recursive: true, force: true });
-  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "mcp.mjs"]) {
+  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs", "mcp.mjs"]) {
     const result = runShim(box, script);
     assert.equal(result.status, 0, script);
     assert.equal(result.stdout, "", script);
@@ -170,7 +170,7 @@ test("update simulation: install vA, install vB, delete vA — the hooks run vB"
   assert.equal(settings.model, "opus");
   const commands: string[] = Object.values(settings.hooks as Record<string, { hooks: { command: string }[] }[]>)
     .flat().flatMap((group) => group.hooks.map((hook) => hook.command));
-  assert.equal(commands.length, 4);
+  assert.equal(commands.length, 5);
   for (const command of commands) {
     assert.doesNotMatch(command, /aaaa-old|bbbb-new/, "no command names an install directory");
     // Exactly as Claude Code runs it: through a shell, the hook event on stdin.

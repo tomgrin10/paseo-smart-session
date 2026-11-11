@@ -22,6 +22,24 @@ export interface DaemonClient {
   fetchAgents(): Promise<unknown>;
   listProviderUsage(): Promise<unknown>;
   sendMessage(agentId: string, text: string): Promise<unknown>;
+  /** The publish-as helper's lifecycle (`server/publish-as.ts`). */
+  createAgent(options: {
+    agentId: string;
+    provider: string;
+    model: string;
+    modeId: string;
+    cwd: string;
+    title: string;
+    background: boolean;
+    env: Record<string, string>;
+    labels: Record<string, string>;
+  }): Promise<unknown>;
+  invokePluginRpc(pluginId: string, method: string, input: unknown): Promise<unknown>;
+  /** Closes and reopens the provider session with current configuration, rerunning session-open hooks. */
+  refreshAgent(agentId: string): Promise<unknown>;
+  sendAgentMessage(agentId: string, text: string): Promise<unknown>;
+  waitForFinish(agentId: string, timeout?: number): Promise<{ status: string; error: string | null; lastMessage: string | null }>;
+  archiveAgent(agentId: string): Promise<unknown>;
 }
 
 interface DaemonClientModule {

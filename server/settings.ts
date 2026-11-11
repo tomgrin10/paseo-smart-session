@@ -62,6 +62,14 @@ export interface Settings {
    * See `server/install.ts` for what it will and will not touch.
    */
   readonly installHooks: boolean;
+  /**
+   * Whether an artifact published from a session on another Claude account (under ZeroSub) is
+   * published as `publishAsAccount` instead, so the person owns it. On by default: without ZeroSub,
+   * or with one Claude account, it changes nothing. See `server/publish-as.ts`.
+   */
+  readonly publishAsMain: boolean;
+  /** The account to publish as: a ZeroSub account id, or null for the main Claude account. */
+  readonly publishAsAccount: string | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -71,6 +79,8 @@ export const DEFAULT_SETTINGS: Settings = {
   showPill: true,
   autoEnrol: true,
   installHooks: true,
+  publishAsMain: true,
+  publishAsAccount: null,
 };
 
 const filePath = () => join(dataDir(), "settings.json");
@@ -91,6 +101,8 @@ export async function readSettings(): Promise<Settings> {
       showPill: raw.showPill !== false,
       autoEnrol: raw.autoEnrol !== false,
       installHooks: raw.installHooks !== false,
+      publishAsMain: raw.publishAsMain !== false,
+      publishAsAccount: accountId(raw.publishAsAccount),
     };
   } catch {
     cached = DEFAULT_SETTINGS;
@@ -107,6 +119,8 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
     showPill: next.showPill !== false,
     autoEnrol: next.autoEnrol !== false,
     installHooks: next.installHooks !== false,
+    publishAsMain: next.publishAsMain !== false,
+    publishAsAccount: accountId(next.publishAsAccount),
   };
   await mkdir(dataDir(), { recursive: true });
   const target = filePath();
@@ -120,6 +134,8 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
 export function clearSettingsCache(): void {
   cached = null;
 }
+
+const accountId = (value: unknown): string | null => (typeof value === "string" && value.trim() !== "" ? value.trim() : null);
 
 function clamp(value: number, low: number, high: number): number {
   if (!Number.isFinite(value)) return low;

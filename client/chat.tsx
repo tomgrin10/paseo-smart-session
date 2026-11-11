@@ -12,6 +12,8 @@ const ICONS: Record<ToolRow["tool"], string> = {
   checkpoint: "Save",
   request_compaction: "FoldVertical",
   defer_compaction: "Clock",
+  publish_as: "Upload",
+  publish_as_settings: "Settings",
 };
 
 const mono = () => (Platform.OS === "ios" ? "Menlo" : Platform.OS === "android" ? "monospace" : "ui-monospace, SFMono-Regular, Menlo, monospace");

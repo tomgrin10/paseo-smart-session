@@ -10,6 +10,7 @@ import type { Invoke } from "./server/native-tools.ts";
 import { readAgents, withDaemon } from "./server/daemon.ts";
 import { contextGrowth, projectFull } from "./server/growth.ts";
 import { install } from "./server/install.ts";
+import { describeResult, startPublish, waitPublish } from "./server/publish-as.ts";
 import { summarizeSpend } from "./server/spend.ts";
 import { countEnrolled, listEnrolment, readSettings, setEnrolled, stateWrittenAt, writeSettings } from "./server/settings.ts";
 import { dataDir, newestUsage, readUsage } from "./server/store.ts";
@@ -18,6 +19,8 @@ import {
   contextStatus,
   getSettings,
   installStatus,
+  publishAsStart,
+  publishAsWait,
   setSettings,
   spendSummary,
   subscriptionsStatus,
@@ -212,13 +215,22 @@ export default function contribute(host: PluginServerContext) {
 
   server.handle(setSettings, async (patch) => {
     const settings = await writeSettings(patch);
-    // Reconciled here as well as on load, so turning the switch off removes the
-    // hooks immediately rather than at the next reload.
-    if (patch.installHooks !== undefined) void install().catch(() => undefined);
+    // Reconciled here as well as on load, so turning the switch, or a feature that needs hooks, off
+    // removes them immediately rather than at the next reload (`managedFor` in server/install.ts).
+    if (patch.installHooks !== undefined || patch.enabled !== undefined || patch.publishAsMain !== undefined) {
+      void install().catch(() => undefined);
+    }
     return { settings };
   });
 
   server.handle(installStatus, async () => ({ report: await install() }));
+
+  // Publishing an artifact as the main account through a helper agent (`server/publish-as.ts`).
+  server.handle(publishAsStart, (request) => startPublish({ ...request, account: request.account ?? null }));
+  server.handle(publishAsWait, async ({ jobId, waitMs, native }) => {
+    const waited = await waitPublish(jobId, waitMs);
+    return waited.done ? { done: true as const, result: waited.result, text: describeResult(waited.result, native === true) } : waited;
+  });
 
   server.handle(
     requestCompaction,

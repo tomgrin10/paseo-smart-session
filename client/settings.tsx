@@ -11,7 +11,7 @@ import { guardPreferences } from "../shared/guard/contracts";
 import { isPending, type Policy } from "../shared/guard/policy";
 import { checkTiming, timingOf, type Timing } from "../shared/guard/timing";
 import { governorNotice } from "../shared/guard/presentation";
-import { getSettings, installStatus, setSettings } from "../shared/smart-session";
+import { getSettings, installStatus, setSettings, subscriptionsStatus } from "../shared/smart-session";
 import { DEFAULT_THRESHOLDS, linesProblem, withCompactThreshold } from "../shared/thresholds";
 import { broadcastDisplay } from "./display";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
@@ -50,6 +50,8 @@ export function makeSettings(client: PluginClientContext) {
     const readInstall = useRpc(installStatus);
     const query = useQuery({ queryKey: ["smart-session", "settings"], queryFn: () => read({}), refetchInterval: 60_000 });
     const install = useQuery({ queryKey: ["smart-session", "install"], queryFn: () => readInstall({}), refetchInterval: 5 * 60_000 });
+    const readSubscriptions = useRpc(subscriptionsStatus);
+    const subscriptions = useQuery({ queryKey: ["smart-session", "subscriptions"], queryFn: () => readSubscriptions({}), refetchInterval: 5 * 60_000 });
     const guard = useSettings(guardPreferences);
     const display = useSettings(displayPreferences);
     const status = useSyncExternalStore(subscribeGuard, guardSnapshot, guardSnapshot);
@@ -118,10 +120,11 @@ export function makeSettings(client: PluginClientContext) {
       setDraft((previous) => ({ ...(previous ?? stringLines(savedLines)), [key]: value }));
     const off = !settings.enabled || saving;
     const report = install.data?.report;
-    const hooksHint = report === undefined ? "Keeps this plugin's context and compaction hooks in ~/.claude/settings.json."
+    const hooksHint = report === undefined ? "Keeps this plugin's hooks (context, compaction, publishing) in ~/.claude/settings.json."
       : report.error !== null ? report.error
-        : report.pluginDir === null || report.hooks.length === 0 ? "Not registered, so nothing will ask a session to compact itself."
-          : `Registered: ${report.hooks.join(", ")}. Only entries that point at this plugin are touched.`;
+        : !settings.enabled && !settings.publishAsMain ? "Nothing to register while Smart Compact and publishing as the main account are off."
+          : report.pluginDir === null || report.hooks.length === 0 ? "Not registered, so nothing will ask a session to compact itself or publish as the main account."
+            : `Registered: ${report.hooks.join(", ")}. Only entries that point at this plugin are touched.`;
     const from = formatCompactTokens(settings.thresholds.largeWindowFrom);
 
     // Protection: the stored document, plus who runs it on this host.
@@ -144,6 +147,22 @@ export function makeSettings(client: PluginClientContext) {
         toast.show("Limit timing saved");
       }
     }
+    // Publishing as the main account: only meaningful with ZeroSub and more than one Claude account.
+    const claudeAccounts = (subscriptions.data?.accounts ?? []).filter((account) => account.family === "claude");
+    const mainAccount = claudeAccounts.find((account) => account.kind === "main");
+    const publishTarget = claudeAccounts.find((account) => account.id === settings.publishAsAccount) ?? mainAccount;
+    const nameAs = (account: typeof publishTarget) => (!account || account.kind === "main" ? "your main account" : account.name);
+    const publishTargetName = nameAs(publishTarget);
+    const publishMatters = claudeAccounts.length > 1;
+    const publishHint = !publishMatters
+      ? "Only matters with ZeroSub and more than one Claude account."
+      : settings.publishAsMain
+        ? `On. Pages from sessions on other Claude accounts are published as ${publishTargetName}.`
+        : "Off. A page belongs to the session's own account, which you may not be able to open.";
+    // A ZeroSub home whose settings.json no longer links to the main one: the short form here, the
+    // full line with the fix command goes to the agent tool.
+    const homeHint = { copy: "Its settings.json is a copy, not a link to ~/.claude/settings.json, so hooks added after it was copied, publishing as the main account among them, skip its sessions. Merge anything only it has, then link it back.", elsewhere: "Its settings.json links to another file, not ~/.claude/settings.json, so these hooks skip its sessions. Link it back to ~/.claude/settings.json.", missing: "It has no settings.json, so these hooks skip its sessions. Link ~/.claude/settings.json into its home." } as const;
+    const accountName = (id: string) => claudeAccounts.find((account) => account.id === id)?.name ?? id;
     const pillOn = settings.showPill && (display.status !== "ready" || display.values.enable_composer_button);
 
     return <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingVertical: 8, gap: 24 }}>
@@ -200,6 +219,17 @@ export function makeSettings(client: PluginClientContext) {
             </SettingsCard>}
       </SettingsSection>
 
+      <SettingsSection title="Artifacts" info="An artifact belongs to the Claude account of the session that publishes it. Under ZeroSub that can be an account you can't open, so a short-lived helper on your main account publishes it instead. The agent gets the link as usual.">
+        <SettingsCard>
+          <SettingsSwitch label="Publish artifacts as the main account" hint={publishHint} value={settings.publishAsMain} disabled={saving}
+            onValueChange={(publishAsMain) => void save({ publishAsMain }, publishAsMain ? `Artifacts are published as ${publishTargetName}` : "Artifacts stay on the session's own account")} />
+          {publishMatters ? <SettingsSelect label="Publish as" hint="The account that owns the pages. Pages already published keep their owner."
+            value={publishTarget?.id ?? "main"} options={claudeAccounts.map((account) => ({ label: account.kind === "main" ? `${account.name} (main)` : account.name, value: account.id }))}
+            disabled={saving || !settings.publishAsMain}
+            onValueChange={(id) => { const account = claudeAccounts.find((candidate) => candidate.id === id); void save({ publishAsAccount: account?.kind === "main" ? null : id }, `Artifacts are published as ${nameAs(account)}`); }} /> : null}
+        </SettingsCard>
+      </SettingsSection>
+
       <SettingsSection title="Display" info="Hiding the row or the pill never turns a feature off. ⌘K Smart Session still opens the overview.">
         {display.status === "loading" ? <ActivityIndicator accessibilityLabel="Loading display settings" color={c.foregroundMuted} style={{ padding: 16 }} />
           : display.status !== "ready" ? <View style={{ gap: 8 }}>
@@ -222,9 +252,10 @@ export function makeSettings(client: PluginClientContext) {
 
       <SettingsSection title="Claude Code">
         <SettingsCard>
-          <SettingsSwitch label="Register the hooks" hint={hooksHint} value={settings.installHooks} disabled={off}
+          <SettingsSwitch label="Register the hooks" hint={hooksHint} value={settings.installHooks} disabled={saving || (!settings.enabled && !settings.publishAsMain)}
             onValueChange={(installHooks) => void save({ installHooks }, installHooks ? "Hooks registered with Claude Code" : "Hooks removed from Claude Code")} />
           {report?.mcp === "unavailable" ? <SettingsRow label="MCP server not registered" hint="The claude command was not reachable from the daemon." /> : null}
+          {(report?.homes ?? []).map((home) => <SettingsRow key={home.accountId} label={`Hooks don't reach ${accountName(home.accountId)}`} hint={homeHint[home.problem]} />)}
         </SettingsCard>
       </SettingsSection>
 

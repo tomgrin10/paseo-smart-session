@@ -27,18 +27,22 @@
  *     so the common case — every reload after the first — touches no files.
  *   - **Be reversible.** One backup, kept from the first modification, and turning
  *     `installHooks` off removes every entry we added.
+ *   - **Only what an enabled feature needs.** The compaction hooks are registered while
+ *     Smart Compact is on, the Artifact hook while publishing as the main account is on;
+ *     turning a feature off removes its hooks (`managedFor`).
  */
 
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { access, copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, readdir, readlink, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { PLUGIN_VERSION } from "../shared/version.ts";
 import { complete, pointerHealthy, pointShimsAt } from "./hook-path.ts";
 import { readSettings } from "./settings.ts";
+import { brokenHomeLinks, describeHomeLinks } from "./settings-links.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -51,14 +55,30 @@ const execFileAsync = promisify(execFile);
  * inject but does not know. See `hooks/pointer.mjs`.
  */
 const MANAGED = [
-  { event: "PostToolUse", matcher: "", script: "context-threshold.mjs" },
-  { event: "Stop", matcher: "", script: "ask-compact.mjs" },
-  { event: "PostCompact", matcher: "", script: "post-compact.mjs" },
-  { event: "SessionStart", matcher: "compact", script: "post-compact.mjs" },
+  { event: "PostToolUse", matcher: "", script: "context-threshold.mjs", feature: "compact" },
+  { event: "Stop", matcher: "", script: "ask-compact.mjs", feature: "compact" },
+  { event: "PostCompact", matcher: "", script: "post-compact.mjs", feature: "compact" },
+  { event: "SessionStart", matcher: "compact", script: "post-compact.mjs", feature: "compact" },
+  // Publishes an artifact as the main account through a helper agent, which takes 10-20 s and may
+  // queue behind another; the hook gives up at 160 s (`hooks/publish-as.mjs`).
+  { event: "PreToolUse", matcher: "Artifact", script: "publish-as.mjs", timeout: 180, feature: "publish" },
 ] as const;
 
+/** Which features are on: Smart Compact (`enabled`) and publishing as the main account. */
+export interface HookFeatures {
+  readonly compact: boolean;
+  readonly publish: boolean;
+}
+
+const ALL_FEATURES: HookFeatures = { compact: true, publish: true };
+
+/** The hooks the enabled features need; a feature that is off gets none registered. */
+export function managedFor(features: HookFeatures) {
+  return MANAGED.filter((managed) => features[managed.feature]);
+}
+
 /** Every script we might have written, including into an older install's path. */
-const OUR_SCRIPTS = ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs"];
+const OUR_SCRIPTS = ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs"];
 
 const HOOK_TIMEOUT_SECONDS = 10;
 
@@ -85,6 +105,8 @@ export interface InstallReport {
   readonly hooks: string[];
   readonly mcp: "present" | "added" | "updated" | "unavailable" | "skipped" | "session";
   readonly error: string | null;
+  /** ZeroSub account homes whose settings.json no longer links to this one (read-only check). */
+  readonly homes?: { accountId: string; problem: "copy" | "elsewhere" | "missing"; line: string }[];
 }
 
 const claudeDir = (): string => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
@@ -209,7 +231,7 @@ export function commandFor(shims: string, script: string): string {
  * directory or renamed a script leaves nothing stale behind — and so the manual
  * entries an early adopter added by hand are adopted rather than duplicated.
  */
-export function reconcile(existing: HookMap, shims: string | null): HookMap {
+export function reconcile(existing: HookMap, shims: string | null, features: HookFeatures = ALL_FEATURES): HookMap {
   const next: HookMap = {};
 
   for (const [event, groups] of Object.entries(existing)) {
@@ -225,12 +247,13 @@ export function reconcile(existing: HookMap, shims: string | null): HookMap {
 
   if (shims === null) return next;
 
-  for (const { event, matcher, script } of MANAGED) {
+  for (const managed of managedFor(features)) {
+    const { event, matcher, script } = managed;
     const groups = next[event] ?? [];
     const entry: HookEntry = {
       type: "command",
       command: commandFor(shims, script),
-      timeout: HOOK_TIMEOUT_SECONDS,
+      timeout: "timeout" in managed ? managed.timeout : HOOK_TIMEOUT_SECONDS,
     };
     const group = groups.find((candidate) => (candidate.matcher ?? "") === matcher);
     if (group === undefined) groups.push({ matcher, hooks: [entry] });
@@ -252,11 +275,27 @@ async function backupOnce(path: string): Promise<void> {
   }
 }
 
+/**
+ * The file a write to `path` should land in: through any symlink, to its target. A rename onto
+ * the link itself would replace it with a copy, and a linked settings.json (dotfiles, or a ZeroSub
+ * account home linked to the main one) would silently stop following its original for good.
+ */
+export async function writeTarget(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    // A missing file, or a link whose target doesn't exist yet: write where the link points.
+    const link = await readlink(path).catch(() => null);
+    return link === null ? path : resolve(dirname(path), link);
+  }
+}
+
 async function writeAtomic(path: string, text: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temp = join(dirname(path), `.smart-session-${randomUUID()}.tmp`);
+  const target = await writeTarget(path);
+  await mkdir(dirname(target), { recursive: true });
+  const temp = join(dirname(target), `.smart-session-${randomUUID()}.tmp`);
   await writeFile(temp, text, "utf8");
-  await rename(temp, path);
+  await rename(temp, target);
 }
 
 export interface McpDefinition {
@@ -341,6 +380,40 @@ async function ensureMcp(pluginDir: string): Promise<InstallReport["mcp"]> {
   }
 }
 
+/**
+ * Reconciles one Claude Code settings file: only our entries change, a malformed file is left
+ * alone, and an unchanged file is not written. `create`: write the file when it doesn't exist.
+ */
+async function reconcileFile(path: string, shims: string | null, features: HookFeatures, create: boolean): Promise<{ changed: boolean; error: string | null }> {
+  let raw = "";
+  let parsed: Record<string, unknown> = {};
+  try {
+    raw = await readFile(path, "utf8");
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      // Malformed settings are not ours to repair, and rewriting them from a
+      // partial parse would lose whatever the user has in there.
+      return { changed: false, error: `${path} is not valid JSON, so it was left alone. Fix it and reload the plugin.` };
+    }
+    if (!create) return { changed: false, error: null };
+  }
+
+  const before = (parsed.hooks ?? {}) as HookMap;
+  const after = reconcile(before, shims, features);
+  const merged = { ...parsed, hooks: after };
+  if (Object.keys(after).length === 0) delete (merged as { hooks?: unknown }).hooks;
+
+  const text = `${JSON.stringify(merged, null, 2)}\n`;
+  const changed = text !== raw;
+  if (changed) {
+    if (raw !== "") await backupOnce(path);
+    await writeAtomic(path, text);
+  }
+  return { changed, error: null };
+}
+
 let tail: Promise<unknown> = Promise.resolve();
 
 /** One writer at a time: this is read-modify-write over a file we do not own. */
@@ -396,48 +469,26 @@ export function install(options: { registerMcp?: boolean } = {}): Promise<Instal
       };
     }
 
-    let raw = "";
-    let parsed: Record<string, unknown> = {};
-    try {
-      raw = await readFile(path, "utf8");
-      parsed = JSON.parse(raw) as Record<string, unknown>;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") {
-        // Malformed settings are not ours to repair, and rewriting them from a
-        // partial parse would lose whatever the user has in there.
-        return {
-          pluginDir,
-          settingsPath: path,
-          changed: false,
-          hooks: [],
-          mcp: "skipped",
-          error: `${path} is not valid JSON, so it was left alone. Fix it and reload the plugin.`,
-        };
-      }
+    const features: HookFeatures = { compact: settings.enabled, publish: settings.publishAsMain };
+    const main = await reconcileFile(path, pluginDir === null ? null : shims, features, true);
+    if (main.error !== null) {
+      return { pluginDir, settingsPath: path, changed: false, hooks: [], mcp: "skipped", error: main.error };
     }
-
-    const before = (parsed.hooks ?? {}) as HookMap;
-    const after = reconcile(before, pluginDir === null ? null : shims);
-    const merged = { ...parsed, hooks: after };
-    if (Object.keys(after).length === 0) delete (merged as { hooks?: unknown }).hooks;
-
-    const text = `${JSON.stringify(merged, null, 2)}\n`;
-    const changed = text !== raw;
-    if (changed) {
-      if (raw !== "") await backupOnce(path);
-      await writeAtomic(path, text);
-    }
+    const changed = main.changed;
 
     const lines = pluginDir === null
       ? []
-      : MANAGED.map(({ event, matcher }) => `${event}${matcher === "" ? "" : `:${matcher}`}`);
+      : managedFor(features).map(({ event, matcher }) => `${event}${matcher === "" ? "" : `:${matcher}`}`);
 
+    // Read-only: a home that stopped linking here misses these hooks. Said, never repaired.
+    const broken = await brokenHomeLinks(path).catch(() => []);
+    const described = describeHomeLinks(broken, path);
     return {
       pluginDir,
       settingsPath: path,
       changed,
       hooks: lines,
+      homes: broken.map((link, index) => ({ accountId: link.accountId, problem: link.problem, line: described[index]! })),
       mcp: pluginDir === null ? "skipped" : !registerMcp ? "session" : await ensureMcp(pluginDir),
       error: null,
     };

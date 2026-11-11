@@ -251,7 +251,7 @@ export function occupancy(transcriptPath, settings = readSettings()) {
  * served through Paseo's own MCP with a `smart_` prefix (`SMART_SESSION_TOOLS=native` in the
  * agent's environment); sessions opened before that, and the stdio fallback, keep the bare names.
  */
-const TOOL_MENTION = /\b(call|Call|with) (checkpoint|request_compaction|defer_compaction|context_status|budget_status)\b/g;
+const TOOL_MENTION = /\b(call|Call|with) (checkpoint|request_compaction|defer_compaction|context_status|budget_status|publish_as|publish_as_settings)\b/g;
 export function named(text, native = toolsMode() === "native") {
   return native ? text.replace(TOOL_MENTION, "$1 smart_$2") : text;
 }
