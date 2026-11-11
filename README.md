@@ -75,6 +75,19 @@ Smart Session keeps each account's readings in its own history (by ZeroSub's acc
   <img alt="The Smart Session overview with ZeroSub: the headline Claude · 3 subscriptions last past Sat 1:05 AM, Account 3 takes over at 2:12 AM, then Personal at 10:03 AM. A runway with one lane per Claude account showing when each is in use, has room or is at the limit, a row per account with its 5-hour and weekly windows, reset times and when it runs out, and a Codex card with credits" src="docs/media/smart-session-subscriptions.png">
 </picture>
 
+## In Paseo's own usage card (Paseo 0.16+)
+
+On Paseo 0.16 or newer, Smart Session is also one of Paseo's usage sources, named **Claude · Smart Session**. Its cards show in the context window details (the composer's context meter), in the Usage screen and in the sidebar usage summary. On older Paseo nothing changes.
+
+- **The session's own account first,** with each window's forecast: Paseo shows "runs out in 1h 40m" where the reset line was, and the bar turns amber or red only when the pace says the window runs out before it resets. Session, Weekly and every Weekly · model window that the account reports.
+- **Every other ZeroSub Claude account** as its own card: at the limit (and when it is back), set aside, next to take over, and how old its reading is when that is over half an hour.
+- **The pool** on the session's card: "3 accounts · run out in 6h 20m at this pace".
+- **Paseo's own Claude card steps aside** on web and desktop while Smart Session's card for the same login is on screen with a fresh reading. The logins are matched by a hash of the email, so the email is never copied out of ZeroSub's files. When the reading is stale or missing, or the logins can't be matched, Paseo's card stays. Turn this off under **Display → Replace Paseo's Claude usage card**. Phones show both cards.
+
+Paseo's card shows a few things Smart Session's card can't: the plan tier suffix ("Team 5x" shows as "Team"), the login email (the card names the account as ZeroSub does, "CLI login", "Account 2" or the name you gave it), and Extra usage for accounts other than the CLI login until ZeroSub records it.
+
+**Sidebar summary, once:** Paseo pins windows per source. To have the sidebar summary show Smart Session's windows instead of Paseo's, open **Usage**, unpin Claude's Session and Weekly, and pin Claude · Smart Session's. The choice is remembered.
+
 ## Pause at the limit (Session Guard)
 
 When the provider's session window is spent, Smart Session pauses running sessions instead of letting them fail, and continues the same conversations once the window resets, even with the app closed. It is **off by default**: turn it on from the overview or in settings. It was the standalone [Session Guard](https://github.com/tomgrin10/paseo-session-guard) plugin, and its per-session choices and waiting pauses carry over.
@@ -108,6 +121,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | | Label paused workspaces | On | An amber Paused label in the sidebar |
 | Display | Sidebar row | On | |
 | | Pill on every session | On | A paused session keeps its pill either way |
+| | Replace Paseo's Claude usage card | On | Paseo 0.16+, web and desktop |
 | Claude Code | Register the hooks | On | Keep the context and compaction hooks installed |
 | Limit timing | Pause at, check interval, wait after reset, spacing, continuation message, providers, windows | 100%, 15s, 30s, 5s | Behind **Edit**; each field is checked on its own |
 
