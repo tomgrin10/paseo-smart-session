@@ -120,7 +120,7 @@ export function makeSettings(client: PluginClientContext) {
       setDraft((previous) => ({ ...(previous ?? stringLines(savedLines)), [key]: value }));
     const off = !settings.enabled || saving;
     const report = install.data?.report;
-    const hooksHint = report === undefined ? "Keeps this plugin's context and compaction hooks in ~/.claude/settings.json."
+    const hooksHint = report === undefined ? "Keeps this plugin's hooks (context, compaction, publishing) in ~/.claude/settings.json."
       : report.error !== null ? report.error
         : report.pluginDir === null || report.hooks.length === 0 ? "Not registered, so nothing will ask a session to compact itself."
           : `Registered: ${report.hooks.join(", ")}. Only entries that point at this plugin are touched.`;
@@ -150,13 +150,18 @@ export function makeSettings(client: PluginClientContext) {
     const claudeAccounts = (subscriptions.data?.accounts ?? []).filter((account) => account.family === "claude");
     const mainAccount = claudeAccounts.find((account) => account.kind === "main");
     const publishTarget = claudeAccounts.find((account) => account.id === settings.publishAsAccount) ?? mainAccount;
-    const publishTargetName = publishTarget?.name ?? "the main account";
+    const nameAs = (account: typeof publishTarget) => (!account || account.kind === "main" ? "your main account" : account.name);
+    const publishTargetName = nameAs(publishTarget);
     const publishMatters = claudeAccounts.length > 1;
     const publishHint = !publishMatters
-      ? "Matters only with ZeroSub and more than one Claude account. Then a page an agent publishes from another account goes to your main account instead."
+      ? "Only matters with ZeroSub and more than one Claude account."
       : settings.publishAsMain
-        ? `On. A page published from a session on another Claude account is published as ${publishTargetName} by a short-lived helper, so you can open and share it.`
-        : "Off. A page belongs to the account of the session that publishes it, which you may not be able to open.";
+        ? `On. Pages from sessions on other Claude accounts are published as ${publishTargetName}.`
+        : "Off. A page belongs to the session's own account, which you may not be able to open.";
+    // A ZeroSub home whose settings.json no longer links to the main one: the short form here, the
+    // full line with the fix command goes to the agent tool.
+    const homeHint = { copy: "Its settings.json is a copy, not a link to ~/.claude/settings.json, so hooks added since (publishing as the main account included) skip its sessions. Merge anything only it has, then link it back.", elsewhere: "Its settings.json links to another file, not ~/.claude/settings.json, so these hooks skip its sessions. Link it back to ~/.claude/settings.json.", missing: "It has no settings.json, so these hooks skip its sessions. Link ~/.claude/settings.json into its home." } as const;
+    const accountName = (id: string) => claudeAccounts.find((account) => account.id === id)?.name ?? id;
     const pillOn = settings.showPill && (display.status !== "ready" || display.values.enable_composer_button);
 
     return <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingVertical: 8, gap: 24 }}>
@@ -213,6 +218,17 @@ export function makeSettings(client: PluginClientContext) {
             </SettingsCard>}
       </SettingsSection>
 
+      <SettingsSection title="Artifacts" info="An artifact belongs to the Claude account of the session that publishes it. Under ZeroSub that can be an account you can't open, so a short-lived helper on your main account publishes it instead. The agent gets the link as usual.">
+        <SettingsCard>
+          <SettingsSwitch label="Publish artifacts as the main account" hint={publishHint} value={settings.publishAsMain} disabled={saving}
+            onValueChange={(publishAsMain) => void save({ publishAsMain }, publishAsMain ? `Artifacts are published as ${publishTargetName}` : "Artifacts stay on the session's own account")} />
+          {publishMatters ? <SettingsSelect label="Publish as" hint="The account that owns the pages. Pages already published keep their owner."
+            value={publishTarget?.id ?? "main"} options={claudeAccounts.map((account) => ({ label: account.kind === "main" ? `${account.name} (main)` : account.name, value: account.id }))}
+            disabled={saving || !settings.publishAsMain}
+            onValueChange={(id) => { const account = claudeAccounts.find((candidate) => candidate.id === id); void save({ publishAsAccount: account?.kind === "main" ? null : id }, `Artifacts are published as ${nameAs(account)}`); }} /> : null}
+        </SettingsCard>
+      </SettingsSection>
+
       <SettingsSection title="Display" info="Hiding the row or the pill never turns a feature off. ⌘K Smart Session still opens the overview.">
         {display.status === "loading" ? <ActivityIndicator accessibilityLabel="Loading display settings" color={c.foregroundMuted} style={{ padding: 16 }} />
           : display.status !== "ready" ? <View style={{ gap: 8 }}>
@@ -233,23 +249,12 @@ export function makeSettings(client: PluginClientContext) {
         {display.status === "ready" && display.saveError ? <Text accessibilityRole="alert" style={{ color: c.statusDanger }}>{display.saveError}</Text> : null}
       </SettingsSection>
 
-      <SettingsSection title="Artifacts" info="An artifact belongs to the Claude account of the session that publishes it. Under ZeroSub that can be a seat account you can't open. This hands those publishes to a helper on your main account; the agent gets the link as usual.">
-        <SettingsCard>
-          <SettingsSwitch label="Publish artifacts as the main account" hint={publishHint} value={settings.publishAsMain} disabled={saving}
-            onValueChange={(publishAsMain) => void save({ publishAsMain }, publishAsMain ? `Artifacts are published as ${publishTargetName}` : "Artifacts stay on the session's own account")} />
-          {publishMatters ? <SettingsSelect label="Publish as" hint="The account that owns the pages. Pages published before keep their owner."
-            value={publishTarget?.id ?? "main"} options={claudeAccounts.map((account) => ({ label: account.kind === "main" ? `${account.name} (main)` : account.name, value: account.id }))}
-            disabled={saving || !settings.publishAsMain}
-            onValueChange={(id) => { const account = claudeAccounts.find((candidate) => candidate.id === id); void save({ publishAsAccount: account?.kind === "main" ? null : id }, `Artifacts are published as ${account?.name ?? "the main account"}`); }} /> : null}
-        </SettingsCard>
-      </SettingsSection>
-
       <SettingsSection title="Claude Code">
         <SettingsCard>
           <SettingsSwitch label="Register the hooks" hint={hooksHint} value={settings.installHooks} disabled={off}
             onValueChange={(installHooks) => void save({ installHooks }, installHooks ? "Hooks registered with Claude Code" : "Hooks removed from Claude Code")} />
           {report?.mcp === "unavailable" ? <SettingsRow label="MCP server not registered" hint="The claude command was not reachable from the daemon." /> : null}
-          {(report?.homes ?? []).map((home) => <SettingsRow key={home.accountId} label={`Hooks don't reach ZeroSub account ${home.accountId}`} hint={home.line} />)}
+          {(report?.homes ?? []).map((home) => <SettingsRow key={home.accountId} label={`Hooks don't reach ${accountName(home.accountId)}`} hint={homeHint[home.problem]} />)}
         </SettingsCard>
       </SettingsSection>
 
