@@ -85,6 +85,11 @@ export const PERCENT = /\d\s*%|%\s*\d/;
 export function hideStylesheet(withGrace: boolean): string {
   const cards = SCOPES.map((scope) => `[data-testid="${scope}"] [data-testid^="${BUILTIN_PREFIX}"]`);
   const rules = [`${cards.map((c) => `${c}[${DECIDED_ATTR}="hide"]`).join(",\n")} { display: none !important; }`];
+  // The Usage screen wraps each card in a bordered box: while the card is not shown, a box
+  // holding only that card gives up its own (border, padding, the list's gap) and keeps its child.
+  const unseen = withGrace ? `:not([${DECIDED_ATTR}="show"])` : `[${DECIDED_ATTR}="hide"]`;
+  const wrappers = SCOPES.map((scope) => `[data-testid="${scope}"] :has(> [data-testid^="${BUILTIN_PREFIX}"]${unseen}):not(:has(> * + *))`);
+  rules.push(`${wrappers.join(",\n")} { display: contents !important; }`);
   if (withGrace) {
     rules.push(`${cards.map((c) => `${c}:not([${DECIDED_ATTR}])`).join(",\n")} { animation: ${GRACE_ANIMATION} ${GRACE_MS}ms linear 1; }`);
     rules.push(`@keyframes ${GRACE_ANIMATION} { from, to { display: none; } }`);

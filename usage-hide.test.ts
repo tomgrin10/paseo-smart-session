@@ -64,6 +64,9 @@ test("the stylesheet holds built-in cards back only inside Paseo's usage lists, 
   assert.match(css, /\[data-testid="usage-modal-body"\] \[data-testid\^="usage-report-claude:"\]:not\(\[data-smart-session-usage\]\),/);
   assert.match(css, /:not\(\[data-smart-session-usage\]\) \{ animation: smart-session-usage-grace 1500ms linear 1; \}/);
   assert.match(css, new RegExp(`@keyframes ${GRACE_ANIMATION} \\{ from, to \\{ display: none; \\} \\}`));
+  // A box holding only the built-in card gives up its border and gap; a list holding more is never touched.
+  assert.match(css, /\[data-testid="usage-modal-body"\] :has\(> \[data-testid\^="usage-report-claude:"\]:not\(\[data-smart-session-usage="show"\]\)\):not\(:has\(> \* \+ \*\)\)/);
+  assert.match(css, /\{ display: contents !important; \}/);
   // Never our own cards, never anything outside the lists.
   assert.doesNotMatch(css, /smart-session:"/);
   assert.doesNotMatch(css, /^\[data-testid\^="usage-report-claude:"\]/m);
