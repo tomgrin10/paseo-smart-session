@@ -132,12 +132,11 @@ test("budget_status describes the agent's ZeroSub account and its room elsewhere
   assert.equal(main!.account.otherAccountsWithRoom, 1);
 });
 
-test("the agent-facing summary says ZeroSub goes first", () => {
-  const line = agentGuardSummary({ governor: "active", protected: true, thresholdPct: 100, autoResume: true, pauses: [], failsOver: true })[0]!;
-  assert.match(line, /ZeroSub goes first/);
-  assert.match(agentGuardSummary({ governor: "active", protected: true, thresholdPct: 100, autoResume: true, pauses: [] })[0]!, /pauses this session/);
+test("the agent-facing summary no longer says ZeroSub goes first", () => {
+  const line = agentGuardSummary({ governor: "active", protected: true, thresholdPct: 100, autoResume: true, pauses: [] })[0]!;
+  assert.doesNotMatch(line, /ZeroSub/);
+  assert.match(line, /holds this session/);
 });
-
 // The engine, with ZeroSub's view wired in as the plugin wires it.
 
 function nativeControl() {
@@ -191,17 +190,14 @@ test("an agent ZeroSub runs on an account with room is not paused when the CLI l
   assert.equal((await f.store.read()).pauses.length, 0);
 });
 
-test("the guard leaves a full account's agent to ZeroSub while another account has room", async t => {
+test("a full account's agent is held even while another ZeroSub account has room", async t => {
+  // ZeroSub switches only on the CLI's limit notice, which never comes with Extra usage on:
+  // leaving the agent to ZeroSub let it run on paid credits (2026-11-11). Held instead.
   const f = await fixture(t);
   await f.engine.tick(); await f.engine.tick();
-  assert.deepEqual(f.calls.stopped, [], "the CLI must reach the limit so ZeroSub can switch");
-  // Once no account has room, the guard is the fallback again.
-  f.zerosub(snapshotOf(stateFixture(), usageFixture(100)));
-  await f.engine.tick();
   assert.deepEqual(f.calls.stopped, ["a"]);
   assert.equal((await f.store.read()).pauses[0]!.phase, "waiting");
 });
-
 test("without ZeroSub nothing changes", async t => {
   const f = await fixture(t);
   f.zerosub(null);
@@ -218,7 +214,7 @@ test("an agent ZeroSub moved off a full account is not paused again", async t =>
   assert.deepEqual(f.calls.stopped, []);
 });
 
-test("a frozen session is released for ZeroSub once another account has room", async t => {
+test("a frozen session stays frozen when another account gets room", async t => {
   const f = await fixture(t, { native: true });
   f.zerosub(snapshotOf(stateFixture(), usageFixture(100)));
   await f.engine.tick();
@@ -226,14 +222,9 @@ test("a frozen session is released for ZeroSub once another account has room", a
   f.zerosub(snapshotOf(stateFixture(), usageFixture(0)));
   f.time(base + 60_000);
   await f.engine.tick();
-  assert.deepEqual(f.native.calls.released, [1234]);
-  const pause = (await f.store.read()).pauses[0]!;
-  assert.equal(pause.phase, "cancelled");
-  assert.match(pause.note!, /Released for ZeroSub/);
-  await f.engine.tick();
-  assert.deepEqual(f.native.calls.frozen, [1234], "not frozen again while ZeroSub can switch");
+  assert.deepEqual(f.native.calls.released, []);
+  assert.equal((await f.store.read()).pauses[0]!.phase, "waiting");
 });
-
 test("an interrupted session moved to an account with room continues without waiting for the old reset", async t => {
   const f = await fixture(t);
   f.zerosub(snapshotOf(stateFixture(), usageFixture(100)));

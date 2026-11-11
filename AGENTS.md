@@ -266,15 +266,26 @@
   sends exactly two kinds of message — the configured continuation after a confirmed reset, and the
   **Resume now** message a person asked for. It never compacts, never retries an unconfirmed send,
   and never sends into a session whose user message or turn changed.
+- **Invariant: while a protected session's account is at or over the pause threshold, no turn runs
+  in it unless a person explicitly resumes it** (Resume now, Release, Release and turn off, the
+  pill's switch, or turning Session Guard off). So a pause is a hold: idle live sessions are held as
+  well as running ones (`shared/guard/hold.ts`); a person's message joins a waiting hold instead of
+  cancelling it (foreground: its turn is interrupted at once; frozen Claude: the message waits in the
+  stopped CLI, RESEARCH.md "Messages to a stopped provider"); a session whose native ownership can't
+  be confirmed falls back to the foreground, never to no pause (the 2026-11-11 bug: two provider
+  processes with one `PASEO_AGENT_ID`, the session ran on Extra usage); and room on another ZeroSub
+  account never releases a hold. Never wake, open or signal a closed or dormant agent to hold it.
+  Every new path that skips a protected session at the limit is a bug against this invariant.
 - Process signals are identity-checked by PID birth time and limited to direct children of this
   daemon carrying the agent's `PASEO_AGENT_ID`. Never widen that.
 - Usage comes from Paseo's `provider.usage.list`, merged for Claude with the recorder's freshest
   accepted reading (`server/guard/usage.ts`). Only a reading with a provider `fetchedAt` may be
   merged: `resetReady` relies on it to prove a report is newer than the pause.
 - Both of those measure only the CLI's own login. When ZeroSub is enabled, `shared/guard/zerosub.ts`
-  measures each agent on its ZeroSub account and lets ZeroSub fail over first while another account
-  has room (`docs/session-guard.md`, "With ZeroSub"). ZeroSub only switches on the CLI's limit
-  notice, so a guard interrupt or SIGSTOP that comes first starves it. ZeroSub's files are read-only
+  measures each agent on its ZeroSub account (`docs/session-guard.md`, "With ZeroSub"). ZeroSub only
+  switches on the CLI's limit notice, which never comes while Extra usage is on, so the guard holds
+  an agent at its own account's limit even when another account has room, and continues it only when
+  its own (current) account has room again. ZeroSub's files are read-only
   and parsed defensively. Never copy an email or a generated (`autoLabel`) label out of them, and
   never open an account home.
 - The pill shows protection only while this process is the active governor; a pending pause keeps

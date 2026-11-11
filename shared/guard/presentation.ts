@@ -1,4 +1,17 @@
 import { isPending, timestamp, type Pause, type Policy } from "./policy.ts";
+import { messageWaiting } from "./hold.ts";
+
+/**
+ * What a held session is holding, in the words every view uses: nothing running yet,
+ * a message the person sent meanwhile, an interrupted turn, or frozen workers.
+ */
+export function heldWork(pause: Pause): "idle" | "message" | "frozen" | "interrupted" {
+  if (pause.idle) return "idle";
+  if (messageWaiting(pause)) return "message";
+  return pause.suspension ? "frozen" : "interrupted";
+}
+/** What happens at the reset, after "Held until 5:58 PM ·". */
+export const THEN = { idle: "", message: "your message runs then", frozen: "carries on in place then", interrupted: "continues then" } as const;
 
 export function pausedSessions(pauses: readonly Pause[], query = "") {
   const needle = query.trim().toLocaleLowerCase();
@@ -19,10 +32,11 @@ export function pausePresentation(pause: Pause, policy: Policy, now = Date.now()
     : !policy.autoResume ? "Automatic resume off" : "Will resume automatically after reset";
   return {
     title: pause.title?.trim() || "Untitled session", state, resetLabel,
-    coverage: pause.phase === "attention" ? "Check session state" : pause.suspension ? "Includes native subagents" : pause.restartRecovery ? "Saved conversation · waiting after restart" : "Interrupted turn",
-    actionLabel: pause.suspension ? "Release and turn off" : "Cancel continuation",
+    coverage: pause.phase === "attention" ? "Check session state" : pause.idle ? "Nothing running" : messageWaiting(pause) ? "Message waiting"
+      : pause.suspension ? "Includes native subagents" : pause.restartRecovery ? "Saved conversation · waiting after restart" : "Interrupted turn",
+    actionLabel: "Release and turn off",
     actionHint: pause.suspension ? "Resume these workers now and exclude this session from protection."
-      : "Leave this session for you to continue manually.",
+      : "Let this session go now and stop it pausing at the limit.",
   };
 }
 
@@ -41,21 +55,16 @@ export function agentGuardSummary(status: {
   governor: "off" | "active" | "deferred" | "error";
   protected: boolean; thresholdPct: number; autoResume: boolean;
   pauses: readonly { phase: Pause["phase"]; resetsAt: string | null }[];
-  /** ZeroSub can move this session to another account with room (see `shared/guard/zerosub.ts`). */
-  failsOver?: boolean;
 }): string[] {
   if (status.governor === "deferred") return ["Session Guard: run by another plugin on this host (likely the standalone Session Guard); this session's protection is not visible from here."];
   if (status.governor === "error") return ["Session Guard: status unavailable."];
   if (status.governor === "off" || !status.protected) return ["Session Guard: off for this session. Reaching the session limit will not pause it here; the provider will simply refuse requests until reset."];
   const pending = status.pauses.find(pause => ["pausing", "waiting", "resuming", "attention"].includes(pause.phase));
   if (pending) {
-    return [`Session Guard: this session is paused for the session limit (${pending.phase})${pending.resetsAt ? `; the window resets ${pending.resetsAt}` : ""}.`];
+    return [`Session Guard: this session is held at the session limit (${pending.phase})${pending.resetsAt ? `; it runs again once the window resets ${pending.resetsAt}` : ""}. Messages sent meanwhile wait for the reset unless a person resumes it.`];
   }
-  if (status.failsOver) {
-    return ["Session Guard: on, but ZeroSub goes first. When this session's account reaches its limit, ZeroSub moves it to another account with room and continues it — no need to stop early or hand off. Session Guard pauses it only once no account has room."];
-  }
-  return [`Session Guard: on. At ${status.thresholdPct}% of the session window Paseo pauses this session${status.autoResume
-    ? " and continues it in this same conversation once the window resets — no need to stop early or hand off because of the session limit."
+  return [`Session Guard: on. At ${status.thresholdPct}% of the session window Paseo holds this session until the window resets, unless a person resumes it${status.autoResume
+    ? ", then continues it in this same conversation — no need to stop early or hand off because of the session limit."
     : "; a person continues it after the reset."}`];
 }
 
@@ -99,18 +108,24 @@ export function pauseOwnerNote(status: GovernorView): string | null {
  */
 export function pausePill(pause: Pause, policy: Policy, now = Date.now(), clock: (iso: string) => string = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })) {
   const reset = timestamp(pause.anchorResetsAt);
-  // The title is also the phone sheet's title: one short sentence, the detail is in the sheet.
+  // The title is also the phone sheet's title, right above the popover's "Held until …"
+  // headline: where that headline shows, the title stays neutral so the sheet doesn't say it twice.
   if (pause.phase === "attention") return { label: "Check session", title: "Paused, then something changed · check it", tone: "danger" as const };
   if (pause.phase === "pausing") return { label: "Pausing…", title: "Pausing at the session limit", tone: "warning" as const };
   if (pause.phase === "resuming") return { label: "Resuming…", title: "The window reset · continuing now", tone: "warning" as const };
   if (pause.demo) return { label: "Paused · test", title: "Test pause · waits for you", tone: "warning" as const };
-  if (!policy.enabled) return { label: "Paused · on hold", title: "Paused · on hold while Pause at the limit is off", tone: "warning" as const };
-  if (reset === null) return { label: "Paused", title: "Paused at the limit · reset time not reported yet", tone: "warning" as const };
+  if (!policy.enabled) return { label: "On hold", title: "On hold while Pause at the limit is off", tone: "warning" as const };
+  // The composer cuts a pill label at about 14 characters, and the amber pause glyph already
+  // says it is held: the label is the moment, the title says the rest.
+  if (reset === null) return { label: "Held", title: "Held at the limit · reset time not reported yet", tone: "warning" as const };
   const at = clock(pause.anchorResetsAt!);
-  if (reset <= now) return { label: "Paused · reset due", title: `Paused at the limit · reset was ${at}`, tone: "warning" as const };
-  return policy.autoResume
-    ? { label: `Resumes ${at}`, title: `Paused at the limit · resumes ${at}`, tone: "warning" as const }
-    : { label: `Paused · resets ${at}`, title: `Paused at the limit · resets ${at}, continue by hand`, tone: "warning" as const };
+  if (reset <= now) return { label: "Reset due", title: `Held at the limit · reset was ${at}, waiting for a fresh reading`, tone: "warning" as const };
+  const work = heldWork(pause);
+  // An idle hold just lets go at the reset, so it reads the same with automatic continuation off.
+  if (policy.autoResume || work === "idle") {
+    return { label: `Until ${at}`, title: "Held at the session limit", tone: "warning" as const };
+  }
+  return { label: `Resets ${at}`, title: "Held at the session limit · continue by hand", tone: "warning" as const };
 }
 
 /**
@@ -129,8 +144,8 @@ export function pausedLead(pending: readonly Pause[], autoResume: boolean, now: 
   const next = resets[0] ?? null;
   if (waiting.length === 0) return { title: `${n(stuck, "paused session needs", "paused sessions need")} a look`, tone, shared, next };
   const look = stuck > 0 ? ` · ${stuck} ${stuck === 1 ? "needs" : "need"} a look` : "";
-  if (shared !== null) return { title: (autoResume ? `${n(waiting.length, "session resumes", "sessions resume")} at ${clock(shared)}` : `${n(waiting.length, "session waits", "sessions wait")} for the ${clock(shared)} reset`) + look, tone, shared, next };
-  if (next !== null) return { title: `${n(waiting.length, "session", "sessions")} paused · next ${autoResume ? "resumes" : "reset"} at ${clock(next)}${look}`, tone, shared, next };
+  if (shared !== null) return { title: (autoResume ? `${n(waiting.length, "session", "sessions")} held until ${clock(shared)}` : `${n(waiting.length, "session waits", "sessions wait")} for the ${clock(shared)} reset`) + look, tone, shared, next };
+  if (next !== null) return { title: `${n(waiting.length, "session", "sessions")} held · next ${autoResume ? "runs" : "reset"} at ${clock(next)}${look}`, tone, shared, next };
   return { title: `${n(waiting.length, "session waits", "sessions wait")} for a fresh reading${look}`, tone, shared, next };
 }
 
@@ -140,6 +155,20 @@ export function pausedLead(pending: readonly Pause[], autoResume: boolean, now: 
  */
 export const PAUSE_ACTIONS = {
   resume: { label: "Resume now", busy: "Resuming…", icon: "Play", hint: "Continues before the reset and stops this session pausing at the limit. The provider may still refuse work until the reset." },
-  dismiss: { label: "Dismiss pause", busy: "Dismissing…", hint: "Lets the session go without sending a message and stops it pausing at the limit." },
-  note: "Resume now stops this session pausing at the limit · Dismiss sends nothing",
+  dismiss: { label: "Release", busy: "Releasing…", hint: "Lets the session go without sending a message and stops it pausing at the limit." },
 } as const;
+
+/**
+ * The one line under the two actions: what each does to what is held, as the engine
+ * does it. A frozen session runs on SIGCONT either way (its message with it); a
+ * foreground hold runs again only through Resume now's message.
+ */
+export function actionNote(pause: Pause): string {
+  const off = "both turn off Pause at the limit for this session";
+  switch (heldWork(pause)) {
+    case "idle": return `Either lets this session run now and turns off Pause at the limit for it`;
+    case "message": return pause.suspension ? `Either runs your message now · ${off}` : `Resume now runs your message now · Release drops it · ${off}`;
+    case "frozen": return `Either lets it carry on now · ${off}`;
+    case "interrupted": return `Resume now continues it now · Release sends nothing · ${off}`;
+  }
+}

@@ -7,7 +7,7 @@ import { governedPause, sessionProtection, type GuardStatus } from "./client/gua
 import { describePill, pillVisible } from "./client/pill-view.ts";
 import { PAUSED_SCREEN, SETTINGS_SCREEN } from "./client/screens.ts";
 import { PauseSchema, PolicySchema, type Pause } from "./shared/guard/policy.ts";
-import { pausePill, pausedLead } from "./shared/guard/presentation.ts";
+import { actionNote, pausePill, pausedLead } from "./shared/guard/presentation.ts";
 import { checkTiming, timingOf } from "./shared/guard/timing.ts";
 
 const NOW = Date.parse("2026-11-05T15:00:00Z");
@@ -49,15 +49,19 @@ test("the quiet case stays quiet; only an excluded session says so, in words", (
 
 test("paused, the pill becomes the pause and leads with the moment it comes back", () => {
   const view = describePill("a", agent, pills, status({ pauses: [pause()] }), NOW);
-  assert.match(view.label, /^Resumes /);
-  assert.match(view.title, /^Paused at the limit · resumes /);
+  assert.match(view.label, /^Until /);
+  assert.equal(view.title, "Held at the session limit", "the title is the phone sheet's title, above the popover's own \"Held until …\"");
   const policy = PolicySchema.parse({ enabled: true });
-  assert.equal(pausePill(pause(), policy, NOW, clock).label, "Resumes 17:58");
-  assert.equal(pausePill(pause(), { ...policy, autoResume: false }, NOW, clock).label, "Paused · resets 17:58");
-  assert.equal(pausePill(pause({ anchorResetsAt: "2026-11-05T14:00:00Z" }), policy, NOW, clock).label, "Paused · reset due");
-  assert.equal(pausePill(pause({ anchorResetsAt: null }), policy, NOW, clock).label, "Paused");
+  assert.equal(pausePill(pause(), policy, NOW, clock).label, "Until 17:58");
+  for (const p of [pause({ idle: true }), pause({ lastUserMessageAt: new Date(NOW).toISOString() }), pause({ suspension: { rootPid: 2, processes: [] } })]) {
+    assert.doesNotMatch(pausePill(p, policy, NOW, clock).title, /17:58/, "the label carries the time; the sheet title must not repeat it");
+  }
+  assert.equal(pausePill(pause(), { ...policy, autoResume: false }, NOW, clock).label, "Resets 17:58");
+  assert.equal(pausePill(pause({ idle: true }), { ...policy, autoResume: false }, NOW, clock).label, "Until 17:58", "an idle hold just lets go at the reset");
+  assert.equal(pausePill(pause({ anchorResetsAt: "2026-11-05T14:00:00Z" }), policy, NOW, clock).label, "Reset due");
+  assert.equal(pausePill(pause({ anchorResetsAt: null }), policy, NOW, clock).label, "Held");
   assert.equal(pausePill(pause({ phase: "attention" }), policy, NOW, clock).tone, "danger");
-  assert.equal(pausePill(pause(), { ...policy, enabled: false }, NOW, clock).label, "Paused · on hold");
+  assert.equal(pausePill(pause(), { ...policy, enabled: false }, NOW, clock).label, "On hold");
   // A clock, not a countdown: the label is the same a minute later, so the pill is not re-sent.
   assert.equal(pausePill(pause(), policy, NOW + 60_000, clock).label, pausePill(pause(), policy, NOW, clock).label);
 });
@@ -74,12 +78,12 @@ test("the overview lead says what is paused and when it comes back", () => {
   const ms = (value: number) => new Date(value).toISOString().slice(11, 16);
   assert.equal(pausedLead([], true, NOW, ms), null);
   const two = [pause(), pause({ id: "q", agentId: "b" })];
-  assert.equal(pausedLead(two, true, NOW, ms)!.title, "2 sessions resume at 17:58");
+  assert.equal(pausedLead(two, true, NOW, ms)!.title, "2 sessions held until 17:58");
   assert.equal(pausedLead(two, false, NOW, ms)!.title, "2 sessions wait for the 17:58 reset");
   const stuck = pausedLead([...two, pause({ id: "r", agentId: "c", phase: "attention" })], true, NOW, ms)!;
   assert.equal(stuck.tone, "danger");
   assert.match(stuck.title, /1 needs a look/);
-  assert.equal(pausedLead([pause(), pause({ id: "q", agentId: "b", anchorResetsAt: "2026-11-05T19:00:00Z" })], true, NOW, ms)!.title, "2 sessions paused · next resumes at 17:58");
+  assert.equal(pausedLead([pause(), pause({ id: "q", agentId: "b", anchorResetsAt: "2026-11-05T19:00:00Z" })], true, NOW, ms)!.title, "2 sessions held · next runs at 17:58");
 });
 
 test("limit timing is checked field by field, and an untouched draft saves the same values", () => {
@@ -95,7 +99,7 @@ test("limit timing is checked field by field, and an untouched draft saves the s
 
 test("Command Center: one name, the old keywords still find it, paused lands on the list", async () => {
   const items = commandItems();
-  assert.deepEqual(items.map((item) => item.title), ["Smart Session", "Smart Session: settings", "Smart Session: paused sessions", "Smart Session: show or hide the pill"]);
+  assert.deepEqual(items.map((item) => item.title), ["Smart Session", "Smart Session: settings", "Smart Session: held sessions", "Smart Session: show or hide the pill"]);
   for (const item of items) assert.ok(String(item.title).startsWith("Smart Session"));
   const words = items.flatMap((item) => item.keywords ?? []);
   for (const word of ["quota", "limit", "pause", "resume", "guard", "session guard", "display"]) assert.ok(words.includes(word), word);
@@ -121,4 +125,15 @@ test("show or hide the pill flips the one visible switch, turning the display ga
   await toggle.onSelect({ rpc } as never);
   assert.equal(showPill, true);
   assert.deepEqual(writes, [{ values: { enable_composer_button: true, showSidebar: true, replaceUsageCard: true }, revision: "1" }]);
+});
+
+test("the note under Resume now and Release says what each does to what is held, as the engine does it", () => {
+  const message = { lastUserMessageAt: new Date(NOW).toISOString() };
+  // Foreground: the message's turn was interrupted; only Resume now's message runs it again.
+  assert.equal(actionNote(pause(message)), "Resume now runs your message now · Release drops it · both turn off Pause at the limit for this session");
+  // Frozen: SIGCONT runs the waiting message either way.
+  assert.equal(actionNote(pause({ ...message, suspension: { rootPid: 2, processes: [] } })), "Either runs your message now · both turn off Pause at the limit for this session");
+  assert.match(actionNote(pause({ suspension: { rootPid: 2, processes: [] } })), /^Either lets it carry on now/);
+  assert.match(actionNote(pause()), /^Resume now continues it now · Release sends nothing/);
+  assert.match(actionNote(pause({ idle: true })), /^Either lets this session run now/);
 });

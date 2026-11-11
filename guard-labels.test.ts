@@ -48,8 +48,15 @@ test("short-label migration removes only the previous Guard assignment and journ
   const f = await fixture(t); const s = await f.store.read();
   s.labelledWorkspaces = ["w"]; await f.store.write(s);
   await f.labels().refresh();
-  assert.deepEqual(f.calls.map(c => [c.assigned, c.label.name]), [[false, "Paused by Session Guard"], [true, "Paused"]]);
-  assert.equal((await f.store.read()).workspaceLabelName, "Paused");
+  assert.deepEqual(f.calls.map(c => [c.assigned, c.label.name]), [[false, "Paused by Session Guard"], [true, "Held"]]);
+  assert.equal((await f.store.read()).workspaceLabelName, "Held");
+});
+test("the Paused label of an earlier version becomes Held: removed under its old name, then assigned again", async t => {
+  const f = await fixture(t); const s = await f.store.read();
+  s.labelledWorkspaces = ["w"]; s.workspaceLabelName = "Paused"; await f.store.write(s);
+  await f.labels().refresh();
+  assert.deepEqual(f.calls.map(c => [c.assigned, c.label.name]), [[false, "Paused"], [true, "Held"]]);
+  assert.equal((await f.store.read()).workspaceLabelName, "Held");
 });
 test("moving a paused session keeps the other workspace paused until its final wait is cleared", async t => {
   const f = await fixture(t); await f.labels().refresh();

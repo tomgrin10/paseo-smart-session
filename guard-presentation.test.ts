@@ -25,7 +25,7 @@ test("overview distinguishes due resets, held continuations, and native manual r
 const data: TimelineData = { pauseId: "p", event: "paused", at: pause.pausedAt, provider: "claude", native: true, autoResume: true, resetAt: pause.anchorResetsAt, usedPct: 100, note: null };
 test("timeline language states actual pause coverage, quota/reset, and distinct recovery outcomes", () => {
   const paused = timelinePresentation(data);
-  assert.equal(paused.title, "Paused for session limit"); assert.match(paused.detail, /100%/); assert.match(paused.detail, /native subagents/); assert.match(paused.detail, /Expected reset/);
+  assert.equal(paused.title, "Held at the session limit"); assert.match(paused.detail, /100%/); assert.match(paused.detail, /native subagents/); assert.match(paused.detail, /Expected reset/);
   assert.match(timelinePresentation({ ...data, autoResume: false }).detail, /continue manually/);
   assert.equal(timelinePresentation({ ...data, event: "resumed" }).title, "Session resumed");
   assert.equal(timelinePresentation({ ...data, event: "released", native: false }).title, "Automatic resume cancelled");
@@ -47,7 +47,7 @@ test("publisher reconciles a lost append acknowledgement by ID before retrying",
 test("dismissal history states no message was sent and distinguishes existing native work", () => {
   for (const native of [true, false]) {
     const dismissed = timelinePresentation({ ...data, event: "released", dismissed: true, native });
-    assert.equal(dismissed.title, "Pause dismissed"); assert.match(dismissed.detail, /No message was sent/);
+    assert.equal(dismissed.title, "Released by you"); assert.match(dismissed.detail, /No message was sent/);
     assert.match(dismissed.detail, /Protection is off/); assert.equal(dismissed.detail.includes("current work may continue"), native);
   }
 });
@@ -65,7 +65,7 @@ test("an agent is told what will happen at the limit, and never offered a way ro
   assert.match(agentGuardSummary({ ...base, governor: "off" })[0], /off for this session/);
   assert.match(agentGuardSummary({ ...base, governor: "deferred" })[0], /another plugin/);
   assert.match(agentGuardSummary({ ...base, pauses: [{ phase: "resumed", resetsAt: null }] })[0], /^Session Guard: on/);
-  assert.match(agentGuardSummary({ ...base, pauses: [{ phase: "waiting", resetsAt: "2026-10-06T18:00:00Z" }] })[0], /paused .* resets 2026-10-06T18:00:00Z/);
+  assert.match(agentGuardSummary({ ...base, pauses: [{ phase: "waiting", resetsAt: "2026-10-06T18:00:00Z" }] })[0], /held .* resets 2026-10-06T18:00:00Z/);
 });
 
 test("views say why nothing is paused from here, and whose pauses the shared list shows", () => {

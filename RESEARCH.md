@@ -516,3 +516,35 @@ sessions with explicit caller identity and keeps provider-hook reconciliation
 separate. The existing global MCP installer remains an explicit compatibility
 operation; normal load and settings refresh do not call it. Older global entries
 are preserved, and no usage history, enrolment or checkpoints are migrated.
+
+## Messages to a stopped provider (Paseo 0.16, 2026-11-11)
+
+Session Guard holds an idle session by freezing its provider process (SIGSTOP), so it matters what
+Paseo does with a message sent to that session. Measured on isolated 0.16 daemons (temp
+`PASEO_HOME`, random port) with real signed-in CLIs and a trivial prompt: the agent answers "READY",
+its one provider process (a direct daemon child carrying `PASEO_AGENT_ID`, state `S` while idle) and
+every descendant are SIGSTOPped, a message asking for "PINEAPPLE" is sent with the daemon client's
+`sendMessage`, the agent is watched while stopped, then SIGCONTed.
+
+- **Claude CLI 2.1.322** (0.16.0-beta.1 for 60 s, 0.16.0 for 900 s): the send is accepted at once
+  (12 ms / 35 ms). Paseo immediately shows the agent `running` with a new `activeTurn` and the new
+  `lastUserMessageAt`, and the user message is in the timeline. Nothing errors or times out while
+  stopped. After SIGCONT the turn runs (the reply arrived within about 3 s) and the agent returns to
+  `idle`. The message waits in the CLI's stdin pipe. A held message is visible and safe.
+- **Codex CLI 0.167.0** (0.16.0-beta.1, 60 s): the send does not return. The client's request times
+  out after 60 s ("Timeout waiting for message"), so the sender's app reports a failure. Paseo keeps
+  the agent `idle` with no turn, no new `lastUserMessageAt` and no user message in the timeline
+  while stopped. After SIGCONT the turn starts anyway and the reply arrives. The message is
+  invisible and reported as failed while it still runs later: not safe.
+
+So only idle Claude sessions are frozen to hold them (`shared/guard/hold.ts` `freezesIdle`); idle
+Codex sessions (and every other provider) are held in the foreground, where a turn that starts is
+interrupted at once and continued after the reset. A message to a *running* Codex session that is
+frozen behaves as above. That predates holds: the old pause also left it frozen until the next check.
+
+Paseo has no blocking hook before a turn: `agent.turn.before` (alias `agent.turn_started`) is
+declared `waits: false` in `@getpaseo/plugin` 0.16 `server/lifecycle.d.ts`, so a plugin cannot
+refuse or delay a turn. The foreground hold therefore reacts to the notification by running a check
+at once, with the regular poll as the fallback. A turn that starts in a foreground hold can run for
+that moment before it is interrupted. Evidence: `~/paseo-harness/guard-hold/stopped-send*.log`
+(local harness, not in the repo).

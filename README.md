@@ -104,7 +104,7 @@ Without ZeroSub, with one Claude account, or for a session already on the main a
 
 When the provider's session window is spent, Smart Session pauses running sessions instead of letting them fail, and continues the same conversations once the window resets, even with the app closed. It is **off by default**: turn it on from the overview or in settings. It was the standalone [Session Guard](https://github.com/tomgrin10/paseo-session-guard) plugin, and its per-session choices and waiting pauses carry over.
 
-On Linux, Claude and Codex sessions pause in place together with their native subagents; elsewhere the turn is interrupted and one continuation is sent after the reset. A paused session's pill, its chat and its workspace say so: the chat gets a card with the time it resumes, **Resume now** and **Dismiss pause**, which folds into one line once the pause ends. For Claude, a reset is confirmed from whichever is fresher, Paseo's cached usage or Smart Session's own recorder.
+On Linux, Claude and Codex sessions pause in place together with their native subagents; elsewhere the turn is interrupted and one continuation is sent after the reset. A paused session's pill, its chat and its workspace say so: the chat gets a card with the time it resumes, **Resume now** and **Release**, which folds into one line once the pause ends. For Claude, a reset is confirmed from whichever is fresher, Paseo's cached usage or Smart Session's own recorder.
 
 ![A pause card in the chat with the time it resumes, Resume now and Dismiss pause, and the Smart Session screen leading with 2 sessions resume at 6:27 AM above the list of paused sessions](docs/media/smart-session-guard.png)
 
@@ -130,7 +130,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | | Sessions | Every session | Or only the ones you turn on from their pill |
 | | Continue after the reset | On | Off, you continue each one by hand |
 | | Include native subagents | On | Freeze nested workers too (Linux) |
-| | Label paused workspaces | On | An amber Paused label in the sidebar |
+| | Label held workspaces | On | An amber Held label in the sidebar |
 | Artifacts | Publish artifacts as the main account | On | With ZeroSub: pages from sessions on other Claude accounts are published on the main one |
 | | Publish as | Main account | Shown with more than one Claude account |
 | Display | Sidebar row | On | |
