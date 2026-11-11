@@ -52,6 +52,12 @@ jobs:
         run: |
           package_version="$(node -p "require('./package.json').version")"
           test "$RELEASE_TAG" = "v$package_version"
+      # Every release carries real notes (release-notes.mjs): a beta's changes/ fragments, an rc's or
+      # stable's curated CHANGELOG.md section. Empty or boilerplate notes stop here, before npm.
+      - name: Require release notes
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: node release-notes.mjs body "$RELEASE_TAG" > /dev/null
       # Betas only by default: a prerelease goes to `beta`; a stable version refuses unless
       # someone ran this by hand with allow_latest=true (release-tag.mjs).
       - name: Choose the npm dist-tag
@@ -139,3 +145,43 @@ jobs:
           if (tags?.[distTag] !== pkg.version) { console.error(`::error::${spec} is not on the ${distTag} dist-tag.`); process.exit(1); }
           if (distTag === "beta" && tags.latest === pkg.version) { console.error(`::error::${spec} is a beta but npm's latest points at it.`); process.exit(1); }
           JS
+
+  # The GitHub release, once npm has the package: one layout for every release (release-notes.mjs).
+  # A release someone already created by hand gets the same body, so none drifts from the format.
+  release:
+    name: Publish the GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Create or update the release with its notes
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          node release-notes.mjs body "$RELEASE_TAG" > "$notes"
+          title="$(node release-notes.mjs title "$RELEASE_TAG")"
+          # A prerelease (beta or rc) is a GitHub prerelease and never "Latest".
+          case "$RELEASE_TAG" in
+            *-*) channel=(--prerelease --latest=false) ;;
+            *) channel=(--latest) ;;
+          esac
+          if gh release view "$RELEASE_TAG" --json tagName > /dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "$title" --notes-file "$notes" "${channel[@]}"
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --title "$title" --notes-file "$notes" "${channel[@]}"
+          fi
+          gh release view "$RELEASE_TAG" --json body --jq .body | grep -q "^## What's new" || { echo "::error::The release body is missing its notes."; exit 1; }

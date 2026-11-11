@@ -349,9 +349,26 @@ when you have not looked, and never describe a screenshot you did not take.
   (`version.test.ts` fails until they match), plus the pinned npm and Git versions in the README
   install section. Keep badge styles consistent; update the Paseo minimum only when
   compatibility changes.
-- Release notes must include a short summary, user-visible changes, the npm install
-  command, the minimum Paseo version, and any breaking, migration, security, or upgrade
-  considerations. Omit empty sections.
+- **Release notes: one format for every GitHub release**, shared with Tom's other plugins (Follow-up). The publish
+  workflow builds the body with `release-notes.mjs` from git at the tag and creates (or rewrites) the GitHub release,
+  titled `Smart Session vX.Y.Z`, after npm is verified. Never write a release body by hand. The layout:
+  `## What's new` (the notes), `## Install` (install and update commands; a prerelease also names npm's `beta`
+  dist-tag and the current stable; then the Paseo minimum), and one line saying the release passed verification.
+  - **A PR that changes something users see adds `changes/<branch>.md`**: "- " bullets saying what the user gets
+    (rules in `changes/README.md`; `npm run verify` lints them: no em dash, emoji, PR numbers, or bullet over 240
+    characters).
+  - **A beta's notes** are the fragments its tag added since the previous release tag. A beta that changes nothing a
+    user runs says "Maintenance release; no user-visible changes."; one that changes runtime code with no fragment
+    fails the release.
+  - **rc and stable notes are curated, never a dump.** Before an rc or stable, run `node release-notes.mjs prepare
+    X.Y.Z`: it moves the pending fragments into a new `## X.Y.Z (date)` section of `CHANGELOG.md` and deletes them.
+    Then rewrite that section by hand: a one- or two-sentence lead, bullets grouped under `### <what the user gets>`,
+    biggest first, and a closing `### Upgrading from X.Y` for breaking changes, migrations, security notes or manual
+    steps. Every `X.Y.Z-rc.N` carries X.Y.Z's section. Ask Tom to read it with the permission request.
+  - The workflow refuses, before anything reaches npm, when the notes are missing, empty or boilerplate only ("Bug
+    fixes", "See commits"). `node release-notes.mjs body vX.Y.Z` prints the body it will publish; `release-notes.test.ts`
+    holds the rules and pins the workflow to them.
+  - In-app What's new stays for majors only; the GitHub release always carries the notes.
 - Before pushing the release tag, require a clean current `main`, verified GitHub and npm ownership,
   passing checks, `npm pack --dry-run`, a successful plugin reload, clean logs, and a secret audit
   of the exact release snapshot.
@@ -370,8 +387,8 @@ when you have not looked, and never describe a screenshot you did not take.
   before it's tagged: an rc (`X.Y.Z-rc.N`), a stable version, npm `latest` (the workflow's `allow_latest` run), or a
   hotfix (a hotfix skips the beta, not the permission). Ask him, and quote his OK in the release commit body.
 - Wait for the publish workflow and npm registry propagation, then verify installation with
-  `paseo plugin install npm:paseo-smart-session@X.Y.Z` on Paseo 0.9 or newer. Title the GitHub
-  release `paseo-smart-session vX.Y.Z`, and test the public tag-pinned installer and badge URLs.
+  `paseo plugin install npm:paseo-smart-session@X.Y.Z` on Paseo 0.9 or newer. Check the GitHub release the
+  workflow published, and test the public tag-pinned installer and badge URLs.
 
 Never move or rewrite a published tag. Ship corrections as a new patch release.
 

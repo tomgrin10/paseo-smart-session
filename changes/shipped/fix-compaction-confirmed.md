@@ -1,0 +1,3 @@
+- A compaction counts only once it is confirmed. A `/compact` that was cancelled or failed no longer reads as a compaction.
+- Smart Compact no longer tells a session it "refilled within minutes of its last compaction" when no compaction ran.
+- The popover's Last compaction says "Didn't compact" or "Not confirmed" for those.

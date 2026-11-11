@@ -1,0 +1,5 @@
+- Smart Session's usage card is never older than Paseo's own Claude card: it takes Paseo's latest reading for the same login.
+- Paseo's card steps aside before it is ever drawn, now on the Usage screen too, and leaves no empty box behind.
+- The pool row names the limit that runs out ("Both accounts · Session runs out in 2h 38m").
+- A window that runs out before its reset keeps the reset in its own row ("Session resets · in 2h 10m").
+- The plan tier ("Team 5x") and Extra usage come over from Paseo's card for the same login.

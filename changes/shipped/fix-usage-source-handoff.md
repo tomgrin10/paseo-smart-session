@@ -1,0 +1,1 @@
+- In the usage card, "Then · X takes over" sits on the account whose work moves, and "Takes over · when Y runs out" on the account that receives it. Before, the CLI login's card could name itself.
