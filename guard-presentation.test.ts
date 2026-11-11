@@ -65,7 +65,7 @@ test("an agent is told what will happen at the limit, and never offered a way ro
   assert.match(agentGuardSummary({ ...base, governor: "off" })[0], /off for this session/);
   assert.match(agentGuardSummary({ ...base, governor: "deferred" })[0], /another plugin/);
   assert.match(agentGuardSummary({ ...base, pauses: [{ phase: "resumed", resetsAt: null }] })[0], /^Session Guard: on/);
-  assert.match(agentGuardSummary({ ...base, pauses: [{ phase: "waiting", resetsAt: "2026-10-06T18:00:00Z" }] })[0], /paused .* resets 2026-10-06T18:00:00Z/);
+  assert.match(agentGuardSummary({ ...base, pauses: [{ phase: "waiting", resetsAt: "2026-10-06T18:00:00Z" }] })[0], /held .* resets 2026-10-06T18:00:00Z/);
 });
 
 test("views say why nothing is paused from here, and whose pauses the shared list shows", () => {

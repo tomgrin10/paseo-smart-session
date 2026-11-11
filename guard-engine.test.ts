@@ -244,12 +244,14 @@ test("native Claude and Codex workers resume their existing turn without cancell
     assert.equal((await f.store.read()).pauses[0].phase, "resumed");
   }
 });
-test("idle parents with running native background subagents are suspended; idle parents without them are skipped", async t => {
-  const f = await nativeFixture(t); f.agents[0].status = "idle"; f.agents[0].activeTurn = null;
-  await f.engine.tick(); assert.deepEqual(f.native.calls.frozen, []);
-  f.client.listProviderSubagents = async () => ({ subagents: [{ status: "running" }, { status: "completed" }] });
-  await f.engine.tick(); assert.deepEqual(f.native.calls.frozen, [1234]);
-  f.reset(); await f.engine.tick(); assert.deepEqual(f.native.calls.released, [1234]); assert.deepEqual(f.calls.sent, []);
+test("idle parents with running native background subagents are suspended, and so are idle ones without them", async t => {
+  for (const background of [true, false]) {
+    const f = await nativeFixture(t); f.agents[0].status = "idle"; f.agents[0].activeTurn = null;
+    if (background) f.client.listProviderSubagents = async () => ({ subagents: [{ status: "running" }, { status: "completed" }] });
+    await f.engine.tick(); assert.deepEqual(f.native.calls.frozen, [1234]);
+    assert.equal((await f.store.read()).pauses[0].idle, background ? undefined : true);
+    f.reset(); await f.engine.tick(); assert.deepEqual(f.native.calls.released, [1234]); assert.deepEqual(f.calls.sent, []);
+  }
 });
 test("native opt-out and manual release resume workers and prevent immediate re-freezing", async t => {
   for (const action of ["opt-out", "release"]) {
@@ -306,17 +308,19 @@ test("partial native release failures retry only identity-safe signals and never
   await f.engine.tick(); assert.equal((await f.store.read()).pauses[0].phase, "resuming");
   await f.engine.tick(); assert.equal((await f.store.read()).pauses[0].phase, "resumed"); assert.deepEqual(f.calls.sent, []);
 });
-test("ownership ambiguity does not cancel the foreground or prevent protecting other sessions", async t => {
+test("ownership ambiguity falls back to the foreground for that session and still protects the others natively", async t => {
   const f = await nativeFixture(t); f.agents.push({ ...f.agents[0], id: "b" });
   const discover = f.native.controller.discover;
   f.native.controller.discover = async (agent, pid) => agent.id === "a" ? null : discover(agent, pid);
-  await f.engine.tick(); assert.deepEqual(f.calls.stopped, []); assert.deepEqual(f.native.calls.frozen, [1234]);
-  assert.match(f.engine.error!, /ownership/); assert.equal((await f.store.read()).pauses[0].agentId, "b");
+  await f.engine.tick(); assert.deepEqual(f.calls.stopped, ["a"]); assert.deepEqual(f.native.calls.frozen, [1234]);
+  assert.match(f.engine.error!, /ownership/);
+  const state = await f.store.read();
+  assert.equal(state.pauses.find(p => p.agentId === "a")!.suspension, undefined);
+  assert.ok(state.pauses.find(p => p.agentId === "b")!.suspension);
 });
-test("a manual new message or stopped turn releases suspended workers without scheduling continuation", async t => {
-  for (const action of ["message", "stop", "external-release"]) {
+test("a stopped turn or an external release lets suspended workers go without scheduling continuation", async t => {
+  for (const action of ["stop", "external-release"]) {
     const f = await nativeFixture(t); await f.engine.tick();
-    if (action === "message") { f.agents[0].lastUserMessageAt = iso(base + 1000); f.agents[0].status = "idle"; f.agents[0].activeTurn = null; }
     if (action === "stop") { f.agents[0].status = "idle"; f.agents[0].activeTurn = null; }
     if (action === "external-release") { f.native.stopped.clear(); f.agents[0].status = "idle"; f.agents[0].activeTurn = null; }
     await f.engine.tick(); assert.deepEqual(f.native.calls.released, [1234]); assert.deepEqual(f.calls.sent, []);
@@ -419,10 +423,9 @@ test("missing reset time adopts a fresh below-limit reading after grace", async 
   f.usage({ fetchedAt: iso(base + 31_000), providers: [{ providerId: "claude", status: "available", windows: [{ id: "five_hour", remainingPct: 100 }] }] });
   await f.engine.tick(); assert.deepEqual(f.calls.sent, ["a"]);
 });
-test("manual new message, closure, archival, removal, or provider switch cancels continuation", async t => {
-  for (const change of ["message", "closed", "archived", "removed", "provider"]) {
+test("closure, archival, removal, or provider switch cancels continuation", async t => {
+  for (const change of ["closed", "archived", "removed", "provider"]) {
     const f = await fixture(t); await f.engine.tick();
-    if (change === "message") f.agents[0].lastUserMessageAt = iso(base + 1000);
     if (change === "closed") f.agents[0].status = "closed";
     if (change === "archived") f.agents[0].archivedAt = iso(base + 1000);
     if (change === "removed") f.agents.length = 0;
@@ -527,11 +530,10 @@ test("confirmed native pauses survive abrupt and graceful daemon restarts, then 
   }
 });
 test("a living externally released worker, changed conversation, user stop, and opt-out never become restart recovery", async t => {
-  for (const reason of ["external", "message", "stop", "opt-out"]) {
+  for (const reason of ["external", "stop", "opt-out"]) {
     const f = await nativeFixture(t); await f.engine.tick();
     f.native.stopped.clear(); f.native.controller.alive = async () => reason === "external";
     f.agents[0].status = "idle"; f.agents[0].activeTurn = null;
-    if (reason === "message") f.agents[0].lastUserMessageAt = iso(base + 1000);
     if (reason === "stop") await f.engine.turnEnded("a", "t1", "canceled");
     if (reason === "opt-out") await f.engine.setProtection("a", false);
     await f.engine.tick(); f.reset(); await f.engine.tick();
@@ -590,5 +592,144 @@ test("closing or archiving a session in the same daemon does not authorize reope
     if (action === "archived") f.agents[0].archivedAt = iso(base + 1000);
     await f.engine.tick(); f.reset(); await f.engine.tick();
     assert.equal((await f.store.read()).pauses[0].phase, "cancelled"); assert.deepEqual(f.calls.sent, []);
+  }
+});
+test("a running session at the limit whose native ownership can't be confirmed is still paused, in the foreground", async t => {
+  // Live 2026-11-11: two provider processes carried the agent's id, discover() returned null,
+  // and the session ran on past the limit with no pause at all.
+  const f = await nativeFixture(t); f.native.controller.discover = async () => null;
+  await f.engine.tick();
+  assert.deepEqual(f.calls.stopped, ["a"], "the turn is interrupted");
+  assert.deepEqual(f.native.calls.frozen, [], "nothing is frozen without confirmed ownership");
+  const pause = (await f.store.read()).pauses[0];
+  assert.equal(pause?.phase, "waiting"); assert.equal(pause.suspension, undefined);
+  assert.match(f.engine.error!, /ownership/, "the native problem is still reported");
+  f.reset(); await f.engine.tick(); assert.deepEqual(f.calls.sent, ["a"], "and it continues after the reset");
+});
+
+// ------------------------------------------------------------------ holding until the reset
+// While a protected session's account is at the limit, no turn runs in it unless a person
+// explicitly resumes it (AGENTS.md, "Session Guard").
+
+const idleAgent = (f: { agents: Agent[] }) => { f.agents[0].status = "idle"; f.agents[0].activeTurn = null; };
+const message = (f: { agents: Agent[] }, at: number, turnId = "m1") => {
+  f.agents[0].status = "running"; f.agents[0].activeTurn = { turnId }; f.agents[0].lastUserMessageAt = iso(at);
+};
+
+test("an idle session on an at-limit account is held in the foreground, with nothing interrupted or said", async t => {
+  const events: string[] = [];
+  const f = await fixture(t, {}, undefined, async (_a, n) => { events.push(n.data.event); }); idleAgent(f);
+  await f.engine.tick(); await f.engine.deliverTimeline();
+  const [pause] = (await f.store.read()).pauses;
+  assert.equal(pause?.phase, "waiting"); assert.equal(pause.idle, true);
+  assert.deepEqual(f.calls.stopped, []); assert.deepEqual(events, [], "an idle hold puts no card in the chat");
+  f.reset(); await f.engine.tick(); await f.engine.deliverTimeline();
+  assert.deepEqual(f.calls.sent, [], "nothing to continue, so the reset just lets go");
+  assert.equal((await f.store.read()).pauses[0].phase, "resumed"); assert.deepEqual(events, []);
+});
+test("an idle Claude session is held natively by freezing it; an idle Codex session is held in the foreground", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = await nativeFixture(t); idleAgent(f); f.agents[0].provider = provider;
+    f.usage({ fetchedAt: iso(base), providers: [{ providerId: provider, status: "available", windows: [{ id: "five_hour", usedPct: 100, resetsAt: iso(end) }] }] });
+    await f.engine.tick();
+    const [pause] = (await f.store.read()).pauses;
+    assert.equal(pause?.phase, "waiting", provider); assert.equal(pause.idle, true, provider);
+    assert.deepEqual(f.native.calls.frozen, provider === "claude" ? [1234] : [], provider);
+    assert.equal(f.engine.error, null, "an idle foreground hold is not an ownership problem");
+  }
+});
+test("a message to a foreground hold does not cancel it: its turn is stopped at once and continued after the reset", async t => {
+  const events: string[] = [];
+  const f = await fixture(t, {}, undefined, async (_a, n) => { events.push(n.data.event); }); idleAgent(f);
+  await f.engine.tick();
+  message(f, base + 60_000); await f.engine.tick(); await f.engine.deliverTimeline();
+  assert.deepEqual(f.calls.stopped, ["a"], "the new turn is interrupted");
+  let [pause] = (await f.store.read()).pauses;
+  assert.equal(pause.phase, "waiting"); assert.equal(pause.idle, undefined); assert.equal(pause.turnId, "m1");
+  assert.equal(pause.lastUserMessageAt, iso(base + 60_000));
+  assert.deepEqual(events, ["paused"], "the card appears once a message is waiting");
+  message(f, base + 120_000, "m2"); await f.engine.tick();
+  assert.deepEqual(f.calls.stopped, ["a", "a"], "and every later one too");
+  assert.equal((await f.store.read()).pauses.length, 1, "one hold throughout");
+  f.reset(); await f.engine.tick(); await f.engine.tick();
+  assert.deepEqual(f.calls.sent, ["a"], "one continuation after the reset");
+  [pause] = (await f.store.read()).pauses; assert.equal(pause.phase, "resumed");
+});
+test("a message to an interrupted session keeps its pause and still gets one continuation", async t => {
+  const f = await fixture(t); await f.engine.tick(); assert.deepEqual(f.calls.stopped, ["a"]);
+  message(f, base + 1000); await f.engine.tick();
+  assert.deepEqual(f.calls.stopped, ["a", "a"]);
+  assert.equal((await f.store.read()).pauses[0].phase, "waiting");
+  f.reset(); await f.engine.tick(); assert.deepEqual(f.calls.sent, ["a"]);
+});
+test("a message to a frozen session waits in it and runs at SIGCONT after the reset, with no message from the guard", async t => {
+  for (const idle of [true, false]) {
+    const f = await nativeFixture(t); if (idle) idleAgent(f);
+    await f.engine.tick(); assert.deepEqual(f.native.calls.frozen, [1234]);
+    // Paseo shows the message as a running turn while the Claude CLI is stopped (RESEARCH.md).
+    message(f, base + 60_000); await f.engine.tick();
+    let [pause] = (await f.store.read()).pauses;
+    assert.equal(pause.phase, "waiting"); assert.equal(pause.turnId, "m1"); assert.equal(pause.idle, undefined);
+    assert.deepEqual(f.native.calls.released, [], "still frozen");
+    assert.deepEqual(f.calls.stopped, [], "a frozen turn is never interrupted");
+    f.reset(); await f.engine.tick();
+    assert.deepEqual(f.native.calls.released, [1234]); assert.deepEqual(f.calls.sent, []);
+    [pause] = (await f.store.read()).pauses; assert.equal(pause.phase, "resumed");
+  }
+});
+test("Resume now releases a hold at once, without a message when nothing was interrupted", async t => {
+  const f = await fixture(t); idleAgent(f); await f.engine.tick();
+  const [pause] = (await f.store.read()).pauses;
+  await f.engine.resumeNow("a", pause.id);
+  let state = await f.store.read();
+  assert.equal(state.pauses[0].phase, "resumed"); assert.equal(state.overrides.a, false); assert.deepEqual(f.calls.sent, []);
+  message(f, base + 1000); await f.engine.tick();
+  assert.deepEqual(f.calls.stopped, [], "resumed by a person: the next turn runs");
+  const g = await nativeFixture(t); idleAgent(g); await g.engine.tick();
+  await g.engine.resumeNow("a", (await g.store.read()).pauses[0].id);
+  assert.deepEqual(g.native.calls.released, [1234]); assert.deepEqual(g.calls.sent, []);
+  // A held message is continued by Resume now.
+  const h = await fixture(t); idleAgent(h); await h.engine.tick();
+  message(h, base + 1000); await h.engine.tick();
+  await h.engine.resumeNow("a", (await h.store.read()).pauses[0].id);
+  assert.deepEqual(h.calls.sent, ["a"]);
+  state = await h.store.read(); assert.equal(state.pauses[0].phase, "resumed");
+});
+test("a session that opens mid-window is held then; a dormant or closed one is never opened or signalled", async t => {
+  const f = await nativeFixture(t); f.agents[0].status = "closed"; f.agents[0].activeTurn = null;
+  let discovered = 0; const discover = f.native.controller.discover;
+  f.native.controller.discover = async (agent, pid) => { discovered++; return discover(agent, pid); };
+  let fetched = 0; const fetchAgent = f.client.fetchAgent;
+  f.client.fetchAgent = async id => { fetched++; return fetchAgent(id); };
+  let sent = 0; const sendMessage = f.client.sendMessage;
+  f.client.sendMessage = async (...args) => { sent++; return sendMessage(...args); };
+  await f.engine.tick(); await f.engine.tick();
+  assert.equal((await f.store.read()).pauses.length, 0);
+  assert.deepEqual([discovered, fetched, sent, f.calls.stopped.length, f.native.calls.frozen.length], [0, 0, 0, 0, 0], "untouched while closed");
+  // A person opens it during the window: Paseo loads it, idle.
+  f.agents[0].status = "idle"; await f.engine.tick();
+  assert.deepEqual(f.native.calls.frozen, [1234]);
+  assert.equal((await f.store.read()).pauses[0].idle, true);
+  // Closing it again ends the hold and lets the process go.
+  f.agents[0].status = "closed"; await f.engine.tick();
+  assert.equal((await f.store.read()).pauses[0].phase, "cancelled"); assert.deepEqual(f.native.calls.released, [1234]);
+});
+test("a session that starts a turn mid-window is held", async t => {
+  const f = await fixture(t); f.agents[0].status = "closed"; f.agents[0].activeTurn = null;
+  await f.engine.tick(); assert.equal((await f.store.read()).pauses.length, 0);
+  message(f, base + 1000); await f.engine.tick();
+  assert.deepEqual(f.calls.stopped, ["a"]); assert.equal((await f.store.read()).pauses[0].phase, "waiting");
+});
+test("the explicit ways out end a hold: dismiss, release, opt-out and turning Session Guard off", async t => {
+  for (const way of ["dismiss", "release", "opt-out", "off"]) {
+    const f = await fixture(t); idleAgent(f); await f.engine.tick();
+    const [pause] = (await f.store.read()).pauses;
+    if (way === "dismiss") await f.engine.dismissPause("a", pause.id);
+    if (way === "release") await f.engine.cancelResume("a");
+    if (way === "opt-out") await f.engine.setProtection("a", false);
+    if (way === "off") { f.policy({ enabled: false }); await f.engine.tick(); }
+    assert.equal((await f.store.read()).pauses[0].phase, "cancelled", way);
+    message(f, base + 1000); f.policy({ enabled: way !== "off" }); if (way === "off") f.policy({ enabled: false });
+    await f.engine.tick(); assert.deepEqual(f.calls.stopped, [], way); assert.deepEqual(f.calls.sent, [], way);
   }
 });

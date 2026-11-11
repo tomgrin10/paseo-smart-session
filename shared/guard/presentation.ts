@@ -41,21 +41,16 @@ export function agentGuardSummary(status: {
   governor: "off" | "active" | "deferred" | "error";
   protected: boolean; thresholdPct: number; autoResume: boolean;
   pauses: readonly { phase: Pause["phase"]; resetsAt: string | null }[];
-  /** ZeroSub can move this session to another account with room (see `shared/guard/zerosub.ts`). */
-  failsOver?: boolean;
 }): string[] {
   if (status.governor === "deferred") return ["Session Guard: run by another plugin on this host (likely the standalone Session Guard); this session's protection is not visible from here."];
   if (status.governor === "error") return ["Session Guard: status unavailable."];
   if (status.governor === "off" || !status.protected) return ["Session Guard: off for this session. Reaching the session limit will not pause it here; the provider will simply refuse requests until reset."];
   const pending = status.pauses.find(pause => ["pausing", "waiting", "resuming", "attention"].includes(pause.phase));
   if (pending) {
-    return [`Session Guard: this session is paused for the session limit (${pending.phase})${pending.resetsAt ? `; the window resets ${pending.resetsAt}` : ""}.`];
+    return [`Session Guard: this session is held at the session limit (${pending.phase})${pending.resetsAt ? `; it runs again once the window resets ${pending.resetsAt}` : ""}. Messages sent meanwhile wait for the reset unless a person resumes it.`];
   }
-  if (status.failsOver) {
-    return ["Session Guard: on, but ZeroSub goes first. When this session's account reaches its limit, ZeroSub moves it to another account with room and continues it — no need to stop early or hand off. Session Guard pauses it only once no account has room."];
-  }
-  return [`Session Guard: on. At ${status.thresholdPct}% of the session window Paseo pauses this session${status.autoResume
-    ? " and continues it in this same conversation once the window resets — no need to stop early or hand off because of the session limit."
+  return [`Session Guard: on. At ${status.thresholdPct}% of the session window Paseo holds this session until the window resets, unless a person resumes it${status.autoResume
+    ? ", then continues it in this same conversation — no need to stop early or hand off because of the session limit."
     : "; a person continues it after the reset."}`];
 }
 

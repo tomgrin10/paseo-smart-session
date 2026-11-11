@@ -53,6 +53,13 @@ export const PauseSchema = z.object({
   releasedForUnload: z.boolean().optional(),
   demo: z.boolean().optional(),
   stoppedByUser: z.boolean().optional(),
+  /**
+   * A hold on a session that had nothing running: there is no interrupted work, so the
+   * reset releases it without a continuation, and it gets no timeline card until a
+   * person's message arrives and waits in it. Unknown to the standalone plugin, which
+   * strips it on a write; it can only write while this plugin is not governing.
+   */
+  idle: z.boolean().optional(),
   notifications: z.array(NotificationSchema).optional(),
   suspension: z.object({
     rootPid: z.number().int().positive(),

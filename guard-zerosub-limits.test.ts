@@ -1,7 +1,7 @@
 /**
  * Session Guard × ZeroSub when every account is out: the agent is paused (whichever of
- * the guard and the CLI sees the limit first), and the first account to get room again
- * continues it exactly once.
+ * the guard and the CLI sees the limit first), held while only another account has room,
+ * and continued exactly once when its own account has room again.
  *
  * ZeroSub is played by fixture `state.json` / `usage.json` / preferences, parsed by the
  * real reader, plus a stand-in for what ZeroSub 1.5.0 does on a limit notice
@@ -184,7 +184,7 @@ test("the limit notice is read the way ZeroSub reads it, from this turn's rows o
 
 // --------------------------------------------------------------------------- (a) + (b)
 
-test("(a,b) every account full: the guard pauses first; when B resets the agent continues once and ends on B", async t => {
+test("(a,b) every account full: the guard pauses first; B getting room keeps the hold, A's own reset continues it once", async t => {
   const f = await fixture(t);
   f.zs.sessions.x = "claude-a";
   bothFull(f.zs);
@@ -197,19 +197,17 @@ test("(a,b) every account full: the guard pauses first; when B resets the agent 
   f.at(T0 + 3 * HOUR + MIN);
   f.zs.read("claude-b", { at: f.now, fiveHour: 0, fiveResets: T0 + 8 * HOUR });
   await f.engine.tick();
-  assert.deepEqual(f.continuations(), [`guard:continue:${pause!.id}`], "room on B continues the agent");
+  assert.equal(f.continuations().length, 0, "room on B is not a reason to run a turn on A: held until a person resumes it or A resets");
+  assert.equal((await f.pauses())[0]!.phase, "waiting");
+
+  // A resets; ZeroSub re-reads it.
+  f.at(T0 + 5 * HOUR + 2 * MIN);
+  f.zs.read("claude-a", { at: f.now, fiveHour: 0, fiveResets: T0 + 10 * HOUR });
+  await f.engine.tick(); await f.engine.tick();
+  assert.deepEqual(f.continuations(), [`guard:continue:${pause!.id}`], "one continuation, on A");
+  assert.equal(f.zs.sessions.x, "claude-a");
   assert.equal((await f.pauses())[0]!.phase, "resumed");
-
-  // The continuation meets A's limit; the guard sees the notice before ZeroSub moves it.
-  await f.hitLimit({ guardSeesNoticeFirst: true });
-  for (let i = 0; i < 3; i++) await f.engine.tick();
-  assert.equal(f.zs.sessions.x, "claude-b", "the agent ends on the account with room");
-  assert.equal(f.continuations().length, 2, "one from the guard (spent on A's notice), one from ZeroSub that does the work");
-  assert.equal(f.log.filter(l => l === "zerosub:continue").length, 1);
-  assert.equal((await f.pauses()).length, 1, "no second pause while ZeroSub carries it on");
-  assert.equal(f.agent.status, "running");
 });
-
 test("(a) the CLI reaches the limit first: the notice turn records a waiting pause once ZeroSub has recorded the limit", async t => {
   const f = await fixture(t);
   f.zs.sessions.x = "claude-a";
@@ -269,21 +267,21 @@ test("(d) a reading taken before the pause, or too old to trust, never counts as
   const f = await fixture(t);
   f.zs.sessions.x = "claude-a";
   bothFull(f.zs);
-  // B's last reading predates the pause and shows room; only its recorded limit kept it out.
-  f.zs.readings["claude-b"] = { at: T0 - MIN, fiveHour: 40, fiveResets: T0 + 3 * HOUR };
   await f.engine.tick();
   const [pause] = await f.pauses();
   assert.equal(pause!.phase, "waiting");
-  f.at(T0 + 3 * HOUR + MIN); // B's limit has expired, but no one has looked since.
-  f.zs.readings["claude-b"] = { at: T0 + 2 * MIN, fiveHour: 40, fiveResets: T0 + 3 * HOUR }; // After the pause, but stale now.
+  f.at(T0 + 5 * HOUR + MIN); // A's limit has expired, but no one has looked since.
+  f.zs.readings["claude-a"] = { at: T0 - MIN, fiveHour: 40, fiveResets: T0 + 5 * HOUR }; // Before the pause.
   await f.engine.tick();
-  assert.equal(f.continuations().length, 0, "a 3-hour-old reading is not room");
-  f.zs.read("claude-b", { at: f.now, fiveHour: 0, fiveResets: T0 + 8 * HOUR });
+  assert.equal(f.continuations().length, 0, "a reading from before the pause is not room");
+  f.zs.readings["claude-a"] = { at: T0 + 2 * MIN, fiveHour: 40, fiveResets: T0 + 5 * HOUR }; // After the pause, but stale now.
+  await f.engine.tick();
+  assert.equal(f.continuations().length, 0, "a 5-hour-old reading is not room");
+  f.zs.read("claude-a", { at: f.now, fiveHour: 0, fiveResets: T0 + 10 * HOUR });
   await f.engine.tick();
   assert.equal(f.continuations().length, 1, "a fresh reading after the pause is");
 });
-
-test("(e) an account set aside in ZeroSub is never room, until it is enabled again", async t => {
+test("(e) room on another account never continues a held session, set aside or not", async t => {
   const f = await fixture(t);
   f.zs.sessions.x = "claude-a";
   bothFull(f.zs);
@@ -293,12 +291,12 @@ test("(e) an account set aside in ZeroSub is never room, until it is enabled aga
   f.zs.read("claude-b", { at: f.now, fiveHour: 0, fiveResets: T0 + 8 * HOUR });
   f.zs.read("claude-main", { at: f.now, fiveHour: 0, fiveResets: T0 + 8 * HOUR }); // The set-aside CLI login, empty.
   await f.engine.tick();
-  assert.equal(f.continuations().length, 0, "ZeroSub would not move it to a set-aside account");
+  assert.equal(f.continuations().length, 0);
   f.zs.account("claude-b").disabled = false;
   await f.engine.tick();
-  assert.equal(f.continuations().length, 1);
+  assert.equal(f.continuations().length, 0, "B usable again is still not A's reset");
+  assert.equal((await f.pauses())[0]!.phase, "waiting");
 });
-
 test("(f) a full weekly window makes an account out, even while its 5-hour window has room", async t => {
   const f = await fixture(t);
   f.zs.sessions.x = "claude-a";
@@ -368,18 +366,18 @@ test("an interrupt racing the CLI's notice keeps its one pause instead of releas
   await f.engine.tick(); await f.engine.tick();
   const pauses = await f.pauses();
   assert.deepEqual(pauses.map(p => [p.phase, p.wasQuotaFailure]), [["waiting", true]], "one pause, still waiting");
-  // A turn that completed with the work done still cancels, as before.
+  // A turn that completed with the work done needs no continuation, but stays held.
   const g = await fixture(t);
   g.zs.sessions.x = "claude-a";
   bothFull(g.zs);
   await g.engine.tick();
   await g.engine.turnEnded("x", "t1", "completed");
-  assert.equal((await g.pauses())[0]!.phase, "cancelled");
+  assert.deepEqual((await g.pauses()).map(p => [p.phase, p.idle]), [["waiting", true]]);
 });
 
 // --------------------------------------------------------------------------- frozen sessions
 
-test("a frozen session released when B gets room carries on through ZeroSub, with no continuation from the guard", async t => {
+test("a frozen session stays frozen when B gets room, and is released in place when A resets", async t => {
   const f = await fixture(t, { native: true });
   f.zs.sessions.x = "claude-a";
   bothFull(f.zs);
@@ -388,15 +386,15 @@ test("a frozen session released when B gets room carries on through ZeroSub, wit
   f.at(T0 + 3 * HOUR + MIN);
   f.zs.read("claude-b", { at: f.now, fiveHour: 0, fiveResets: T0 + 8 * HOUR });
   await f.engine.tick();
-  assert.deepEqual(f.native.calls.released, [1234], "SIGCONT: the turn goes on and meets A's limit");
-  await f.hitLimit({ guardSeesNoticeFirst: true });
-  for (let i = 0; i < 3; i++) await f.engine.tick();
-  assert.deepEqual(f.continuations(), ["zerosub:continue"], "ZeroSub continues it on B; the guard sends nothing");
-  assert.equal(f.zs.sessions.x, "claude-b");
-  assert.deepEqual(f.native.calls.frozen, [1234], "not frozen again");
-  assert.equal((await f.pauses()).filter(p => p.phase !== "cancelled").length, 0);
+  assert.deepEqual(f.native.calls.released, [], "no SIGCONT for room elsewhere: the turn would run on A's limit (Extra usage)");
+  assert.equal((await f.pauses())[0]!.phase, "waiting");
+  f.at(T0 + 5 * HOUR + 2 * MIN);
+  f.zs.read("claude-a", { at: f.now, fiveHour: 0, fiveResets: T0 + 10 * HOUR });
+  await f.engine.tick();
+  assert.deepEqual(f.native.calls.released, [1234]);
+  assert.equal(f.continuations().length, 0, "SIGCONT carries the same turn on; no message");
+  assert.equal((await f.pauses())[0]!.phase, "resumed");
 });
-
 test("autoResume off: room on another account leaves the pause for a person", async t => {
   const f = await fixture(t, { policy: { autoResume: false } });
   f.zs.sessions.x = "claude-a";
