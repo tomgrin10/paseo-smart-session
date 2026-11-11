@@ -15,7 +15,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+// @ts-expect-error -- a dependency-free hook module with no type declarations.
 import * as hook from "./hooks/killed-jobs.mjs";
+
+type Job = { taskId: string; kind: string; description: string | null; command: string | null; stoppedAt: string };
 
 const AGENT = "11111111-2222-3333-4444-555555555555";
 const t0 = Date.parse("2026-11-11T14:10:00.000Z");
@@ -66,7 +69,7 @@ const renderKilled = [
 
 test("a job the restart killed is found, named by its description", () => {
   const jobs = hook.killedJobs(jsonl(renderKilled), { now: t0 + 36 * 60_000 });
-  assert.deepEqual(jobs.map((job) => [job.taskId, job.kind, job.description]), [["bx9npminm", "shell", "Render sheet: loaded and blocked images"]]);
+  assert.deepEqual(jobs.map((job: Job) => [job.taskId, job.kind, job.description]), [["bx9npminm", "shell", "Render sheet: loaded and blocked images"]]);
   assert.equal(jobs[0].stoppedAt, at(35));
 });
 
@@ -77,7 +80,7 @@ test("one notice for several jobs lists each, Monitors included, and skips Claud
     stoppedMany(["bhqzji8y4", "b9cc74319"], 20),
   ];
   const jobs = hook.killedJobs(jsonl(rows), { now: t0 + 21 * 60_000 });
-  assert.deepEqual(jobs.map((job) => [job.taskId, job.kind, job.description]), [
+  assert.deepEqual(jobs.map((job: Job) => [job.taskId, job.kind, job.description]), [
     ["bhqzji8y4", "shell", "Watch the release chain"],
     ["b9cc74319", "monitor", "PR checks"],
   ]);
@@ -99,7 +102,7 @@ test("a job rerun after the notice, a job that completed, and an old notice are 
 
 test("a job started before the transcript tail still gets a name", () => {
   const jobs = hook.killedJobs(jsonl([stoppedOne("bfar", 35)]), { now: t0 + 36 * 60_000 });
-  assert.deepEqual(jobs.map((job) => [job.taskId, job.description]), [["bfar", null]]);
+  assert.deepEqual(jobs.map((job: Job) => [job.taskId, job.description]), [["bfar", null]]);
   assert.match(hook.killedNotice(jobs), /task bfar/);
 });
 
