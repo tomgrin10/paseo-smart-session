@@ -4,7 +4,7 @@ import { useRpc, type PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { timelinePresentation, type TimelineData } from "../../shared/guard/timeline.ts";
 import { dismissPauseRpc, resumeNowRpc, statusRpc } from "../../shared/guard/contracts.ts";
-import { PAUSE_ACTIONS } from "../../shared/guard/presentation.ts";
+import { PAUSE_ACTIONS, actionNote, heldWork } from "../../shared/guard/presentation.ts";
 import { timestamp, type Pause } from "../../shared/guard/policy.ts";
 import { formatClock, formatDuration } from "../../shared/format.ts";
 import { formatMoment } from "../../shared/forecast.ts";
@@ -90,7 +90,7 @@ export function GuardTimelineItem({ theme, agentId, item, layout, openOverview }
   </View>;
 
   if (!live) {
-    if (item.data.event === "resumed") return line("Play", c.foregroundMuted, presentation.title, item.data.manualResume ? `${at} · by you · no longer pauses at the limit` : `${at} · ${item.data.native ? "workers continued in place" : "continuation sent"}`);
+    if (item.data.event === "resumed") return line("Play", c.foregroundMuted, presentation.title, item.data.manualResume ? `${at} · by you · no longer pauses at the limit` : `${at} · ${item.data.native ? "carried on in place" : "continuation sent"}`);
     if (item.data.event === "released") return line("Pause", c.foregroundMuted, presentation.title, item.data.dismissed ? `${at} · no message sent · no longer pauses at the limit` : at);
     // attention
     return shell(true, <>
@@ -101,10 +101,10 @@ export function GuardTimelineItem({ theme, agentId, item, layout, openOverview }
 
   // A live pause: settled ones fold to a line.
   if (loaded && (pause === null || pause.phase === "cancelled" || pause.phase === "resumed")) {
-    if (pause?.phase === "cancelled" && pause.dismissed) return line("Pause", c.foregroundMuted, "Pause dismissed", "no message sent · no longer pauses at the limit");
-    if (pause?.phase === "resumed") return line("Pause", c.foregroundMuted, `Paused at ${at}`, pause.manualResume ? `resumed by you ${formatClock(pause.settledAt)}` : `resumed ${formatClock(pause.settledAt)}`);
+    if (pause?.phase === "cancelled" && pause.dismissed) return line("Pause", c.foregroundMuted, "Released by you", "no message sent · no longer pauses at the limit");
+    if (pause?.phase === "resumed") return line("Pause", c.foregroundMuted, `Held at ${at}`, pause.manualResume ? `until ${formatClock(pause.settledAt)}` : `until the ${formatClock(pause.settledAt)} reset`);
     // The event that ended it has its own line; this one only says when.
-    return line("Pause", c.foregroundMuted, `Paused at ${at}`, pause?.settledAt ? `ended ${formatClock(pause.settledAt)}` : "no longer active");
+    return line("Pause", c.foregroundMuted, `Held at ${at}`, pause?.settledAt ? `ended ${formatClock(pause.settledAt)}` : "no longer active");
   }
 
   const reset = timestamp(item.data.resetAt);
@@ -113,16 +113,19 @@ export function GuardTimelineItem({ theme, agentId, item, layout, openOverview }
   const stuck = pause?.phase === "attention";
   // Lead with the moment, the way every family card does: the reset clock, then the countdown.
   const big = item.data.demo ? "Test pause" : reset === null ? "Reset time unknown" : formatMoment(item.data.resetAt!, now);
-  const countdown = item.data.demo ? "waits for you" : reset === null ? "waiting for the provider to report it" : reset <= now ? "reset passed · waiting for a fresh reading" : `${auto ? "resumes" : "resets"} in ${formatDuration(reset - now)}`;
+  // What the hold is holding: the live pause knows about a message sent since the card was written.
+  const work = pause ? heldWork(pause) : item.data.native ? "frozen" : "interrupted";
+  const countdown = item.data.demo ? "waits for you" : reset === null ? "waiting for the provider to report it" : reset <= now ? "reset passed · waiting for a fresh reading"
+    : `${!auto ? "resets" : work === "message" ? "your message runs" : "continues"} in ${formatDuration(reset - now)}`;
   const facts = [providerName(item.data.provider),
     item.data.usedPct === null ? null : `${Math.round(item.data.usedPct)}% used`,
-    item.data.native ? "native subagents frozen" : "turn interrupted",
+    work === "message" ? (auto ? null : "your message waits") : work === "frozen" ? "native subagents frozen" : work === "idle" ? null : "turn interrupted",
     auto ? null : "continue by hand"].filter(Boolean).join(" · ");
   const accent = stuck ? c.statusDanger : c.statusWarning;
 
   return shell(stuck, <>
     {stuck ? titleRow("TriangleAlert", accent, "Pause needs attention", c.statusDanger)
-      : titleRow("Pause", accent, item.data.demo ? "Test pause" : item.data.event === "recovery" ? "Still paused after a Paseo restart" : "Paused at the session limit")}
+      : titleRow("Pause", accent, item.data.demo ? "Test pause" : item.data.event === "recovery" ? "Still held after a Paseo restart" : "Held at the session limit")}
     <View style={{ paddingHorizontal: 14, paddingBottom: 11, gap: 8 }}>
       {stuck ? <Text style={t.body}>{pause?.note ?? (pause?.dismissed ? "Releasing the workers needs a look. Automatic continuation is cancelled." : "Check the session before continuing by hand.")}</Text> : <>
         <View style={{ gap: 2 }}>
@@ -143,17 +146,17 @@ export function GuardTimelineItem({ theme, agentId, item, layout, openOverview }
           <Button theme={theme} small compact={compact} kind="ghost" title={action === "dismiss" ? PAUSE_ACTIONS.dismiss.busy : PAUSE_ACTIONS.dismiss.label} disabled={busy}
             accessibilityHint={PAUSE_ACTIONS.dismiss.hint} onPress={() => void act("dismiss")} />
           <View style={{ flex: 1, minWidth: 8 }} />
-          <TextLink theme={theme} compact={compact} label="Paused sessions" onPress={openOverview} />
+          <TextLink theme={theme} compact={compact} label="All held sessions" onPress={openOverview} />
         </View>
-        <Text style={t.small}>{item.data.demo ? "Resume now releases this test session." : PAUSE_ACTIONS.note}</Text>
+        <Text style={t.small}>{item.data.demo ? "Resume now releases this test session." : pause ? actionNote(pause) : null}</Text>
       </View> : null}
       {stuck && pause?.dismissed ? <View style={{ flexDirection: "row" }}>
-        <Button theme={theme} small compact={compact} title={action === "dismiss" ? "Dismissing…" : "Retry dismissal"} disabled={busy}
-          accessibilityLabel="Retry dismissing pause without sending a message" onPress={() => void act("dismiss")} />
+        <Button theme={theme} small compact={compact} title={action === "dismiss" ? PAUSE_ACTIONS.dismiss.busy : "Retry release"} disabled={busy}
+          accessibilityLabel="Retry releasing this session without sending a message" onPress={() => void act("dismiss")} />
       </View> : null}
       {error ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{error}</Text> : null}
       {statusError ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{statusError}</Text> : null}
-      {stuck ? <TextLink theme={theme} compact={compact} label="Paused sessions" onPress={openOverview} /> : null}
+      {stuck ? <TextLink theme={theme} compact={compact} label="All held sessions" onPress={openOverview} /> : null}
     </View>
   </>);
 }

@@ -32,9 +32,9 @@ export function commandItems(): CommandItem[] {
     },
     {
       id: "smart-session-paused",
-      title: "Smart Session: paused sessions",
+      title: "Smart Session: held sessions",
       icon: "Pause",
-      keywords: ["paused", "pause", "resume", "waiting", "reset", "quota", "limit", "subagents", "guard", "session guard"],
+      keywords: ["held", "hold", "paused", "pause", "resume", "waiting", "reset", "quota", "limit", "subagents", "guard", "session guard"],
       context: "global",
       onSelect({ openScreen }) { openScreen({ screenId: OVERVIEW_SCREEN, params: { focus: "paused" } }); },
     },

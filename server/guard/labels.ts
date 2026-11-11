@@ -2,7 +2,7 @@ import type { Connect } from "./client.ts";
 import type { Store } from "./store.ts";
 import type { Policy } from "../../shared/guard/policy.ts";
 
-export const PAUSED_WORKSPACE_LABEL = { name: "Paused", color: "amber" as const };
+export const PAUSED_WORKSPACE_LABEL = { name: "Held", color: "amber" as const };
 type Exclusive = <T>(work: () => Promise<T>) => Promise<T>;
 
 /** Label delivery never holds the governor's action lock during daemon I/O. */

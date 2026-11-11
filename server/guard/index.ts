@@ -323,8 +323,6 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     const policy = await readPolicyOrDefaults();
     const state = await readState().catch(emptyState);
     const protection = callerProtection(governor === "active" && policy.enabled, policy.protectByDefault, state.overrides[agentId]);
-    const agentProvider = engine.providers.get(agentId);
-    const failsOver = governor === "active" && agentProvider !== undefined && (engine.accounts?.failsOver(agentId, agentProvider) ?? false);
     const pauses = state.pauses
       .filter((pause) => pause.agentId === agentId)
       .map((pause) => ({ id: pause.id, phase: pause.phase, provider: pause.provider, resetsAt: pause.anchorResetsAt }));
@@ -335,8 +333,7 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
       autoResume: policy.autoResume,
       pauses,
       providers: providerRows(policy, agentId),
-      summary: agentGuardSummary({ governor, protected: protection.protected, thresholdPct: policy.thresholdPct, autoResume: policy.autoResume, pauses, failsOver }),
-      ...(failsOver ? { failsOver } : {}),
+      summary: agentGuardSummary({ governor, protected: protection.protected, thresholdPct: policy.thresholdPct, autoResume: policy.autoResume, pauses }),
     };
   });
 

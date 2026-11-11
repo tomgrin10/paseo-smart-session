@@ -209,12 +209,12 @@ Corners are soft and few. Cards are 10px, chat and pause cards 12px. Controls ar
 ### Buttons
 - **Shape:** gently rounded (6px; 8px compact).
 - **Secondary (default):** `surface1` with `raised` depth, 13px medium text, 32px tall (28px small), 4px hit slop. Hover and press go to `surface2`.
-- **Ghost:** transparent. Hover goes to `surface1`, press to `surface2`. Used for Dismiss pause and release actions.
+- **Ghost:** transparent. Hover goes to `surface1`, press to `surface2`. Used for Release and the other release actions.
 - **Icon button:** 28px square (44px compact), with a muted 15px icon and an accessible label. Used for the gear.
 - **Press:** every button scales to 97% over 140ms. Disabled is 45% opacity. Loading swaps the icon for the spinner.
 
 ### Chips
-- **Style:** a pill filled with its own hue at 12% (light) or 16% (dark), with 11px semibold tabular text, optionally with an 11px icon. Used for counts, "Smart Compact", provider names, "2 paused" and the sidebar's "out 4:58 PM".
+- **Style:** a pill filled with its own hue at 12% (light) or 16% (dark), with 11px semibold tabular text, optionally with an 11px icon. Used for counts, "Smart Compact", provider names, "2 held" and the sidebar's "out 4:58 PM".
 - **State:** the hue is the tone: muted by default, amber or red only from a forecast or a pause.
 
 ### Cards / Containers
@@ -229,7 +229,7 @@ Corners are soft and few. Cards are 10px, chat and pause cards 12px. Controls ar
 
 ### Navigation
 - **Sidebar row:** Paseo's sidebar header item, named Smart Session. It trails the session window's use in 12px tabular muted text, or a toned chip when a forecast or pause applies.
-- **Text link:** 12px muted text with a 12px ArrowUpRight. Hover turns the text `foreground` and underlines it. Used for "Settings", "Paused sessions", "All paused sessions" and "Use default".
+- **Text link:** 12px muted text with a 12px ArrowUpRight. Hover turns the text `foreground` and underlines it. Used for "Settings", "All held sessions" and "Use default".
 
 ### Meter
 An 8px track (6px for context) in ink at 10%. The fill is ink at 82%, amber or red by tone. A faint projection continues to where the reset lands (ink at 16%, or the tone at 24%). A muted 2px tick marks even pace, and `foreground` ticks mark the two compact lines (only for an enrolled session). It carries a progressbar role and a spoken label. One key under the plan card names Used, By the reset at this pace and Even pace.
@@ -241,7 +241,7 @@ The open session window from start to reset, in 60 columns (40 compact). It has 
 The composer pill keeps the host's chrome. Its icon is the ring, and its label is the percentage ("34%"). The ring is `foreground` when the session is enrolled and muted when it is not, takes its tone colour when past a line (amber past the end-of-turn line, red past the mid-turn line), and shows the ticks only when the session is enrolled. Pressing it opens the popover: a 40px ring with a 22px figure, a meta line of tokens and both lines ("asks at 30%, mid-turn at 40%"), a 6px meter with both ticks, one sentence in tone, a fact table (112px label column), and the per-session switch. A text link ends it. There is one pill per session. Protection adds nothing to it while a session is simply protected; an excluded session says so only in the pill's title. While a session is paused at the limit (and this process governs the pause) the icon becomes the host Pause glyph in amber (TriangleAlert in red when it needs a look), the label becomes the moment it resumes ("Resumes 6:27 AM": a clock, so the label rarely changes), and the pill stays up even when hidden in settings. The popover then leads with the pause: amber Pause icon and label, the moment at 20/26 semibold tabular, a meta line with the countdown and coverage, a bordered small release button and an "All paused sessions" link, then the context shrunk to a 28px ring and 15px figure. Below Smart Compact's switch sits the **Pause at the limit (Session Guard)** switch with a meta line and a small "Your default" / "Changed for this session" note plus a RotateCcw "Use default" link. When protection does not run here it is one muted ShieldOff line.
 
 ### Pause card
-In chat it uses the same shell as Smart Session's message cards: `surface1`, 12px corners, `raised`, a title row (14px amber Pause icon, 13px semibold "Paused at the session limit", the time it paused in meta at the right), then the resume moment at 18/24 semibold tabular with a 13px muted countdown, then one meta line of facts. Then come a small secondary **Resume now** (Play), a ghost **Dismiss pause**, a right-aligned "Paused sessions" link and a small hint. When it settles it folds to one quiet line sized like the tool rows (14px text, 12px icon in a 22px slot) ("Paused at 3:28 PM · resumed 5:16 PM"). When stuck it swaps to the red border with "Pause needs attention".
+In chat it uses the same shell as Smart Session's message cards: `surface1`, 12px corners, `raised`, a title row (14px amber Pause icon, 13px semibold "Held at the session limit", the time it paused in meta at the right), then the resume moment at 18/24 semibold tabular with a 13px muted countdown, then one meta line of facts. Then come a small secondary **Resume now** (Play), a ghost **Release**, a right-aligned "All held sessions" link and one line saying what each action does to what is held. When it settles it folds to one quiet line sized like the tool rows (14px text, 12px icon in a 22px slot) ("Held at 3:28 PM · until the 5:16 PM reset"). When stuck it swaps to the red border with "Pause needs attention".
 
 ### Chat rows and cards
 Smart Session's tool calls are one 14px muted line with a 12px icon. Hover and expand swap the icon for a rotating chevron. Expanding opens a bordered `surface1` box up to 240px tall. A refused call is amber and a failed one red, with TriangleAlert. Messages the plugin sent become `raised` `surface1` cards (12px corners, 11/14px padding): a 14px icon, a 13px semibold title, a "Full message" toggle, the body, and a 12/17 muted provenance line. The full text expands in mono, up to 300px.

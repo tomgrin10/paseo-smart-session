@@ -1,0 +1,6 @@
+- Pause at the limit now holds a session until the reset: a message you send to a held session waits and runs after the reset instead of ending the pause.
+- Idle sessions on an account at the limit are held too, so a message sent to one never starts work on paid Extra usage. Resume now, Release or the pill's switch still let one go early.
+- A session whose provider process couldn't be confirmed is now paused in the foreground instead of being left running at the limit.
+- With ZeroSub, a held session stays held when another account has room, and continues once its own account resets.
+- A held session's pill shows when it lets go ("Until 5:58 PM"), and its popover says when your message runs.
+- A held session says Held everywhere: the sidebar count, the amber workspace label and the overview list. Dismiss pause is now Release, and the line under it says what each action does to a waiting message.

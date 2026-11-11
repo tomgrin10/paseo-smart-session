@@ -31,7 +31,7 @@ export function contributeDisplay(client: PluginClientContext, live: Live) {
         onPress={() => openScreen({ screenId: OVERVIEW_SCREEN })}
         trailing={trailing === null ? undefined : trailing.tone === "muted"
           ? <Text accessibilityLabel={trailing.a11y} numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 16, ...tabular }}>{trailing.label}</Text>
-          : <Chip theme={theme} icon={trailing.label.endsWith("paused") ? "Pause" : undefined} label={trailing.label} color={toneColor(c, trailing.tone)} accessibilityLabel={trailing.a11y} />}
+          : <Chip theme={theme} icon={trailing.label.endsWith("held") ? "Pause" : undefined} label={trailing.label} color={toneColor(c, trailing.tone)} accessibilityLabel={trailing.a11y} />}
       />
     );
   }

@@ -19,12 +19,20 @@ import {
   isPending, protects, resetReady, sessionWindow, timestamp, usedPct,
   type Agent, type Pause, type Policy, type State, type Usage,
 } from "../../shared/guard/policy.ts";
+import { continuesAtReset, freezesIdle, holdKind, messageArrived, messageWaiting } from "../../shared/guard/hold.ts";
+
+/** Shown while a session is held in the foreground because its provider process couldn't be confirmed as its own. */
+const FALLBACK_ERROR = process.platform === "linux"
+  ? "Native worker protection could not confirm ownership of a provider process, so that session is held in the foreground (its native subagents are not frozen)."
+  : "Native worker protection requires Linux, so sessions are held in the foreground. Turn it off to stop this notice.";
 
 export class Engine {
   private chain: Promise<unknown> = Promise.resolve();
   private stopped = false;
   private nextResumeAt = 0;
   private quotaFailures = new Map<string, { at: string; turnId: string | null }>();
+  /** Pauses held in the foreground because native ownership couldn't be confirmed; their error stays up while they wait. */
+  private fallbacks = new Set<string>();
   checkedAt: string | null = null;
   error: string | null = null;
   timelineError: string | null = null;
@@ -62,13 +70,18 @@ export class Engine {
         const event = pause.phase === "waiting" ? pause.restartRecovery ? "recovery" : "paused" : pause.phase === "resumed" ? "resumed"
           : pause.phase === "cancelled" ? "released" : pause.phase === "attention" ? "attention" : null;
         if (!event || (["released", "resumed"].includes(event) && !pause.notifications?.length)) continue;
+        // An idle hold says nothing in the chat until a person's message waits in it.
+        if (pause.idle && (event === "paused" || event === "recovery")) continue;
         pause.notifications ??= [];
         if (pause.notifications.some(n => n.data.event === event)) continue;
         const native = event === "resumed" ? !!pause.resumedInPlace : event === "recovery" ? false
           : !!pause.suspension || !!pause.resumedInPlace || pause.notifications.some(n => n.data.native);
-        const window = this.usage?.providers.find(p => p.providerId === pause.provider)?.windows.find(w => w.id === pause.windowId);
+        // The agent's own account: under ZeroSub that is not the CLI login Paseo measures.
+        const usage = this.usage && (this.accounts?.usageFor(pause.agentId, pause.provider) ?? this.usage);
+        const window = usage?.providers.find(p => p.providerId === pause.provider)?.windows.find(w => w.id === pause.windowId);
         pause.notifications.push({ id: `session-guard:${pause.id}:${event}`, delivery: "pending", data: {
-          pauseId: pause.id, event, at: event === "paused" ? pause.pausedAt : pause.settledAt ?? new Date(this.now()).toISOString(),
+          // A card for a message held in an idle hold is written when the message arrives, and says so.
+          pauseId: pause.id, event, at: event === "paused" ? (messageWaiting(pause) ? pause.lastUserMessageAt! : pause.pausedAt) : pause.settledAt ?? new Date(this.now()).toISOString(),
           provider: pause.provider, native, autoResume: !pause.demo && policy.autoResume && policy.enabled,
           resetAt: pause.anchorResetsAt, usedPct: window ? usedPct(window) : null, note: pause.note,
           ...(pause.manualResume ? { manualResume: true } : {}), ...(pause.demo ? { demo: true } : {}), ...(pause.dismissed ? { dismissed: true } : {}),
@@ -232,10 +245,11 @@ export class Engine {
     return this.exclusive(async () => {
       const state = await this.store.read();
       for (const pause of state.pauses.filter(p => p.agentId === agentId && isPending(p))) {
-        // Releasing live workers opts out so the next poll does not freeze them again.
-        if (pause.suspension) state.overrides[agentId] = false;
+        // Releasing a hold opts out, so the next pass does not hold it again while the
+        // account is still at the limit: frozen workers resume, a foreground hold lets go.
+        state.overrides[agentId] = false;
         await this.cancel(pause, pause.suspension ? "Workers resumed immediately and this session was excluded from Session Guard."
-          : "Automatic continuation cancelled. Continue the session manually when ready.");
+          : "Released; this session no longer pauses at the limit. Continue it when ready.");
       }
       await this.save(state);
     });
@@ -253,10 +267,10 @@ export class Engine {
       // must never revive its scheduled continuation on the next boot.
       await this.store.write(state);
       try {
-        await this.cancel(pause, "Pause dismissed without sending a message. Protection is off for this session.");
+        await this.cancel(pause, "Released without sending a message. Protection is off for this session.");
       } catch {
         pause.phase = "attention";
-        pause.note = "Pause dismissal could not be completed. Protection is off; worker release will retry without sending a message.";
+        pause.note = "Release could not be completed. Protection is off; worker release will retry without sending a message.";
         await this.save(state);
         throw new Error(pause.note);
       }
@@ -272,16 +286,24 @@ export class Engine {
       if (pause.phase !== "waiting") throw new Error("Check this session before resuming it.");
       await this.connect(async client => {
         const latest = (await client.fetchAgent(agentId))?.agent;
+        // A message sent since the last check is part of the hold, not a change: adopt it,
+        // as the next check would.
+        if (latest && messageArrived(pause, latest) && latest.status !== "closed") {
+          pause.lastUserMessageAt = latest.lastUserMessageAt ?? null; delete pause.idle;
+          if (pause.suspension && latest.activeTurn) pause.turnId = latest.activeTurn.turnId;
+        }
+        // Its turn may already be running, not yet interrupted: resuming just lets it run.
+        const running = !pause.suspension && latest?.status === "running" && !!latest.activeTurn && latest.activeTurn.turnId !== pause.turnId;
         if (!latest || latest.archivedAt || (latest.status === "closed" && !pause.closedOnRestart) || latest.provider !== pause.provider ||
           (latest.lastUserMessageAt ?? null) !== pause.lastUserMessageAt ||
           (pause.suspension ? (latest.activeTurn?.turnId ?? null) !== pause.turnId
-            : !(latest.status === "idle" || (pause.closedOnRestart && latest.status === "closed") || (pause.wasQuotaFailure && latest.status === "error")) || !!latest.pendingPermissions?.length)) {
+            : !running && (!(latest.status === "idle" || (pause.closedOnRestart && latest.status === "closed") || (pause.wasQuotaFailure && latest.status === "error")) || !!latest.pendingPermissions?.length))) {
           throw new Error("The session changed. Check it before continuing.");
         }
         if (pause.suspension && !this.processes) throw new Error("Native worker protection is unavailable.");
         state.overrides[agentId] = false; pause.manualResume = true; pause.phase = "resuming";
         await this.save(state);
-        const needsMessage = !pause.suspension || (pause.wasQuotaFailure && ["idle", "error"].includes(latest.status) && !latest.pendingPermissions?.length);
+        const needsMessage = (!pause.suspension && !running && continuesAtReset(pause)) || (pause.wasQuotaFailure && ["idle", "error"].includes(latest.status) && !latest.pendingPermissions?.length);
         if (pause.suspension) {
           // Identity-safe SIGCONT can be retried after a partial release.
           await this.processes!.resume(pause.suspension);
@@ -357,7 +379,9 @@ export class Engine {
             if (!pause.wasQuotaFailure) { pause.wasQuotaFailure = true; changed = true; }
             continue;
           }
-          await this.cancel(pause, "The interrupted turn completed before the pause."); changed = true;
+          // Its work finished before the interrupt took, so nothing needs continuing; the
+          // session is still at the limit, so it stays held.
+          if (!pause.idle) { pause.idle = true; changed = true; }
         }
       }
       if (changed) await this.save(state);
@@ -387,6 +411,12 @@ export class Engine {
         await this.cancel(pause, "Native worker protection turned off; workers released."); released = true;
       }
     }
+    // An idle hold has nothing to continue, so turning the guard off simply ends it.
+    if (!policy.enabled) {
+      for (const pause of state.pauses.filter(p => p.phase === "waiting" && p.idle && !p.suspension)) {
+        await this.cancel(pause, "Session Guard turned off; the hold ended."); released = true;
+      }
+    }
     if (released) await this.save(state);
     if (!policy.enabled) return;
     await this.connect(async client => {
@@ -411,11 +441,14 @@ export class Engine {
       const accounts = await this.readAccounts(usage, policy).catch(() => null);
       this.accounts = accounts;
       const usageOf = (agentId: string, provider: string) => accounts?.usageFor(agentId, provider) ?? usage;
-      const failsOver = (agentId: string, provider: string) => accounts?.failsOver(agentId, provider) ?? false;
-      // A pause can continue once its own account resets, or — with ZeroSub — once any
-      // account it can use has room, shown by a reading newer than the pause.
+      // A hold ends when its own account has room again: the account it was paused on
+      // resetting, or — with ZeroSub — the account ZeroSub has since moved it to, shown by
+      // a reading newer than the pause. Room on some *other* account does not end it: a
+      // turn sent then meets the limit on this account, and with Extra usage on the CLI
+      // never reports that limit, so ZeroSub never moves it and the turn runs on paid
+      // credits (the 2026-11-11 case).
       const ready = (pause: Pause) => resetReady(pause, usageOf(pause.agentId, pause.provider), policy, this.now()) ||
-        (!!accounts && accounts.roomSince(pause.agentId, pause.provider, timestamp(pause.pausedAt)!) !== null);
+        (!!accounts && accounts.roomSince(pause.agentId, pause.provider, timestamp(pause.pausedAt)!) === "own");
       const byId = new Map(agents.map(a => [a.id, a]));
       this.providers = new Map(agents.map(a => [a.id, a.provider]));
       const currentDaemon = await this.processes?.daemonIdentity?.();
@@ -449,21 +482,29 @@ export class Engine {
           pause.note = "Paseo closed its workers during restart. This conversation will reopen after the quota resets.";
         }
         if (currentDaemon && pause.daemonIdentity !== currentDaemon) { pause.daemonIdentity = currentDaemon; changed = true; }
+        // A person's message joins a waiting hold rather than ending it (below). Anything
+        // not yet confirmed as waiting still gives way to it, and the next pass holds anew.
         if (!agent || (agent.status === "closed" && !pause.closedOnRestart) || agent.archivedAt || agent.provider !== pause.provider ||
-          (agent.lastUserMessageAt ?? null) !== pause.lastUserMessageAt ||
+          (pause.phase !== "waiting" && messageArrived(pause, agent)) ||
           !protects(policy, state.overrides, pause.agentId) ||
           (policy.providerIds.length > 0 && !policy.providerIds.includes(pause.provider))) {
           await this.cancel(pause, "Session changed, was closed, or protection was turned off."); changed = true; continue;
         }
         if (pause.phase !== "waiting") continue;
+        if (messageArrived(pause, agent)) {
+          if (pause.closedOnRestart && agent.status !== "closed") delete pause.closedOnRestart;
+          // The message waits in the hold and runs after the reset: in a frozen process it
+          // sits in the provider's input until SIGCONT (RESEARCH.md, "Messages to a stopped
+          // provider"); in the foreground its turn is interrupted just below.
+          pause.lastUserMessageAt = agent.lastUserMessageAt ?? null;
+          if (pause.suspension && agent.activeTurn) pause.turnId = agent.activeTurn.turnId;
+          delete pause.idle; pause.note = null;
+          await this.save(state);
+        }
         if (!pause.demo && !pause.manualResume && accounts) {
           if (pause.wasQuotaFailure && !pause.suspension && accounts.continuedElsewhere(pause.agentId)) {
             // ZeroSub carried this Codex task on in another tab; continuing here too would run it twice.
             await this.cancel(pause, "ZeroSub continued this task on another account, so Session Guard will not continue it here."); changed = true; continue;
-          }
-          if (pause.suspension && failsOver(pause.agentId, pause.provider)) {
-            // Let the turn reach the limit, so ZeroSub moves it to the account with room.
-            await this.cancel(pause, "Released for ZeroSub: another account has room, so it switches this session there at the limit."); changed = true; continue;
           }
         }
         if (pause.suspension) {
@@ -484,7 +525,7 @@ export class Engine {
           if ((agent.activeTurn?.turnId ?? null) !== pause.turnId && !await nativeRunning(agent.id)) {
             await this.cancel(pause, "The suspended turn was stopped or changed outside Session Guard."); changed = true; continue;
           }
-          if (pause.demo || !policy.autoResume || this.now() < this.nextResumeAt || !ready(pause)) continue;
+          if (pause.demo || (!policy.autoResume && !pause.idle) || this.now() < this.nextResumeAt || !ready(pause)) continue;
           const latest = (await client.fetchAgent(pause.agentId))?.agent;
           if (!latest || latest.archivedAt || latest.status === "closed" || latest.provider !== pause.provider ||
             (latest.lastUserMessageAt ?? null) !== pause.lastUserMessageAt ||
@@ -503,12 +544,27 @@ export class Engine {
           this.nextResumeAt = this.now() + policy.resumeSpacingSeconds * 1000;
           await this.save(state); continue;
         }
-        if (agent.status === "running" && agent.activeTurn?.turnId !== pause.turnId) {
-          await this.cancel(pause, "Work was continued outside Session Guard."); changed = true; continue;
+        if (agent.status === "running" && agent.activeTurn && agent.activeTurn.turnId !== pause.turnId) {
+          // A turn started in a held session (a person's message, or another agent's): stop
+          // it at once and keep holding. Its message stays in the conversation, and the
+          // continuation after the reset carries it on.
+          const latest = (await client.fetchAgent(pause.agentId))?.agent;
+          if (!latest || latest.status !== "running" || !latest.activeTurn || latest.activeTurn.turnId === pause.turnId) continue;
+          if (this.stopped) return;
+          try { await client.cancelAgent(pause.agentId); }
+          catch { this.error = "Session Guard could not stop a turn in a held session. It will retry automatically."; continue; }
+          pause.turnId = latest.activeTurn.turnId; pause.lastUserMessageAt = latest.lastUserMessageAt ?? null;
+          delete pause.idle; pause.note = null;
+          await this.save(state); continue;
+        }
+        if (pause.idle) {
+          // Nothing was interrupted, so the reset just lets go, with no message, whatever
+          // automatic continuation says.
+          if (!ready(pause)) continue;
+          pause.phase = "resumed"; pause.settledAt = new Date(this.now()).toISOString(); pause.note = null;
+          await this.save(state); continue;
         }
         const canContinue = (candidate: Agent) => candidate.status === "idle" || (pause.closedOnRestart && candidate.status === "closed") || (pause.wasQuotaFailure && candidate.status === "error");
-        // With ZeroSub, room on another account also continues it: the continuation meets the
-        // limit on this account, and ZeroSub fails it over there and carries it on.
         if (!canContinue(agent) || agent.pendingPermissions?.length || !policy.autoResume ||
           this.now() < this.nextResumeAt || !ready(pause)) continue;
         // Re-read just before sending: a person may have continued while usage was fetched.
@@ -530,6 +586,8 @@ export class Engine {
         await this.save(state);
       }
       if (changed) await this.save(state);
+      for (const id of this.fallbacks) if (!state.pauses.some(p => p.agentId === id && isPending(p) && !p.suspension)) this.fallbacks.delete(id);
+      if (this.fallbacks.size) this.error = FALLBACK_ERROR;
       for (const agent of agents) {
         if (this.stopped) return;
         if (state.pauses.some(p => p.agentId === agent.id && p.stoppedByUser &&
@@ -549,7 +607,6 @@ export class Engine {
         const provider = own.providers.find(p => p.providerId === agent.provider);
         const window = sessionWindow(provider, policy);
         if (!window || (usedPct(window) ?? -1) < policy.thresholdPct) continue;
-        if (failsOver(agent.id, agent.provider)) continue;
         // Past the limit notice it is ZeroSub that switches, by its own rule: leave it be
         // while that rule has an account to move to.
         if (quotaFailed && accounts?.switchesAtLimit(agent.id, agent.provider)) continue;
@@ -557,7 +614,10 @@ export class Engine {
         const windowEnd = timestamp(window.resetsAt);
         if (windowEnd !== null && windowEnd <= this.now() && (fetchedAt === null || fetchedAt <= windowEnd)) continue;
         const hasBackground = nativeEnabled && agent.status !== "running" && await nativeRunning(agent.id);
-        if (agent.status !== "running" && !quotaFailed && !hasBackground) continue;
+        // Idle sessions are held too: a message sent into one must wait for the reset.
+        const kind = holdKind(agent, quotaFailed, hasBackground);
+        if (kind === null) continue;
+        const idle = kind === "idle";
         // Do not stop a new turn based on a snapshot from before the upstream read.
         const latest = (await client.fetchAgent(agent.id))?.agent;
         if (!latest || latest.status !== agent.status || latest.provider !== agent.provider || latest.archivedAt ||
@@ -565,16 +625,15 @@ export class Engine {
           latest.activeTurn?.turnId !== agent.activeTurn?.turnId) continue;
         if (this.stopped) return;
         let suspension: Pause["suspension"];
-        if (nativeEnabled && (!quotaFailed || hasBackground)) {
+        if (nativeEnabled && (!quotaFailed || hasBackground) && (!idle || freezesIdle(agent.provider))) {
           if (!client.getDaemonStatus) throw new Error("Daemon process identity is unavailable.");
           daemonPid ??= (await client.getDaemonStatus()).pid;
           suspension = await this.processes!.discover(latest, daemonPid) ?? undefined;
-          if (!suspension) {
-            // Never pretend a foreground interrupt also covers native children.
-            this.error = process.platform === "linux"
-              ? "Native worker protection could not confirm ownership of a provider process. It will retry automatically."
-              : "Native worker protection requires Linux. Turn it off to use foreground interruption on this host.";
-            continue;
+          if (!suspension && !idle) this.fallbacks.add(agent.id);
+          if (!suspension && !idle) {
+            // Fall back to the foreground rather than skip the session: never pretend the
+            // interrupt also covers native children, but never let the turn run on either.
+            this.error = FALLBACK_ERROR;
           }
         }
         const reset = timestamp(window.resetsAt);
@@ -582,14 +641,14 @@ export class Engine {
           id: randomUUID(), agentId: agent.id, workspaceId: agent.workspaceId, provider: agent.provider, title: agent.title ?? null,
           windowId: window.id, anchorResetsAt: reset === null ? null : new Date(reset).toISOString(),
           pausedAt: new Date(this.now()).toISOString(), lastUserMessageAt: agent.lastUserMessageAt ?? null,
-          turnId: agent.activeTurn?.turnId ?? null, phase: quotaFailed && !suspension ? "waiting" : "pausing", note: null, settledAt: null,
-          wasQuotaFailure: quotaFailed, daemonIdentity: currentDaemon,
+          turnId: agent.activeTurn?.turnId ?? null, phase: (quotaFailed || idle) && !suspension ? "waiting" : "pausing", note: null, settledAt: null,
+          wasQuotaFailure: quotaFailed, daemonIdentity: currentDaemon, ...(idle ? { idle: true } : {}),
           ...(suspension ? { suspension } : {}),
         };
         state.pauses.push(pause);
         await this.save(state);
         if (quotaFailed) this.quotaFailures.delete(agent.id);
-        if (quotaFailed && !suspension) continue;
+        if ((quotaFailed || idle) && !suspension) continue;
         try {
           if (pause.suspension) await this.processes!.freeze(pause.suspension, () => this.store.write(state));
           else await client.cancelAgent(agent.id);
