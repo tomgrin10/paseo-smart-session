@@ -27,6 +27,7 @@
 import { askable, compose } from "./ask.mjs";
 import { noteCancelledCompaction } from "./cancelled.mjs";
 import { recordAsk, shouldAsk } from "./asks.mjs";
+import { killedJobsNotice, markKilledTold } from "./killed-jobs.mjs";
 
 function emit(text) {
   process.stdout.write(
@@ -63,6 +64,16 @@ async function main() {
   // A /compact cancelled since the last turn, in case UserPromptSubmit missed it. Recorded only: text
   // on Stop would start another model turn.
   noteCancelledCompaction(event);
+
+  // A background job a session restart killed and nobody has named yet: keep the turn going so the agent reruns it
+  // or reports why not (`killed-jobs.mjs`). Before the background-tasks check, since other jobs may still run. This
+  // turn's compaction ask can wait for the next turn end.
+  const killed = killedJobsNotice(event);
+  if (killed !== null) {
+    emit(killed.text);
+    markKilledTold(killed.agentId, killed.jobs);
+    return;
+  }
 
   // "Stopped" and "waiting for work that is still running" are different states.
   // Compacting through the second one discards the context that work reports into.

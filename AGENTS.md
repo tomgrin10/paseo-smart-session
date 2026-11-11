@@ -216,6 +216,16 @@
   own `compactionLine` in the popover and the card says "retry n" (`compact-retry.test.ts` walks them). A retry is the
   agent's own request again, not the plugin deciding to compact. 2026-11-11 11:27: a notification cancelled a
   delivered `/compact` nine seconds in; nothing retried it and the agent read it as a person cancelling.
+- **Invariant: no agent ends a turn idle while a job the restart killed was never rerun or reported.** Paseo (0.16)
+  closes the Claude process on every session reopen (the first prompt after a plugin reload, any refresh such as a
+  ZeroSub account move), and that kills its `run_in_background` shells and Monitors (`RESEARCH.md` §3.7). Claude Code's
+  "killed" notice dies with the process; the next one says "didn't finish before the previous session ended" once.
+  `hooks/killed-jobs.mjs` reads that notice and, on `UserPromptSubmit` (`detached.mjs`) or `Stop` (`ask-compact.mjs`,
+  before its background-tasks check, as `additionalContext` so the turn goes on), names each job not started again since,
+  once per job (latch `killed-jobs/<agentId>.json`), with "rerun it now or report why not". `Stop` therefore rides any
+  feature, not only Smart Compact. A refresh with no prompt fires no hook at all; that gap is closed only by not
+  reopening busy agents (reload-gate's `background-busy` check, ZeroSub). 2026-11-11: a render job died in a ZeroSub
+  refresh and its agent sat idle 25 minutes (`killed-jobs.test.ts`).
 - `settings.enabled` is the master switch; `showPill` and `autoEnrol` qualify it and mean nothing
   while it is off. There is no third pill state — a session is enrolled or it is not. With Smart
   Compact off the pill is drawn only while Pause at the limit runs here (muted ring, no tick).
@@ -460,7 +470,7 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
   target, then prompt, wait (capped), and archive in a `finally`. One at a time; each run is logged. Never prompt a
   helper that isn't confirmed on the target, and never read a credential file.
 - Hooks follow features (`managedFor` in `server/install.ts`): the compaction hooks are registered while Smart Compact is
-  on, `PreToolUse(Artifact)` while publishing as the main account is on, and each is removed when its feature is turned
+  on (except `Stop`, which also names killed background jobs and rides any feature), `PreToolUse(Artifact)` while publishing as the main account is on, and each is removed when its feature is turned
   off. So "Register the hooks" stays usable with Smart Compact off, and a fresh install with Smart Compact off still gets
   the Artifact hook (`install.test.ts`).
 - Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.

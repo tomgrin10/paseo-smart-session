@@ -354,13 +354,14 @@ function writePluginSettings(paseoHome: string, settings: Record<string, unknown
 const events = (path: string) => Object.keys(JSON.parse(readFileSync(path, "utf8")).hooks ?? {}).sort();
 
 test("each feature brings only its own hooks", () => {
-  // The detached-tools hooks ride along with either feature: the tools exist whatever is on.
-  assert.deepEqual(managedFor({ compact: false, publish: true }).map((m) => m.script), ["publish-as.mjs", "detached.mjs", "detached.mjs"]);
+  // The detached-tools hooks ride along with either feature: the tools exist whatever is on. So does Stop, which also
+  // names background jobs a session restart killed (its compaction ask checks Smart Compact itself).
+  assert.deepEqual(managedFor({ compact: false, publish: true }).map((m) => m.script), ["ask-compact.mjs", "publish-as.mjs", "detached.mjs", "detached.mjs"]);
   assert.ok(!managedFor({ compact: true, publish: false }).some((m) => m.script === "publish-as.mjs"));
   assert.deepEqual(managedFor({ compact: false, publish: false }), []);
   const publishOnly = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS, { compact: false, publish: true });
   assert.deepEqual(Object.keys(publishOnly).sort(), ["PostToolUseFailure", "PreToolUse", "Stop", "UserPromptSubmit"]);
-  assert.deepEqual(commandsFor(publishOnly, "Stop"), [foreign.command]);
+  assert.deepEqual(commandsFor(publishOnly, "Stop"), [foreign.command, cmd("ask-compact.mjs")]);
 });
 
 test("a fresh install with Smart Compact off still gets the Artifact hook, and no compaction hook", async () => {
@@ -371,8 +372,8 @@ test("a fresh install with Smart Compact off still gets the Artifact hook, and n
 
   const report = await installer.install({ registerMcp: false });
   assert.equal(report.error, null);
-  assert.deepEqual(report.hooks, ["PreToolUse:Artifact", "PostToolUseFailure:mcp__paseo__smart_.*", "UserPromptSubmit"]);
-  assert.deepEqual(events(join(claudeDir, "settings.json")), ["PostToolUseFailure", "PreToolUse", "UserPromptSubmit"]);
+  assert.deepEqual(report.hooks, ["Stop", "PreToolUse:Artifact", "PostToolUseFailure:mcp__paseo__smart_.*", "UserPromptSubmit"]);
+  assert.deepEqual(events(join(claudeDir, "settings.json")), ["PostToolUseFailure", "PreToolUse", "Stop", "UserPromptSubmit"]);
 });
 
 test("turning publishing off removes the Artifact hook, and turning it on adds it back", async () => {
@@ -403,7 +404,7 @@ test("turning Smart Compact off removes its hooks and keeps the Artifact hook", 
 
   writePluginSettings(paseoHome, { enabled: false });
   await installer.install({ registerMcp: false });
-  assert.deepEqual(events(path), ["PostToolUseFailure", "PreToolUse", "UserPromptSubmit"]);
+  assert.deepEqual(events(path), ["PostToolUseFailure", "PreToolUse", "Stop", "UserPromptSubmit"]);
 
   writePluginSettings(paseoHome, { enabled: false, publishAsMain: false });
   const none = await installer.install({ registerMcp: false });

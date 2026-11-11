@@ -56,7 +56,9 @@ const execFileAsync = promisify(execFile);
  */
 const MANAGED = [
   { event: "PostToolUse", matcher: "", script: "context-threshold.mjs", feature: "compact" },
-  { event: "Stop", matcher: "", script: "ask-compact.mjs", feature: "compact" },
+  // Stop also names background jobs a session restart killed (`hooks/killed-jobs.mjs`), so it rides any feature; its
+  // compaction ask checks Smart Compact itself (`askable`).
+  { event: "Stop", matcher: "", script: "ask-compact.mjs", feature: "tools" },
   { event: "PostCompact", matcher: "", script: "post-compact.mjs", feature: "compact" },
   { event: "SessionStart", matcher: "compact", script: "post-compact.mjs", feature: "compact" },
   // Publishes an artifact as the main account through a helper agent, which takes 10-20 s and may
