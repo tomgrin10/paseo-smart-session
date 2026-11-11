@@ -160,7 +160,7 @@ export function makeSettings(client: PluginClientContext) {
         : "Off. A page belongs to the session's own account, which you may not be able to open.";
     // A ZeroSub home whose settings.json no longer links to the main one: the short form here, the
     // full line with the fix command goes to the agent tool.
-    const homeHint = { copy: "Its settings.json is a copy, not a link to ~/.claude/settings.json, so hooks added since (publishing as the main account included) skip its sessions. Merge anything only it has, then link it back.", elsewhere: "Its settings.json links to another file, not ~/.claude/settings.json, so these hooks skip its sessions. Link it back to ~/.claude/settings.json.", missing: "It has no settings.json, so these hooks skip its sessions. Link ~/.claude/settings.json into its home." } as const;
+    const homeHint = { copy: "Its settings.json is a copy, not a link to ~/.claude/settings.json, so hooks added after it was copied, publishing as the main account among them, skip its sessions. Merge anything only it has, then link it back.", elsewhere: "Its settings.json links to another file, not ~/.claude/settings.json, so these hooks skip its sessions. Link it back to ~/.claude/settings.json.", missing: "It has no settings.json, so these hooks skip its sessions. Link ~/.claude/settings.json into its home." } as const;
     const accountName = (id: string) => claudeAccounts.find((account) => account.id === id)?.name ?? id;
     const pillOn = settings.showPill && (display.status !== "ready" || display.values.enable_composer_button);
 
