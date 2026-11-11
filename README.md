@@ -135,7 +135,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | Display | Sidebar row | On | |
 | | Pill on every session | On | A paused session keeps its pill either way |
 | | Replace Paseo's Claude usage card | On | Paseo 0.16+, web and desktop |
-| Claude Code | Register the hooks | On | Keep the context, compaction and publishing hooks installed. Flags a ZeroSub account home whose settings no longer link to these, so the hooks miss its sessions |
+| Claude Code | Register the hooks | On | Keep the hooks the features that are on need: context and compaction with Smart Compact, publishing with Publish artifacts as the main account. Turning a feature off removes its hooks. Flags a ZeroSub account home whose settings no longer link to these, so the hooks miss its sessions |
 | Limit timing | Pause at, check interval, wait after reset, spacing, continuation message, providers, windows | 100%, 15s, 30s, 5s | Behind **Edit**; each field is checked on its own |
 
 Hiding the row or the pill never turns a feature off.

@@ -215,9 +215,11 @@ export default function contribute(host: PluginServerContext) {
 
   server.handle(setSettings, async (patch) => {
     const settings = await writeSettings(patch);
-    // Reconciled here as well as on load, so turning the switch off removes the
-    // hooks immediately rather than at the next reload.
-    if (patch.installHooks !== undefined) void install().catch(() => undefined);
+    // Reconciled here as well as on load, so turning the switch, or a feature that needs hooks, off
+    // removes them immediately rather than at the next reload (`managedFor` in server/install.ts).
+    if (patch.installHooks !== undefined || patch.enabled !== undefined || patch.publishAsMain !== undefined) {
+      void install().catch(() => undefined);
+    }
     return { settings };
   });
 

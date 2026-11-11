@@ -27,6 +27,9 @@
  *     so the common case — every reload after the first — touches no files.
  *   - **Be reversible.** One backup, kept from the first modification, and turning
  *     `installHooks` off removes every entry we added.
+ *   - **Only what an enabled feature needs.** The compaction hooks are registered while
+ *     Smart Compact is on, the Artifact hook while publishing as the main account is on;
+ *     turning a feature off removes its hooks (`managedFor`).
  */
 
 import { randomUUID } from "node:crypto";
@@ -52,14 +55,27 @@ const execFileAsync = promisify(execFile);
  * inject but does not know. See `hooks/pointer.mjs`.
  */
 const MANAGED = [
-  { event: "PostToolUse", matcher: "", script: "context-threshold.mjs" },
-  { event: "Stop", matcher: "", script: "ask-compact.mjs" },
-  { event: "PostCompact", matcher: "", script: "post-compact.mjs" },
-  { event: "SessionStart", matcher: "compact", script: "post-compact.mjs" },
+  { event: "PostToolUse", matcher: "", script: "context-threshold.mjs", feature: "compact" },
+  { event: "Stop", matcher: "", script: "ask-compact.mjs", feature: "compact" },
+  { event: "PostCompact", matcher: "", script: "post-compact.mjs", feature: "compact" },
+  { event: "SessionStart", matcher: "compact", script: "post-compact.mjs", feature: "compact" },
   // Publishes an artifact as the main account through a helper agent, which takes 10-20 s and may
   // queue behind another; the hook gives up at 160 s (`hooks/publish-as.mjs`).
-  { event: "PreToolUse", matcher: "Artifact", script: "publish-as.mjs", timeout: 180 },
+  { event: "PreToolUse", matcher: "Artifact", script: "publish-as.mjs", timeout: 180, feature: "publish" },
 ] as const;
+
+/** Which features are on: Smart Compact (`enabled`) and publishing as the main account. */
+export interface HookFeatures {
+  readonly compact: boolean;
+  readonly publish: boolean;
+}
+
+const ALL_FEATURES: HookFeatures = { compact: true, publish: true };
+
+/** The hooks the enabled features need; a feature that is off gets none registered. */
+export function managedFor(features: HookFeatures) {
+  return MANAGED.filter((managed) => features[managed.feature]);
+}
 
 /** Every script we might have written, including into an older install's path. */
 const OUR_SCRIPTS = ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs"];
@@ -215,7 +231,7 @@ export function commandFor(shims: string, script: string): string {
  * directory or renamed a script leaves nothing stale behind — and so the manual
  * entries an early adopter added by hand are adopted rather than duplicated.
  */
-export function reconcile(existing: HookMap, shims: string | null): HookMap {
+export function reconcile(existing: HookMap, shims: string | null, features: HookFeatures = ALL_FEATURES): HookMap {
   const next: HookMap = {};
 
   for (const [event, groups] of Object.entries(existing)) {
@@ -231,7 +247,7 @@ export function reconcile(existing: HookMap, shims: string | null): HookMap {
 
   if (shims === null) return next;
 
-  for (const managed of MANAGED) {
+  for (const managed of managedFor(features)) {
     const { event, matcher, script } = managed;
     const groups = next[event] ?? [];
     const entry: HookEntry = {
@@ -368,7 +384,7 @@ async function ensureMcp(pluginDir: string): Promise<InstallReport["mcp"]> {
  * Reconciles one Claude Code settings file: only our entries change, a malformed file is left
  * alone, and an unchanged file is not written. `create`: write the file when it doesn't exist.
  */
-async function reconcileFile(path: string, shims: string | null, create: boolean): Promise<{ changed: boolean; error: string | null }> {
+async function reconcileFile(path: string, shims: string | null, features: HookFeatures, create: boolean): Promise<{ changed: boolean; error: string | null }> {
   let raw = "";
   let parsed: Record<string, unknown> = {};
   try {
@@ -385,7 +401,7 @@ async function reconcileFile(path: string, shims: string | null, create: boolean
   }
 
   const before = (parsed.hooks ?? {}) as HookMap;
-  const after = reconcile(before, shims);
+  const after = reconcile(before, shims, features);
   const merged = { ...parsed, hooks: after };
   if (Object.keys(after).length === 0) delete (merged as { hooks?: unknown }).hooks;
 
@@ -453,7 +469,8 @@ export function install(options: { registerMcp?: boolean } = {}): Promise<Instal
       };
     }
 
-    const main = await reconcileFile(path, pluginDir === null ? null : shims, true);
+    const features: HookFeatures = { compact: settings.enabled, publish: settings.publishAsMain };
+    const main = await reconcileFile(path, pluginDir === null ? null : shims, features, true);
     if (main.error !== null) {
       return { pluginDir, settingsPath: path, changed: false, hooks: [], mcp: "skipped", error: main.error };
     }
@@ -461,7 +478,7 @@ export function install(options: { registerMcp?: boolean } = {}): Promise<Instal
 
     const lines = pluginDir === null
       ? []
-      : MANAGED.map(({ event, matcher }) => `${event}${matcher === "" ? "" : `:${matcher}`}`);
+      : managedFor(features).map(({ event, matcher }) => `${event}${matcher === "" ? "" : `:${matcher}`}`);
 
     // Read-only: a home that stopped linking here misses these hooks. Said, never repaired.
     const broken = await brokenHomeLinks(path).catch(() => []);

@@ -8,7 +8,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-import { commandFor, mcpDefinition, mcpPointsAtPlugin, reconcile } from "./server/install.ts";
+import { commandFor, managedFor, mcpDefinition, mcpPointsAtPlugin, reconcile } from "./server/install.ts";
+import { clearSettingsCache } from "./server/settings.ts";
 import { PLUGIN_VERSION } from "./shared/version.ts";
 
 const DIR = "/plugins/paseo-smart-session";
@@ -221,6 +222,8 @@ function fakeInstall(): { paseoHome: string; claudeDir: string; pluginDir: strin
 async function freshInstaller(paseoHome: string, claudeDir: string) {
   process.env.PASEO_HOME = paseoHome;
   process.env.CLAUDE_CONFIG_DIR = claudeDir;
+  // The settings module is shared by every instance below and caches what it read.
+  clearSettingsCache();
   // settings.server.ts caches, so each case takes its own module instance.
   return (await import(`./server/install.ts?case=${claudeDir}`)) as typeof import("./server/install.ts");
 }
@@ -330,4 +333,75 @@ test("a symlinked settings.json stays a symlink: the hooks are written through t
   assert.equal(written.model, "opus");
   assert.equal(written.hooks.Stop[0].hooks[0].command, cmd("ask-compact.mjs", join(paseoHome, "plugin-data", "smart-session", "hooks")));
   assert.equal((await installer.install({ registerMcp: false })).changed, false);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Hooks follow the features that need them.
+ * -------------------------------------------------------------------------- */
+
+/** Smart Session's own settings file in a fake Paseo home. */
+function writePluginSettings(paseoHome: string, settings: Record<string, unknown>): void {
+  const dir = join(paseoHome, "plugin-data", "smart-session");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "settings.json"), JSON.stringify(settings), "utf8");
+  clearSettingsCache();
+}
+
+const events = (path: string) => Object.keys(JSON.parse(readFileSync(path, "utf8")).hooks ?? {}).sort();
+
+test("each feature brings only its own hooks", () => {
+  assert.deepEqual(managedFor({ compact: false, publish: true }).map((m) => m.script), ["publish-as.mjs"]);
+  assert.ok(!managedFor({ compact: true, publish: false }).some((m) => m.script === "publish-as.mjs"));
+  assert.deepEqual(managedFor({ compact: false, publish: false }), []);
+  const publishOnly = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS, { compact: false, publish: true });
+  assert.deepEqual(Object.keys(publishOnly).sort(), ["PreToolUse", "Stop"]);
+  assert.deepEqual(commandsFor(publishOnly, "Stop"), [foreign.command]);
+});
+
+test("a fresh install with Smart Compact off still gets the Artifact hook, and only that", async () => {
+  // Publishing as the main account is on by default and needs only PreToolUse(Artifact).
+  const { paseoHome, claudeDir } = fakeInstall();
+  writePluginSettings(paseoHome, { enabled: false });
+  const installer = await freshInstaller(paseoHome, claudeDir);
+
+  const report = await installer.install({ registerMcp: false });
+  assert.equal(report.error, null);
+  assert.deepEqual(report.hooks, ["PreToolUse:Artifact"]);
+  assert.deepEqual(events(join(claudeDir, "settings.json")), ["PreToolUse"]);
+});
+
+test("turning publishing off removes the Artifact hook, and turning it on adds it back", async () => {
+  const { paseoHome, claudeDir } = fakeInstall();
+  const path = join(claudeDir, "settings.json");
+  const installer = await freshInstaller(paseoHome, claudeDir);
+  await installer.install({ registerMcp: false });
+  assert.ok(events(path).includes("PreToolUse"));
+
+  writePluginSettings(paseoHome, { publishAsMain: false });
+  const off = await installer.install({ registerMcp: false });
+  assert.equal(off.changed, true);
+  assert.ok(!off.hooks.includes("PreToolUse:Artifact"));
+  assert.deepEqual(events(path), ["PostCompact", "PostToolUse", "SessionStart", "Stop"]);
+
+  writePluginSettings(paseoHome, { publishAsMain: true });
+  const on = await installer.install({ registerMcp: false });
+  assert.equal(on.changed, true);
+  assert.ok(on.hooks.includes("PreToolUse:Artifact"));
+  assert.deepEqual(events(path), ["PostCompact", "PostToolUse", "PreToolUse", "SessionStart", "Stop"]);
+});
+
+test("turning Smart Compact off removes its hooks and keeps the Artifact hook", async () => {
+  const { paseoHome, claudeDir } = fakeInstall();
+  const path = join(claudeDir, "settings.json");
+  const installer = await freshInstaller(paseoHome, claudeDir);
+  await installer.install({ registerMcp: false });
+
+  writePluginSettings(paseoHome, { enabled: false });
+  await installer.install({ registerMcp: false });
+  assert.deepEqual(events(path), ["PreToolUse"]);
+
+  writePluginSettings(paseoHome, { enabled: false, publishAsMain: false });
+  const none = await installer.install({ registerMcp: false });
+  assert.deepEqual(none.hooks, []);
+  assert.deepEqual(events(path), []);
 });

@@ -395,6 +395,10 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
   `refreshAgent` (ZeroSub's CLI reload doesn't find a new background agent), confirm ZeroSub's session record says the
   target, then prompt, wait (capped), and archive in a `finally`. One at a time; each run is logged. Never prompt a
   helper that isn't confirmed on the target, and never read a credential file.
+- Hooks follow features (`managedFor` in `server/install.ts`): the compaction hooks are registered while Smart Compact is
+  on, `PreToolUse(Artifact)` while publishing as the main account is on, and each is removed when its feature is turned
+  off. So "Register the hooks" stays usable with Smart Compact off, and a fresh install with Smart Compact off still gets
+  the Artifact hook (`install.test.ts`).
 - Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.
 - A seat session reads its ZeroSub home's `settings.json`, which ZeroSub links to the main one. Never write into
   those homes: per-home copies are how a hook silently stops reaching seat sessions (2026-11-10).

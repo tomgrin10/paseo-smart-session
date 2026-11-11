@@ -122,8 +122,9 @@ export function makeSettings(client: PluginClientContext) {
     const report = install.data?.report;
     const hooksHint = report === undefined ? "Keeps this plugin's hooks (context, compaction, publishing) in ~/.claude/settings.json."
       : report.error !== null ? report.error
-        : report.pluginDir === null || report.hooks.length === 0 ? "Not registered, so nothing will ask a session to compact itself."
-          : `Registered: ${report.hooks.join(", ")}. Only entries that point at this plugin are touched.`;
+        : !settings.enabled && !settings.publishAsMain ? "Nothing to register while Smart Compact and publishing as the main account are off."
+          : report.pluginDir === null || report.hooks.length === 0 ? "Not registered, so nothing will ask a session to compact itself or publish as the main account."
+            : `Registered: ${report.hooks.join(", ")}. Only entries that point at this plugin are touched.`;
     const from = formatCompactTokens(settings.thresholds.largeWindowFrom);
 
     // Protection: the stored document, plus who runs it on this host.
@@ -251,7 +252,7 @@ export function makeSettings(client: PluginClientContext) {
 
       <SettingsSection title="Claude Code">
         <SettingsCard>
-          <SettingsSwitch label="Register the hooks" hint={hooksHint} value={settings.installHooks} disabled={off}
+          <SettingsSwitch label="Register the hooks" hint={hooksHint} value={settings.installHooks} disabled={saving || (!settings.enabled && !settings.publishAsMain)}
             onValueChange={(installHooks) => void save({ installHooks }, installHooks ? "Hooks registered with Claude Code" : "Hooks removed from Claude Code")} />
           {report?.mcp === "unavailable" ? <SettingsRow label="MCP server not registered" hint="The claude command was not reachable from the daemon." /> : null}
           {(report?.homes ?? []).map((home) => <SettingsRow key={home.accountId} label={`Hooks don't reach ${accountName(home.accountId)}`} hint={homeHint[home.problem]} />)}
