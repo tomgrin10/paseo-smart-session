@@ -8,7 +8,7 @@ import { z } from "zod";
 export const TOOL_ROW_KIND = "smart-session-tool";
 export const PROMPT_CARD_KIND = "smart-session-prompt";
 
-export const SMART_SESSION_TOOLS = ["context_status", "checkpoint", "request_compaction", "defer_compaction", "budget_status"] as const;
+export const SMART_SESSION_TOOLS = ["context_status", "checkpoint", "request_compaction", "defer_compaction", "budget_status", "publish_as", "publish_as_settings"] as const;
 export type SmartSessionTool = (typeof SMART_SESSION_TOOLS)[number];
 
 export const ToolRowSchema = z.object({
@@ -106,6 +106,8 @@ function checkpointDetail(input: Record<string, unknown>): string {
  */
 export const TOOL_PRESENTATION: Record<SmartSessionTool, "routine" | "moment"> = {
   context_status: "routine", budget_status: "routine", checkpoint: "routine", request_compaction: "routine", defer_compaction: "routine",
+  // The agent reports the link itself; the call stays in Paseo's own group.
+  publish_as: "routine", publish_as_settings: "routine",
 };
 
 /** The chat row for a tool call, or null to leave it as Paseo's own grouped tool call. */
@@ -125,7 +127,7 @@ export function toolRow(name: string, status: string, detail: unknown, error: un
   const running = !failed && status !== "completed";
   if (failed) {
     const why = clip(oneLine(readText(error) || output.replace(/^Failed: /, "") || ""), 500);
-    return { tool, state: "failed", line: `Smart Session couldn't ${tool === "checkpoint" ? "save task state" : tool === "request_compaction" ? "queue the compaction" : tool === "defer_compaction" ? "put off compacting" : tool === "budget_status" ? "read plan usage" : "read the context"}`, detail: why };
+    return { tool, state: "failed", line: `Smart Session couldn't ${tool === "checkpoint" ? "save task state" : tool === "request_compaction" ? "queue the compaction" : tool === "defer_compaction" ? "put off compacting" : tool === "budget_status" ? "read plan usage" : tool === "publish_as" ? "publish the artifact" : tool === "publish_as_settings" ? "read the publishing setting" : "read the context"}`, detail: why };
   }
   switch (tool) {
     case "context_status":
@@ -158,6 +160,15 @@ export function toolRow(name: string, status: string, detail: unknown, error: un
       const minutes = /Deferred for (\d+) minutes/.exec(output)?.[1] ?? (typeof input.minutes === "number" ? String(input.minutes) : null);
       return { tool, state: running ? "running" : "done", line: running ? "Putting off compacting…" : `Put off compacting${minutes ? ` for ${minutes}m` : ""}${reason ? ` · ${reason}` : ""}`, detail: clip(output, 1500) };
     }
+    case "publish_as": {
+      if (running) return { tool, state: "running", line: "Publishing as the main account…", detail: "" };
+      const url = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/.exec(output)?.[0];
+      return url && /^Published as /.test(output)
+        ? { tool, state: "done", line: `Published as the main account · ${url}`, detail: clip(output, 1500) }
+        : { tool, state: "refused", line: "Not published", detail: clip(output, 1500) };
+    }
+    case "publish_as_settings":
+      return { tool, state: running ? "running" : "done", line: running ? "Reading the publishing setting…" : clip(oneLine(output.split("\n")[0] ?? ""), 120), detail: clip(output, 1500) };
   }
 }
 

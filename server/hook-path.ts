@@ -20,8 +20,8 @@ import { join } from "node:path";
 
 import { dataDir } from "./store.ts";
 
-/** The scripts that get a shim: the three hooks, and the agent-facing MCP server. */
-export const SHIMMED = ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "mcp.mjs"] as const;
+/** The scripts that get a shim: the hooks, and the agent-facing MCP server. */
+export const SHIMMED = ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs", "mcp.mjs"] as const;
 export type Shimmed = (typeof SHIMMED)[number];
 
 /** Where each script lives inside an install. */

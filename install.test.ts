@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -82,9 +82,14 @@ test("a node registration is stale once the plugin runs under the desktop app", 
   assert.equal(mcpPointsAtPlugin(desktopRegistration.replace("ELECTRON_RUN_AS_NODE=1", ""), desktop), false);
 });
 
-test("an empty settings file gains exactly the four managed entries", () => {
+test("an empty settings file gains exactly the five managed entries", () => {
   const next = reconcile({}, SHIMS);
-  assert.deepEqual(Object.keys(next).sort(), ["PostCompact", "PostToolUse", "SessionStart", "Stop"]);
+  assert.deepEqual(Object.keys(next).sort(), ["PostCompact", "PostToolUse", "PreToolUse", "SessionStart", "Stop"]);
+  // Publishing as the main account runs a helper agent: Artifact only, with a long timeout.
+  assert.deepEqual(commandsFor(next, "PreToolUse"), [cmd("publish-as.mjs")]);
+  assert.equal(next.PreToolUse?.[0]?.matcher, "Artifact");
+  assert.equal(next.PreToolUse?.[0]?.hooks?.[0]?.timeout, 180);
+  assert.equal(next.Stop?.[0]?.hooks?.[0]?.timeout, 10);
   assert.deepEqual(commandsFor(next, "Stop"), [cmd("ask-compact.mjs")]);
   // The one that cannot inject and the one that can, same script, two events.
   assert.deepEqual(commandsFor(next, "PostCompact"), [cmd("post-compact.mjs")]);
@@ -100,7 +105,7 @@ test("reconcile writes the guarded stable shim, never an install directory", () 
   assert.deepEqual(commandsFor(next, "PostToolUse"), [
     "if [ -f '/paseo/plugin-data/smart-session/hooks/context-threshold.mjs' ]; then node '/paseo/plugin-data/smart-session/hooks/context-threshold.mjs'; fi",
   ]);
-  for (const event of ["PostToolUse", "Stop", "PostCompact", "SessionStart"]) {
+  for (const event of ["PostToolUse", "Stop", "PostCompact", "SessionStart", "PreToolUse"]) {
     for (const command of commandsFor(next, event)) assert.doesNotMatch(command, /\/plugins\/|node_modules|checkout/);
   }
 });
@@ -137,8 +142,10 @@ test("hooks belonging to anyone else are left exactly as they were", () => {
   };
   const next = reconcile(before, SHIMS);
   assert.ok(commandsFor(next, "Stop").includes(foreign.command));
-  assert.deepEqual(commandsFor(next, "PreToolUse"), ["check-auth.sh"]);
+  // Ours goes in its own Artifact group; theirs keeps its matcher and its place.
+  assert.deepEqual(commandsFor(next, "PreToolUse"), ["check-auth.sh", cmd("publish-as.mjs")]);
   assert.equal(next.PreToolUse?.[0]?.matcher, "mcp__.*");
+  assert.deepEqual(next.PreToolUse?.[0]?.hooks, [{ type: "command", command: "check-auth.sh" }]);
 });
 
 test("entries added by hand are adopted, not duplicated", () => {
@@ -187,7 +194,7 @@ test("a matcher group that only ever held our hook is dropped, not left empty", 
 /** An install directory holding every script a shim can name, at a given version. */
 function stubInstall(dir: string, version: string): void {
   mkdirSync(join(dir, "hooks"), { recursive: true });
-  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs"]) {
+  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs"]) {
     writeFileSync(join(dir, "hooks", script), "// stub\n", "utf8");
   }
   writeFileSync(join(dir, "mcp.mjs"), "// stub\n", "utf8");
@@ -301,4 +308,29 @@ test("importing the installer writes nothing; only the load module does", async 
   );
 
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { model: "opus[1m]" });
+});
+
+test("ZeroSub homes with their own settings.json get the hooks too; a symlinked one stays a symlink", async () => {
+  // A seat session reads only its ZeroSub home's settings.json. ZeroSub starts it as a symlink to
+  // the main one, but anything that rewrites it atomically leaves a copy, and then a hook installed
+  // only in ~/.claude never reaches the seat sessions it is for (seen 2026-11-11).
+  const { paseoHome, claudeDir } = fakeInstall();
+  const main = join(claudeDir, "settings.json");
+  writeFileSync(main, JSON.stringify({ model: "opus" }), "utf8");
+  const homes = join(paseoHome, "zerosub", "homes");
+  for (const id of ["own", "linked", "empty"]) mkdirSync(join(homes, id), { recursive: true });
+  writeFileSync(join(homes, "own", "settings.json"), JSON.stringify({ theme: "dark", hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "theirs.sh" }] }] } }), "utf8");
+  symlinkSync(main, join(homes, "linked", "settings.json"));
+  const installer = await freshInstaller(paseoHome, claudeDir);
+
+  const report = await installer.install({ registerMcp: false });
+  assert.equal(report.error, null);
+  const shims = join(paseoHome, "plugin-data", "smart-session", "hooks");
+  const own = JSON.parse(readFileSync(join(homes, "own", "settings.json"), "utf8"));
+  assert.equal(own.theme, "dark");
+  assert.deepEqual(commandsFor(own.hooks, "PreToolUse"), ["theirs.sh", cmd("publish-as.mjs", shims)]);
+  assert.ok(lstatSync(join(homes, "linked", "settings.json")).isSymbolicLink(), "the symlink is kept");
+  assert.deepEqual(commandsFor(JSON.parse(readFileSync(main, "utf8")).hooks, "PreToolUse"), [cmd("publish-as.mjs", shims)]);
+  assert.equal(existsSync(join(homes, "empty", "settings.json")), false, "no file is created in a home");
+  assert.equal((await installer.install({ registerMcp: false })).changed, false, "and the next load writes nothing");
 });

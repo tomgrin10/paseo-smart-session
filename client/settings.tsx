@@ -11,7 +11,7 @@ import { guardPreferences } from "../shared/guard/contracts";
 import { isPending, type Policy } from "../shared/guard/policy";
 import { checkTiming, timingOf, type Timing } from "../shared/guard/timing";
 import { governorNotice } from "../shared/guard/presentation";
-import { getSettings, installStatus, setSettings } from "../shared/smart-session";
+import { getSettings, installStatus, setSettings, subscriptionsStatus } from "../shared/smart-session";
 import { DEFAULT_THRESHOLDS, linesProblem, withCompactThreshold } from "../shared/thresholds";
 import { broadcastDisplay } from "./display";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
@@ -50,6 +50,8 @@ export function makeSettings(client: PluginClientContext) {
     const readInstall = useRpc(installStatus);
     const query = useQuery({ queryKey: ["smart-session", "settings"], queryFn: () => read({}), refetchInterval: 60_000 });
     const install = useQuery({ queryKey: ["smart-session", "install"], queryFn: () => readInstall({}), refetchInterval: 5 * 60_000 });
+    const readSubscriptions = useRpc(subscriptionsStatus);
+    const subscriptions = useQuery({ queryKey: ["smart-session", "subscriptions"], queryFn: () => readSubscriptions({}), refetchInterval: 5 * 60_000 });
     const guard = useSettings(guardPreferences);
     const display = useSettings(displayPreferences);
     const status = useSyncExternalStore(subscribeGuard, guardSnapshot, guardSnapshot);
@@ -144,6 +146,17 @@ export function makeSettings(client: PluginClientContext) {
         toast.show("Limit timing saved");
       }
     }
+    // Publishing as the main account: only meaningful with ZeroSub and more than one Claude account.
+    const claudeAccounts = (subscriptions.data?.accounts ?? []).filter((account) => account.family === "claude");
+    const mainAccount = claudeAccounts.find((account) => account.kind === "main");
+    const publishTarget = claudeAccounts.find((account) => account.id === settings.publishAsAccount) ?? mainAccount;
+    const publishTargetName = publishTarget?.name ?? "the main account";
+    const publishMatters = claudeAccounts.length > 1;
+    const publishHint = !publishMatters
+      ? "Matters only with ZeroSub and more than one Claude account. Then a page an agent publishes from another account goes to your main account instead."
+      : settings.publishAsMain
+        ? `On. A page published from a session on another Claude account is published as ${publishTargetName} by a short-lived helper, so you can open and share it.`
+        : "Off. A page belongs to the account of the session that publishes it, which you may not be able to open.";
     const pillOn = settings.showPill && (display.status !== "ready" || display.values.enable_composer_button);
 
     return <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingVertical: 8, gap: 24 }}>
@@ -218,6 +231,17 @@ export function makeSettings(client: PluginClientContext) {
                 value={display.values.replaceUsageCard} disabled={display.saving} onValueChange={(replaceUsageCard) => void display.save({ ...display.values, replaceUsageCard }, display.revision)} />
             </SettingsCard>}
         {display.status === "ready" && display.saveError ? <Text accessibilityRole="alert" style={{ color: c.statusDanger }}>{display.saveError}</Text> : null}
+      </SettingsSection>
+
+      <SettingsSection title="Artifacts" info="An artifact belongs to the Claude account of the session that publishes it. Under ZeroSub that can be a seat account you can't open. This hands those publishes to a helper on your main account; the agent gets the link as usual.">
+        <SettingsCard>
+          <SettingsSwitch label="Publish artifacts as the main account" hint={publishHint} value={settings.publishAsMain} disabled={saving}
+            onValueChange={(publishAsMain) => void save({ publishAsMain }, publishAsMain ? `Artifacts are published as ${publishTargetName}` : "Artifacts stay on the session's own account")} />
+          {publishMatters ? <SettingsSelect label="Publish as" hint="The account that owns the pages. Pages published before keep their owner."
+            value={publishTarget?.id ?? "main"} options={claudeAccounts.map((account) => ({ label: account.kind === "main" ? `${account.name} (main)` : account.name, value: account.id }))}
+            disabled={saving || !settings.publishAsMain}
+            onValueChange={(id) => { const account = claudeAccounts.find((candidate) => candidate.id === id); void save({ publishAsAccount: account?.kind === "main" ? null : id }, `Artifacts are published as ${account?.name ?? "the main account"}`); }} /> : null}
+        </SettingsCard>
       </SettingsSection>
 
       <SettingsSection title="Claude Code">

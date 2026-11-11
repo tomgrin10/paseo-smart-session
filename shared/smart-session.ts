@@ -199,6 +199,10 @@ export const SettingsSchema = z.object({
   autoEnrol: z.boolean(),
   /** Whether the plugin keeps its own hooks registered in Claude Code. */
   installHooks: z.boolean(),
+  /** Publish artifacts from sessions on another Claude account as `publishAsAccount` (ZeroSub). */
+  publishAsMain: z.boolean(),
+  /** A ZeroSub account id, or null for the main Claude account. */
+  publishAsAccount: z.string().nullable(),
 });
 
 /**
@@ -268,4 +272,54 @@ export const usageCardsStatus = defineRpc({
   output: z.object({
     cards: z.array(z.object({ key: z.string(), emailHash: z.string() })),
   }),
+});
+
+export const PublishResultSchema = z.object({
+  ok: z.boolean(),
+  url: z.string().nullable(),
+  /** A readable name for the owning account; never an email. */
+  owner: z.string(),
+  ownerAccountId: z.string(),
+  helperId: z.string().nullable(),
+  ms: z.number(),
+  outcome: z.enum(["published", "failed", "timeout", "wrong-account", "busy"]),
+  error: z.string().nullable(),
+  resultText: z.string().nullable(),
+});
+
+/**
+ * Publish an artifact as another Claude account through a helper agent (`server/publish-as.ts`).
+ * Decides, and when the call is taken over, queues it and returns at once: a publish can outlast one
+ * RPC, so callers `wait` for it in steps.
+ */
+export const publishAsStart = defineRpc({
+  name: "smart-session.publish_as.start",
+  input: z.object({
+    callerAgentId: z.string().min(1).nullable(),
+    cwd: z.string().min(1),
+    /** The Artifact tool's input, passed on verbatim. */
+    input: z.record(z.string(), z.unknown()),
+    account: z.string().nullable().optional(),
+    via: z.enum(["hook", "tool"]),
+    isHelper: z.boolean().optional(),
+  }),
+  output: z.discriminatedUnion("decision", [
+    z.object({ decision: z.literal("pass"), why: z.string(), note: z.string().nullable() }),
+    z.object({ decision: z.literal("queued"), jobId: z.string(), owner: z.string() }),
+  ]),
+});
+
+export const publishAsWait = defineRpc({
+  name: "smart-session.publish_as.wait",
+  input: z.object({
+    jobId: z.string().min(1),
+    waitMs: z.number().int().min(0).max(25_000),
+    /** Whether the caller has the native `smart_*` tools, for the tool name a failure points at. */
+    native: z.boolean().optional(),
+  }),
+  output: z.discriminatedUnion("done", [
+    z.object({ done: z.literal(false) }),
+    /** `text` is what the model reads: `successReason` or `failureReason` in `shared/publish-as.ts`. */
+    z.object({ done: z.literal(true), result: PublishResultSchema, text: z.string() }),
+  ]),
 });

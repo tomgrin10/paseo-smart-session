@@ -379,6 +379,24 @@ the tools answer as the calling agent, and across a plugin reload the native cal
 and the native call works again after the next prompt. `--start-time` measures opening an unloaded Claude agent with
 no tools, the stdio server and native tools (local only; needs a logged-in `claude`).
 
+## Publishing as the main account
+
+- An artifact belongs to the account of the session that publishes it. `hooks/publish-as.mjs` (a `PreToolUse` hook,
+  matcher `Artifact`, timeout 180 s; logic in `server/hooklib/publish-as.mjs`) asks the plugin
+  (`smart-session.publish_as.start`/`.wait`) whether to take a publish over, and when it does answers "deny" with the
+  link. That reason leads with the success and says not to retry; `publish-as.test.ts` pins the wording.
+- The decisions are pure, in `shared/publish-as.ts`: only a publish that creates a page, a `type_url` create, or an
+  update/asset upload to a url in `publish-as/pages.json` is taken over, and only for a caller on another Claude account
+  than the target. Everything else, and every url we didn't make, passes through. ZeroSub unreadable: pass, with a note.
+- `server/publish-as.ts` runs the helper: create (background, Haiku, chosen id, label `smart-session.helper=publish-as`,
+  env `SMART_SESSION_PUBLISH_HELPER=1`), pin with ZeroSub's `zerosub.agents.account`, reopen with our own
+  `refreshAgent` (ZeroSub's CLI reload doesn't find a new background agent), confirm ZeroSub's session record says the
+  target, then prompt, wait (capped), and archive in a `finally`. One at a time; each run is logged. Never prompt a
+  helper that isn't confirmed on the target, and never read a credential file.
+- Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.
+- `server/install.ts` also reconciles our hooks in each ZeroSub account home whose `settings.json` is its own file (by
+  real path, never created, a symlink to the main file is left a symlink): seat sessions read only that file.
+
 ## Chat timeline
 
 Timeline transforms must not break Paseo's grouping. Paseo groups only tool_call and thought items, and a transform can

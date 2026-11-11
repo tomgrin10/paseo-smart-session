@@ -19,7 +19,7 @@ export { named };
 import { defer, readLedger } from "./hooklib/asks.mjs";
 
 /** The tools that act on the calling session and need its agent id. */
-export const AGENT_SCOPED = new Set(["context_status", "checkpoint", "request_compaction", "defer_compaction"]);
+export const AGENT_SCOPED = new Set(["context_status", "checkpoint", "request_compaction", "defer_compaction", "publish_as", "publish_as_settings"]);
 
 /**
  * @param {{ agentId: string | null, call: (method: string, input: unknown) => Promise<any>, home?: string, stateFile?: string }} context
@@ -460,6 +460,78 @@ export function agentTools(context) {
             ? "This is not the first time this session has put it off, and the window has kept filling the whole while. If the moment does not arrive soon, checkpoint and compact anyway — the alternative is Claude Code's own auto-compact firing with no instructions and no pointer to your state file."
             : "When the step you are on is finished, call checkpoint and then request_compaction.",
         ].join("\n");
+      },
+    },
+
+    publish_as: {
+      description:
+        "Publish an HTML file as an artifact on another Claude account, by default the user's main one, so the user owns the page and can open, share and edit it. Under ZeroSub this session may run on a different (seat) account, and a page published from here would belong to that account. A Smart Session hook already does this for a plain Artifact publish, so call this only when that hook told you to, or to choose another account. A short-lived helper agent on that account publishes the file and is archived afterwards; it takes 10-30 seconds. Pass a url only for a page published this way before.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          file_path: { type: "string", description: "Absolute path to the page (.html) to publish." },
+          title: { type: "string", description: "Fallback title when the page has no <title>." },
+          description: { type: "string", description: "One sentence for the gallery card." },
+          icon: { type: "string", description: "One short generic word for the tab icon, e.g. chart or doc." },
+          url: { type: "string", description: "Update this page in place. Only pages published through Smart Session can be updated." },
+          account: { type: "string", description: 'The account to publish as: "main" (the default), a ZeroSub account id, or a name the user gave an account.' },
+        },
+        required: ["file_path"],
+        additionalProperties: false,
+      },
+      async run(args) {
+        const agentId = requireAgent();
+        const filePath = String(args.file_path ?? "");
+        if (!filePath.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(filePath)) return "file_path must be an absolute path. Nothing was published.";
+        const input = { action: "publish", file_path: filePath };
+        for (const key of ["title", "description", "icon", "url"]) if (typeof args[key] === "string" && args[key] !== "") input[key] = args[key];
+        const started = await callPlugin("smart-session.publish_as.start", {
+          callerAgentId: agentId, cwd: dirname(filePath), input, via: "tool",
+          account: typeof args.account === "string" && args.account !== "" ? args.account : null,
+        });
+        if (started.decision !== "queued") return started.note ?? "Nothing was published.";
+        for (;;) {
+          const waited = await callPlugin("smart-session.publish_as.wait", { jobId: started.jobId, waitMs: 25_000, native: false });
+          if (waited.done) return waited.text;
+        }
+      },
+    },
+
+    publish_as_settings: {
+      description:
+        "Read or change Smart Session's \"Publish artifacts as the main account\" setting: whether an artifact published from a session on another Claude account (under ZeroSub) is published on the main account instead, and which account that is. Call with no arguments to read it. Change it only when the user asks.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", description: "Turn publishing as the main account on or off." },
+          account: { type: "string", description: 'Which Claude account to publish as: "main", or an account id or name from Smart Session\'s subscriptions.' },
+        },
+        additionalProperties: false,
+      },
+      async run(args) {
+        const patch = {};
+        if (typeof args.enabled === "boolean") patch.publishAsMain = args.enabled;
+        const subscriptions = await callPlugin("smart-session.subscriptions", {}).catch(() => null);
+        const claude = (subscriptions?.accounts ?? []).filter((account) => account.family === "claude");
+        if (typeof args.account === "string" && args.account.trim() !== "") {
+          const wanted = args.account.trim().toLowerCase();
+          if (wanted === "main") patch.publishAsAccount = null;
+          else {
+            const match = claude.find((account) => account.id.toLowerCase() === wanted || account.name.toLowerCase() === wanted);
+            if (!match) return `No Claude account matches "${args.account}". Accounts: ${claude.map((account) => `${account.name} (${account.id})`).join(", ") || "none (ZeroSub isn't enabled)"}. Nothing was changed.`;
+            patch.publishAsAccount = match.kind === "main" ? null : match.id;
+          }
+        }
+        const changed = Object.keys(patch).length > 0;
+        const { settings } = changed ? await callPlugin("smart-session.settings.set", patch) : await callPlugin("smart-session.settings.get", {});
+        const target = settings.publishAsAccount === null
+          ? "the main Claude account (CLI login)"
+          : (claude.find((account) => account.id === settings.publishAsAccount)?.name ?? settings.publishAsAccount);
+        const lines = [
+          `${changed ? "Saved. " : ""}Publish artifacts as the main account: ${settings.publishAsMain ? "on" : "off"}. Target: ${target}.`,
+          claude.length < 2 ? "ZeroSub has fewer than two Claude accounts here, so this changes nothing yet." : `Claude accounts: ${claude.map((account) => account.name).join(", ")}.`,
+        ];
+        return lines.join("\n");
       },
     },
   };

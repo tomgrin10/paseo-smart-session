@@ -31,7 +31,7 @@
 
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { access, copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -55,10 +55,13 @@ const MANAGED = [
   { event: "Stop", matcher: "", script: "ask-compact.mjs" },
   { event: "PostCompact", matcher: "", script: "post-compact.mjs" },
   { event: "SessionStart", matcher: "compact", script: "post-compact.mjs" },
+  // Publishes an artifact as the main account through a helper agent, which takes 10-20 s and may
+  // queue behind another; the hook gives up at 160 s (`hooks/publish-as.mjs`).
+  { event: "PreToolUse", matcher: "Artifact", script: "publish-as.mjs", timeout: 180 },
 ] as const;
 
 /** Every script we might have written, including into an older install's path. */
-const OUR_SCRIPTS = ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs"];
+const OUR_SCRIPTS = ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs"];
 
 const HOOK_TIMEOUT_SECONDS = 10;
 
@@ -225,12 +228,13 @@ export function reconcile(existing: HookMap, shims: string | null): HookMap {
 
   if (shims === null) return next;
 
-  for (const { event, matcher, script } of MANAGED) {
+  for (const managed of MANAGED) {
+    const { event, matcher, script } = managed;
     const groups = next[event] ?? [];
     const entry: HookEntry = {
       type: "command",
       command: commandFor(shims, script),
-      timeout: HOOK_TIMEOUT_SECONDS,
+      timeout: "timeout" in managed ? managed.timeout : HOOK_TIMEOUT_SECONDS,
     };
     const group = groups.find((candidate) => (candidate.matcher ?? "") === matcher);
     if (group === undefined) groups.push({ matcher, hooks: [entry] });
@@ -341,6 +345,57 @@ async function ensureMcp(pluginDir: string): Promise<InstallReport["mcp"]> {
   }
 }
 
+/**
+ * Reconciles one Claude Code settings file: only our entries change, a malformed file is left
+ * alone, and an unchanged file is not written. `create`: write the file when it doesn't exist.
+ */
+async function reconcileFile(path: string, shims: string | null, create: boolean): Promise<{ changed: boolean; error: string | null }> {
+  let raw = "";
+  let parsed: Record<string, unknown> = {};
+  try {
+    raw = await readFile(path, "utf8");
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      // Malformed settings are not ours to repair, and rewriting them from a
+      // partial parse would lose whatever the user has in there.
+      return { changed: false, error: `${path} is not valid JSON, so it was left alone. Fix it and reload the plugin.` };
+    }
+    if (!create) return { changed: false, error: null };
+  }
+
+  const before = (parsed.hooks ?? {}) as HookMap;
+  const after = reconcile(before, shims);
+  const merged = { ...parsed, hooks: after };
+  if (Object.keys(after).length === 0) delete (merged as { hooks?: unknown }).hooks;
+
+  const text = `${JSON.stringify(merged, null, 2)}\n`;
+  const changed = text !== raw;
+  if (changed) {
+    if (raw !== "") await backupOnce(path);
+    await writeAtomic(path, text);
+  }
+  return { changed, error: null };
+}
+
+/**
+ * The settings.json of every ZeroSub account home that has one of its own, by real path, minus
+ * `main`. A home whose file is still a symlink to `main` resolves to it and is skipped, so the
+ * symlink is never replaced by a copy.
+ */
+export async function zerosubSettingsFiles(main: string, paseoHome = process.env.PASEO_HOME ?? join(homedir(), ".paseo")): Promise<string[]> {
+  const mainReal = await realpath(main).catch(() => main);
+  const homes = join(paseoHome, "zerosub", "homes");
+  const found = new Set<string>();
+  for (const entry of await readdir(homes, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const real = await realpath(join(homes, entry.name, "settings.json")).catch(() => null);
+    if (real !== null && real !== mainReal && (await stat(real).catch(() => null))?.isFile()) found.add(real);
+  }
+  return [...found];
+}
+
 let tail: Promise<unknown> = Promise.resolve();
 
 /** One writer at a time: this is read-modify-write over a file we do not own. */
@@ -396,37 +451,16 @@ export function install(options: { registerMcp?: boolean } = {}): Promise<Instal
       };
     }
 
-    let raw = "";
-    let parsed: Record<string, unknown> = {};
-    try {
-      raw = await readFile(path, "utf8");
-      parsed = JSON.parse(raw) as Record<string, unknown>;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") {
-        // Malformed settings are not ours to repair, and rewriting them from a
-        // partial parse would lose whatever the user has in there.
-        return {
-          pluginDir,
-          settingsPath: path,
-          changed: false,
-          hooks: [],
-          mcp: "skipped",
-          error: `${path} is not valid JSON, so it was left alone. Fix it and reload the plugin.`,
-        };
-      }
+    const main = await reconcileFile(path, pluginDir === null ? null : shims, true);
+    if (main.error !== null) {
+      return { pluginDir, settingsPath: path, changed: false, hooks: [], mcp: "skipped", error: main.error };
     }
-
-    const before = (parsed.hooks ?? {}) as HookMap;
-    const after = reconcile(before, pluginDir === null ? null : shims);
-    const merged = { ...parsed, hooks: after };
-    if (Object.keys(after).length === 0) delete (merged as { hooks?: unknown }).hooks;
-
-    const text = `${JSON.stringify(merged, null, 2)}\n`;
-    const changed = text !== raw;
-    if (changed) {
-      if (raw !== "") await backupOnce(path);
-      await writeAtomic(path, text);
+    // ZeroSub's account homes each have their own settings.json once anything rewrote the symlink
+    // it starts as, and their sessions read only that one. Same rules; never created there.
+    let changed = main.changed;
+    for (const extra of await zerosubSettingsFiles(path)) {
+      const result = await reconcileFile(extra, pluginDir === null ? null : shims, false).catch(() => ({ changed: false, error: null }));
+      changed ||= result.changed;
     }
 
     const lines = pluginDir === null

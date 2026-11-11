@@ -14,7 +14,7 @@ async function fixture(t: test.TestContext, config: Record<string, unknown> = {}
   t.after(async () => { if (previous === undefined) delete process.env.PASEO_HOME; else process.env.PASEO_HOME = previous; await rm(home, { recursive: true, force: true }); });
   const directory = join(home, "plugin");
   await mkdir(join(directory, "hooks"), { recursive: true });
-  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs"]) await writeFile(join(directory, "hooks", script), "// fixture");
+  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs"]) await writeFile(join(directory, "hooks", script), "// fixture");
   await writeFile(join(directory, "mcp.mjs"), "// fixture");
   await writeFile(join(home, "config.json"), JSON.stringify({ plugins: { "smart-session": { path: directory } }, ...config }));
   let callback: any, removed = false;
@@ -30,7 +30,7 @@ test("Paseo 0.15+: tools go on request.tools, with no per-agent process", async 
   for (const provider of ["claude", "codex"]) for (const reason of ["create", "resume", "refresh", "import"]) {
     const result = await open({ ...request, provider, reason });
     assert.equal(result.mcpServers, request.mcpServers, "no stdio server");
-    assert.deepEqual(result.tools.map((tool: { name: string }) => tool.name), ["other_tool", "smart_context_status", "smart_budget_status", "smart_checkpoint", "smart_request_compaction", "smart_defer_compaction"]);
+    assert.deepEqual(result.tools.map((tool: { name: string }) => tool.name), ["other_tool", "smart_context_status", "smart_budget_status", "smart_checkpoint", "smart_request_compaction", "smart_defer_compaction", "smart_publish_as", "smart_publish_as_settings"]);
     assert.equal(result.env.KEEP, "yes"); assert.equal(result.env.SMART_SESSION_TOOLS, "native");
   }
   assert.equal(request.tools.length, 1, "the request is not mutated");
