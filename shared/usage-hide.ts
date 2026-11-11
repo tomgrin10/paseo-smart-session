@@ -2,11 +2,12 @@
  * When Paseo's own Claude card steps aside for ours (Paseo 0.16, web and desktop), as
  * one pure rule the client applies to what is on screen (`client/usage-hide.ts`).
  *
- * The invariant: **a built-in card is hidden only while our card for the same login is
- * beside it showing the same numbers.** Ours is built from the newest reading of that
- * login, the built-in's own included (`shared/builtin-usage.ts`), so equal numbers mean
- * ours is at least as new; different numbers mean one of the two was read at another
- * moment, and then both stay on screen.
+ * The invariant: **Paseo's card is shown only when it may know something ours doesn't.**
+ * Ours is built from the newer of ZeroSub's reading and Paseo's own for that login
+ * (`shared/builtin-usage.ts`). So a built-in card steps aside, beside our card for the
+ * same login, when the two show the same numbers, or when it shows a reading the server
+ * knows ours is at least as new as (`supersedes`: a 429 kept its last good reading, or a
+ * reset passed since). Any other difference means Paseo's may be newer: both stay.
  *
  * Nothing here waits on the network. A built-in card is held back from its first frame
  * (a CSS animation, so even a dead script lets it through) for at most `GRACE_MS` while
@@ -51,6 +52,11 @@ export interface CardFacts {
   readonly graceOver: boolean;
   /** The card has been shown while mounted. */
   readonly shown: boolean;
+  /**
+   * The used percentages of the built-in reading the server holds for this login, when
+   * ours is at least as new as it; null or absent when ours may be older.
+   */
+  readonly supersedes?: readonly number[] | null;
 }
 
 /** What to do with one built-in card now. */
@@ -60,7 +66,31 @@ export function decide(f: CardFacts): Verdict {
   if (key === undefined) return "show";
   const ours = f.ours.get(key);
   if (ours === undefined) return f.graceOver ? "show" : "wait";
-  return sameNumbers(f.theirs, ours) ? "hide" : "show";
+  if (sameNumbers(f.theirs, ours)) return "hide";
+  return f.supersedes && showsReading(f.theirs, f.supersedes) ? "hide" : "show";
+}
+
+/**
+ * The built-in card shows exactly this reading: its window values are these used
+ * percentages, read as used or as left (the person's display setting), in any order.
+ * Labels are not compared: Paseo names its windows itself.
+ */
+export function showsReading(theirs: WindowValues, usedPcts: readonly number[]): boolean {
+  const shown = [...theirs.values()].map(percentOf);
+  if (shown.length === 0 || shown.length !== usedPcts.length || shown.some((n) => n === null)) return false;
+  const matches = (expected: number[]) => {
+    const a = [...(shown as number[])].sort((x, y) => x - y);
+    const b = [...expected].sort((x, y) => x - y);
+    return a.every((n, i) => Math.abs(n - b[i]!) < 1);
+  };
+  return matches([...usedPcts]) || matches(usedPcts.map((u) => 100 - u));
+}
+
+/** The number in a rendered percentage ("78%", "22% left", "12,5 %"). */
+function percentOf(text: string): number | null {
+  const m = /(\d+(?:[.,]\d+)?)\s*%|%\s*(\d+(?:[.,]\d+)?)/.exec(text);
+  const digits = m?.[1] ?? m?.[2];
+  return digits === undefined ? null : Number(digits.replace(",", "."));
 }
 
 /**

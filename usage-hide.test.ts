@@ -81,3 +81,31 @@ test("the client's synchronous SHA-256 matches Node's, so a login on screen hash
     assert.equal(sha256Hex(text), createHash("sha256").update(text).digest("hex"), JSON.stringify(text.slice(0, 20)));
   }
 });
+
+test("live: Paseo's card errored on a 429 and kept an older reading; ours is newer, so Paseo's card steps aside", () => {
+  // Tom's popover, 2026-11-11 (synthetic values): Paseo's CLI-login card says "Error · Rate limited" and shows its last
+  // good reading, Session 100% ("Reset time passed"), Weekly 78%, Fable 0%. Ours read after the reset: 4%, 79%, 0%.
+  const live = facts({
+    theirs: rows({ Session: "100%", Weekly: "78%", "Weekly · Fable": "0%" }),
+    ours: new Map([["claude-two", rows({ Session: "4%", Weekly: "79%", "Weekly · Fable": "0%" })]]),
+    // The server holds that same built-in reading and knows ours is newer than it.
+    supersedes: [100, 78, 0],
+  });
+  assert.equal(decide(live), "hide");
+  // Shown as remaining instead of used, it is the same reading.
+  assert.equal(decide({ ...live, theirs: rows({ Session: "0% left", Weekly: "22% left", "Weekly · Fable": "100% left" }) }), "hide");
+});
+
+test("invariant: Paseo's card is shown only when it may know something ours doesn't", () => {
+  const base = facts({ theirs: rows({ Session: "31%", Weekly: "60%" }), ours: new Map([["claude-two", rows({ Session: "4%", Weekly: "61%" })]]) });
+  // The server doesn't know ours to be newer than any built-in reading: Paseo's may be newer, both show.
+  assert.equal(decide(base), "show");
+  // Ours is newer than the reading the server holds, but Paseo's card shows another one (refetched since): it may know more.
+  assert.equal(decide({ ...base, supersedes: [30, 60] }), "show");
+  // Ours is newer than exactly the reading Paseo's card shows: nothing on it is news.
+  assert.equal(decide({ ...base, supersedes: [31, 60] }), "hide");
+  // Still never without our card beside it, never against the setting, never once shown.
+  assert.equal(decide({ ...base, supersedes: [31, 60], ours: new Map(), graceOver: true }), "show");
+  assert.equal(decide({ ...base, supersedes: [31, 60], enabled: false }), "show");
+  assert.equal(decide({ ...base, supersedes: [31, 60], shown: true }), "show");
+});

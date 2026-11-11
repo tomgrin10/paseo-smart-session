@@ -74,9 +74,15 @@ test("live bug B: ZeroSub lags at 20%/58% while Paseo's card reads 30%/60%; ours
   assert.equal(merged.readAt, iso(-1 * MIN + 900));
 });
 
-test("while the daemon holds a current reading both cards show it, even when ours is a little newer", () => {
-  const merged = mergeBuiltin(account({ readAt: iso(-10_000) }), reading(), labelOf);
-  assert.equal(merged.windows[0]!.pct, 30);
+test("the newer reading wins, both ways: ours is never made older by Paseo's, nor left older than it", () => {
+  // Ours (ZeroSub) read after Paseo's cached reading: ours stands, though the daemon calls its reading current.
+  const oursNewer = mergeBuiltin(account({ readAt: iso(-10_000) }), reading(), labelOf);
+  assert.equal(oursNewer.windows[0]!.pct, 20);
+  assert.equal(oursNewer.readAt, iso(-10_000));
+  // Ours lags behind Paseo's reading: Paseo's numbers, at Paseo's time.
+  const oursOlder = mergeBuiltin(account({ readAt: iso(-10 * MIN) }), reading(), labelOf);
+  assert.equal(oursOlder.windows[0]!.pct, 30);
+  assert.equal(oursOlder.readAt, iso(-1 * MIN + 900));
 });
 
 test("a built-in error's last good reading replaces ours only when it is newer", () => {
@@ -108,7 +114,37 @@ test("invariant: the card that may hide Paseo's shows numbers at least as new as
     assert.equal(ours?.usedPct, theirs.usedPct, `${theirs.label} shows Paseo's reading`);
   }
   assert.ok(!report.details?.some((d) => d.id === "reading"), "no stale-reading row once merged");
-  assert.deepEqual(hideableCards(merged, NOW), [{ key: "claude-two", emailHash: "H2" }]);
+  assert.deepEqual(hideableCards(merged, NOW), [{ key: "claude-two", emailHash: "H2", supersedes: null }]);
+  // Ours took Paseo's reading, so it is as new as it: a card showing that reading may step aside.
+  assert.deepEqual(hideableCards(merged, NOW, (hash) => (hash === "H2" ? reading() : null))[0]?.supersedes, [30, 60, 12]);
+});
+
+test("live: Paseo's reading errored on a 429 and kept an older one; ours is newer and says it supersedes that reading", () => {
+  // Synthetic version of Tom's popover: Paseo's last good reading 100% / 78% / 0% from before the reset, ours 4% / 79% / 0% after it.
+  const stale = reading({
+    current: false,
+    fetchedAt: iso(-30 * MIN),
+    windows: [
+      { id: "five_hour", label: "Session", usedPct: 100, resetsAt: iso(-26 * MIN) },
+      { id: "weekly", label: "Weekly", usedPct: 78, resetsAt: iso(3 * 24 * HOUR) },
+      { id: "weekly_model_fable", label: "Weekly · Fable", usedPct: 0, resetsAt: iso(3 * 24 * HOUR) },
+    ],
+  });
+  const fresh = account({ readAt: iso(-1 * MIN), windows: [win("five_hour", 4, 4 * HOUR + 56 * MIN), win("seven_day", 79, 3 * 24 * HOUR), win("weekly_model:fable", 0, 3 * 24 * HOUR)] });
+  const state: SourceState = {
+    zerosub: { accounts: [fresh], autoSwitch: true, extras: { "claude-two": { emailHash: "H2", plan: "team", windowLabels: {}, extraUsage: null } }, sessions: {}, homes: {} },
+    recorded: null,
+  };
+  const readingOf = (hash: string | null) => (hash === "H2" ? stale : null);
+  const merged = withBuiltin(state, readingOf);
+  // Ours keeps its own newer numbers.
+  assert.deepEqual(merged.zerosub!.accounts[0]!.windows.map((w) => w.pct), [4, 79, 0]);
+  // And tells the client which built-in reading it is newer than.
+  assert.deepEqual(hideableCards(merged, NOW, readingOf)[0]?.supersedes, [100, 78, 0]);
+  // Had Paseo's reading been the newer one, ours would carry it and supersede nothing older.
+  const newer = reading({ fetchedAt: iso(-10_000) });
+  const mergedNewer = withBuiltin(state, (hash) => (hash === "H2" ? newer : null));
+  assert.equal(mergedNewer.zerosub!.accounts[0]!.windows[0]!.pct, 30);
 });
 
 test("the server keeps readings by login hash only, and knows when a card of ours is behind", () => {

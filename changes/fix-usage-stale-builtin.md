@@ -1,0 +1,2 @@
+- Paseo's own Claude card no longer stays beside Smart Session's when its reading is older, for example after "Rate limited by Claude" or once its reset time has passed. It shows only when it may know something Smart Session's card doesn't.
+- Smart Session's usage card keeps its own reading when it is newer than Paseo's, instead of taking Paseo's older one.

@@ -107,6 +107,7 @@ export function watchUsageCards(client: PluginClientContext): () => void {
 
   let enabled = true;
   let hideable: Map<string, string> | null = null;
+  let supersedes = new Map<string, readonly number[]>();
   let fetchedAt = 0;
   let fetching = false;
   const hashes = new Map<string, string>();
@@ -138,12 +139,13 @@ export function watchUsageCards(client: PluginClientContext): () => void {
     if (fetching || (!force && Date.now() - fetchedAt < CARDS_TTL_MS)) return;
     fetching = true;
     void client.rpc(usageCardsStatus, {}).then(
-      (result) => new Map(result.cards.map((card) => [card.emailHash, card.key])),
-      () => new Map<string, string>(), // An unreachable server hides nothing.
-    ).then((next) => {
+      (result) => result.cards,
+      () => [], // An unreachable server hides nothing.
+    ).then((cards) => {
       fetching = false;
       fetchedAt = Date.now();
-      hideable = next;
+      hideable = new Map(cards.map((card) => [card.emailHash, card.key]));
+      supersedes = new Map(cards.flatMap((card) => (card.supersedes ? [[card.emailHash, card.supersedes] as const] : [])));
       syncStyle();
       for (const list of lists.keys()) decideList(list);
     });
@@ -181,6 +183,7 @@ export function watchUsageCards(client: PluginClientContext): () => void {
         ours,
         graceOver: decided !== null || !graceRunning(card),
         shown: decided === "show",
+        supersedes: loginHash === null ? null : (supersedes.get(loginHash) ?? null),
       });
       if (verdict === "wait") continue;
       if (decided !== verdict) card.setAttribute(DECIDED_ATTR, verdict);

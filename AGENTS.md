@@ -147,10 +147,13 @@
   simulation, so they never disagree. `client/subscriptions.ts` is the one poll; without ZeroSub
   (or with a single login) every view stays as it was.
 - Paseo 0.16's usage card (`shared/usage-source.ts`, `server/usage-source.ts`): one source, `smart-session`, never
-  `claude`. Invariant: **Paseo's own Claude card is hidden only while ours, for the same login, shows the same
-  numbers beside it.** Ours takes the built-in's current reading for the login (`shared/builtin-usage.ts`; read from the
-  daemon's cache in our fetch, never `forceRefresh` on a `claude:*` id; logins matched by email SHA-256 in memory only),
-  and the recorder's minute listing refreshes our report when the built-in moved on. The hide (`client/usage-hide.ts`,
+  `claude`. Invariant: **Paseo's own Claude card is shown only when it may know something ours doesn't.** Ours takes
+  the newer of ZeroSub's reading and the built-in's for the login (`shared/builtin-usage.ts`; read from the daemon's
+  cache in our fetch, never `forceRefresh` on a `claude:*` id; logins matched by email SHA-256 in memory only), and the
+  recorder's minute listing refreshes our report when the built-in moved on. Beside ours, the built-in card steps
+  aside when both show the same numbers, or when it shows a reading the server knows ours is at least as new as
+  (`supersedes`: a 429's last good reading, a window whose reset passed). 2026-11-11: an errored built-in card stayed
+  beside ours because only equal numbers hid it. The hide (`client/usage-hide.ts`,
   rule in `shared/usage-hide.ts`) never waits on an RPC: a CSS grace animation holds the built-in back ≤1.5 s, then it is
   decided synchronously from the DOM. Prove a change frame by frame (requestAnimationFrame), cold and from cache.
 - `shared/forecast.ts` turns a window reading into its moment: when it resets, when it runs out at
