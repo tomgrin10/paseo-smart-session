@@ -21,11 +21,18 @@ import {
 } from "../../shared/guard/policy.ts";
 import { continuesAtReset, freezesIdle, holdKind, messageArrived } from "../../shared/guard/hold.ts";
 
+/** Shown while a session is held in the foreground because its provider process couldn't be confirmed as its own. */
+const FALLBACK_ERROR = process.platform === "linux"
+  ? "Native worker protection could not confirm ownership of a provider process, so that session is held in the foreground (its native subagents are not frozen)."
+  : "Native worker protection requires Linux, so sessions are held in the foreground. Turn it off to stop this notice.";
+
 export class Engine {
   private chain: Promise<unknown> = Promise.resolve();
   private stopped = false;
   private nextResumeAt = 0;
   private quotaFailures = new Map<string, { at: string; turnId: string | null }>();
+  /** Pauses held in the foreground because native ownership couldn't be confirmed; their error stays up while they wait. */
+  private fallbacks = new Set<string>();
   checkedAt: string | null = null;
   error: string | null = null;
   timelineError: string | null = null;
@@ -276,16 +283,24 @@ export class Engine {
       if (pause.phase !== "waiting") throw new Error("Check this session before resuming it.");
       await this.connect(async client => {
         const latest = (await client.fetchAgent(agentId))?.agent;
+        // A message sent since the last check is part of the hold, not a change: adopt it,
+        // as the next check would.
+        if (latest && messageArrived(pause, latest) && latest.status !== "closed") {
+          pause.lastUserMessageAt = latest.lastUserMessageAt ?? null; delete pause.idle;
+          if (pause.suspension && latest.activeTurn) pause.turnId = latest.activeTurn.turnId;
+        }
+        // Its turn may already be running, not yet interrupted: resuming just lets it run.
+        const running = !pause.suspension && latest?.status === "running" && !!latest.activeTurn && latest.activeTurn.turnId !== pause.turnId;
         if (!latest || latest.archivedAt || (latest.status === "closed" && !pause.closedOnRestart) || latest.provider !== pause.provider ||
           (latest.lastUserMessageAt ?? null) !== pause.lastUserMessageAt ||
           (pause.suspension ? (latest.activeTurn?.turnId ?? null) !== pause.turnId
-            : !(latest.status === "idle" || (pause.closedOnRestart && latest.status === "closed") || (pause.wasQuotaFailure && latest.status === "error")) || !!latest.pendingPermissions?.length)) {
+            : !running && (!(latest.status === "idle" || (pause.closedOnRestart && latest.status === "closed") || (pause.wasQuotaFailure && latest.status === "error")) || !!latest.pendingPermissions?.length))) {
           throw new Error("The session changed. Check it before continuing.");
         }
         if (pause.suspension && !this.processes) throw new Error("Native worker protection is unavailable.");
         state.overrides[agentId] = false; pause.manualResume = true; pause.phase = "resuming";
         await this.save(state);
-        const needsMessage = (!pause.suspension && continuesAtReset(pause)) || (pause.wasQuotaFailure && ["idle", "error"].includes(latest.status) && !latest.pendingPermissions?.length);
+        const needsMessage = (!pause.suspension && !running && continuesAtReset(pause)) || (pause.wasQuotaFailure && ["idle", "error"].includes(latest.status) && !latest.pendingPermissions?.length);
         if (pause.suspension) {
           // Identity-safe SIGCONT can be retried after a partial release.
           await this.processes!.resume(pause.suspension);
@@ -547,8 +562,6 @@ export class Engine {
           await this.save(state); continue;
         }
         const canContinue = (candidate: Agent) => candidate.status === "idle" || (pause.closedOnRestart && candidate.status === "closed") || (pause.wasQuotaFailure && candidate.status === "error");
-        // With ZeroSub, room on another account also continues it: the continuation meets the
-        // limit on this account, and ZeroSub fails it over there and carries it on.
         if (!canContinue(agent) || agent.pendingPermissions?.length || !policy.autoResume ||
           this.now() < this.nextResumeAt || !ready(pause)) continue;
         // Re-read just before sending: a person may have continued while usage was fetched.
@@ -570,6 +583,8 @@ export class Engine {
         await this.save(state);
       }
       if (changed) await this.save(state);
+      for (const id of this.fallbacks) if (!state.pauses.some(p => p.agentId === id && isPending(p) && !p.suspension)) this.fallbacks.delete(id);
+      if (this.fallbacks.size) this.error = FALLBACK_ERROR;
       for (const agent of agents) {
         if (this.stopped) return;
         if (state.pauses.some(p => p.agentId === agent.id && p.stoppedByUser &&
@@ -611,12 +626,11 @@ export class Engine {
           if (!client.getDaemonStatus) throw new Error("Daemon process identity is unavailable.");
           daemonPid ??= (await client.getDaemonStatus()).pid;
           suspension = await this.processes!.discover(latest, daemonPid) ?? undefined;
+          if (!suspension && !idle) this.fallbacks.add(agent.id);
           if (!suspension && !idle) {
             // Fall back to the foreground rather than skip the session: never pretend the
             // interrupt also covers native children, but never let the turn run on either.
-            this.error = process.platform === "linux"
-              ? "Native worker protection could not confirm ownership of a provider process, so a session was paused in the foreground. It will retry automatically."
-              : "Native worker protection requires Linux, so sessions are paused in the foreground. Turn it off to stop this notice.";
+            this.error = FALLBACK_ERROR;
           }
         }
         const reset = timestamp(window.resetsAt);

@@ -182,9 +182,12 @@ test("a historical pause action cannot resume a newer pause, changed work, or pe
   const f = await fixture(t); await f.engine.tick(); const pause = (await f.store.read()).pauses[0];
   await f.engine.resumeNow("a", "old-pause"); assert.deepEqual(f.calls.sent, []);
   f.agents[0].pendingPermissions = [{}]; await assert.rejects(f.engine.resumeNow("a", pause.id));
-  f.agents[0].pendingPermissions = []; f.agents[0].lastUserMessageAt = iso(base + 1000);
+  f.agents[0].pendingPermissions = []; f.agents[0].provider = "codex";
   await assert.rejects(f.engine.resumeNow("a", pause.id)); assert.deepEqual(f.calls.sent, []);
   assert.equal((await f.store.read()).overrides.a, undefined);
+  // A message held meanwhile is not a change: Resume now continues with it.
+  f.agents[0].provider = "claude"; f.agents[0].lastUserMessageAt = iso(base + 1000);
+  await f.engine.resumeNow("a", pause.id); assert.deepEqual(f.calls.sent, ["a"]);
 });
 test("manual resume releases native background workers and continues a quota-failed parent once", async t => {
   const f = await nativeFixture(t); f.agents[0].status = "error"; f.agents[0].activeTurn = null;
@@ -731,5 +734,21 @@ test("the explicit ways out end a hold: dismiss, release, opt-out and turning Se
     assert.equal((await f.store.read()).pauses[0].phase, "cancelled", way);
     message(f, base + 1000); f.policy({ enabled: way !== "off" }); if (way === "off") f.policy({ enabled: false });
     await f.engine.tick(); assert.deepEqual(f.calls.stopped, [], way); assert.deepEqual(f.calls.sent, [], way);
+  }
+});
+test("the native fallback error stays up while that session is held in the foreground", async t => {
+  const f = await nativeFixture(t); f.native.controller.discover = async () => null;
+  await f.engine.tick(); await f.engine.tick(); await f.engine.tick();
+  assert.match(f.engine.error!, /ownership/);
+  await f.engine.cancelResume("a"); await f.engine.tick();
+  assert.equal(f.engine.error, null, "and goes once the hold ends");
+});
+test("Resume now right after a message adopts it rather than refusing a changed session", async t => {
+  for (const native of [false, true]) {
+    const f = native ? await nativeFixture(t) : await fixture(t); idleAgent(f); await f.engine.tick();
+    message(f, base + 1000); // Before the guard's next check.
+    await f.engine.resumeNow("a", (await f.store.read()).pauses[0].id);
+    assert.equal((await f.store.read()).pauses[0].phase, "resumed", native ? "native" : "foreground");
+    assert.deepEqual(f.calls.sent, [], "its own turn runs; no extra message");
   }
 });
