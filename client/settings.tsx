@@ -249,6 +249,7 @@ export function makeSettings(client: PluginClientContext) {
           <SettingsSwitch label="Register the hooks" hint={hooksHint} value={settings.installHooks} disabled={off}
             onValueChange={(installHooks) => void save({ installHooks }, installHooks ? "Hooks registered with Claude Code" : "Hooks removed from Claude Code")} />
           {report?.mcp === "unavailable" ? <SettingsRow label="MCP server not registered" hint="The claude command was not reachable from the daemon." /> : null}
+          {(report?.homes ?? []).map((home) => <SettingsRow key={home.accountId} label={`Hooks don't reach ZeroSub account ${home.accountId}`} hint={home.line} />)}
         </SettingsCard>
       </SettingsSection>
 

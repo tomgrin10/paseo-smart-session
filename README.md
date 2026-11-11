@@ -135,7 +135,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | | Replace Paseo's Claude usage card | On | Paseo 0.16+, web and desktop |
 | Artifacts | Publish artifacts as the main account | On | With ZeroSub: pages from sessions on other Claude accounts are published on the main one |
 | | Publish as | Main account | Shown with more than one Claude account |
-| Claude Code | Register the hooks | On | Keep the context, compaction and publishing hooks installed (in `~/.claude` and in each ZeroSub account home with its own settings file) |
+| Claude Code | Register the hooks | On | Keep the context, compaction and publishing hooks installed. Flags a ZeroSub account home whose settings no longer link to these, so the hooks miss its sessions |
 | Limit timing | Pause at, check interval, wait after reset, spacing, continuation message, providers, windows | 100%, 15s, 30s, 5s | Behind **Edit**; each field is checked on its own |
 
 Hiding the row or the pill never turns a feature off.
@@ -146,7 +146,7 @@ Hiding the row or the pill never turns a feature off.
 
 Everything lives in `$PASEO_HOME/plugin-data/smart-session/`: monthly usage and context logs (and, with ZeroSub, a monthly log of each subscription's readings, keyed by account id), compaction records, an hourly spend index by model, workspace and agent type, and one `state/<agentId>.md` per agent. Logs are append-only, and a damaged line is skipped rather than risking the rest.
 
-Paseo plugins run trusted, unsandboxed code on the daemon host. Smart Session reads local Claude Code usage data, reads ZeroSub's account registry and usage readings when ZeroSub is enabled (never its credentials), keeps its own hook entries in each ZeroSub account home's `settings.json` (nothing else in those homes is read or written), and talks only to the local daemon. Publishing as the main account starts helper agents through that daemon and asks ZeroSub to pin each one to the main account. For password-protected daemons it reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`, and never writes or logs it.
+Paseo plugins run trusted, unsandboxed code on the daemon host. Smart Session reads local Claude Code usage data, reads ZeroSub's account registry and usage readings when ZeroSub is enabled (never its account homes' contents or credentials; it only checks that each home's `settings.json` is still a link to the main one, and says so when it isn't), and talks only to the local daemon. A linked `settings.json` stays a link: Smart Session writes its hooks through to the file it points at. Publishing as the main account starts helper agents through that daemon and asks ZeroSub to pin each one to the main account. For password-protected daemons it reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`, and never writes or logs it.
 
 ## Development
 

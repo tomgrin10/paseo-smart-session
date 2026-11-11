@@ -218,6 +218,11 @@ export const InstallReportSchema = z.object({
   hooks: z.array(z.string()),
   mcp: z.enum(["present", "added", "updated", "unavailable", "skipped", "session"]),
   error: z.string().nullable(),
+  /**
+   * ZeroSub account homes whose settings.json isn't a link to the main one, so these hooks don't
+   * reach their sessions. Read-only; `line` names the fix. Absent from older plugins.
+   */
+  homes: z.array(z.object({ accountId: z.string(), problem: z.enum(["copy", "elsewhere", "missing"]), line: z.string() })).optional(),
 });
 
 /** The state of the Claude Code integration, re-reconciled on demand. */

@@ -310,27 +310,24 @@ test("importing the installer writes nothing; only the load module does", async 
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { model: "opus[1m]" });
 });
 
-test("ZeroSub homes with their own settings.json get the hooks too; a symlinked one stays a symlink", async () => {
-  // A seat session reads only its ZeroSub home's settings.json. ZeroSub starts it as a symlink to
-  // the main one, but anything that rewrites it atomically leaves a copy, and then a hook installed
-  // only in ~/.claude never reaches the seat sessions it is for (seen 2026-11-11).
+test("a symlinked settings.json stays a symlink: the hooks are written through to its target", async () => {
+  // Dotfiles setups link ~/.claude/settings.json, and each ZeroSub account home links its
+  // settings.json to the main one. Replacing a link with a copy splits the two for good: a seat
+  // session then never sees a hook installed in the main file (2026-11-10).
   const { paseoHome, claudeDir } = fakeInstall();
-  const main = join(claudeDir, "settings.json");
-  writeFileSync(main, JSON.stringify({ model: "opus" }), "utf8");
-  const homes = join(paseoHome, "zerosub", "homes");
-  for (const id of ["own", "linked", "empty"]) mkdirSync(join(homes, id), { recursive: true });
-  writeFileSync(join(homes, "own", "settings.json"), JSON.stringify({ theme: "dark", hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "theirs.sh" }] }] } }), "utf8");
-  symlinkSync(main, join(homes, "linked", "settings.json"));
+  const dotfiles = mkdtempSync(join(tmpdir(), "ss-dotfiles-"));
+  const target = join(dotfiles, "claude-settings.json");
+  writeFileSync(target, JSON.stringify({ model: "opus" }), "utf8");
+  const link = join(claudeDir, "settings.json");
+  symlinkSync(target, link);
   const installer = await freshInstaller(paseoHome, claudeDir);
 
   const report = await installer.install({ registerMcp: false });
   assert.equal(report.error, null);
-  const shims = join(paseoHome, "plugin-data", "smart-session", "hooks");
-  const own = JSON.parse(readFileSync(join(homes, "own", "settings.json"), "utf8"));
-  assert.equal(own.theme, "dark");
-  assert.deepEqual(commandsFor(own.hooks, "PreToolUse"), ["theirs.sh", cmd("publish-as.mjs", shims)]);
-  assert.ok(lstatSync(join(homes, "linked", "settings.json")).isSymbolicLink(), "the symlink is kept");
-  assert.deepEqual(commandsFor(JSON.parse(readFileSync(main, "utf8")).hooks, "PreToolUse"), [cmd("publish-as.mjs", shims)]);
-  assert.equal(existsSync(join(homes, "empty", "settings.json")), false, "no file is created in a home");
-  assert.equal((await installer.install({ registerMcp: false })).changed, false, "and the next load writes nothing");
+  assert.equal(report.changed, true);
+  assert.ok(lstatSync(link).isSymbolicLink(), "the link is still a link");
+  const written = JSON.parse(readFileSync(target, "utf8"));
+  assert.equal(written.model, "opus");
+  assert.equal(written.hooks.Stop[0].hooks[0].command, cmd("ask-compact.mjs", join(paseoHome, "plugin-data", "smart-session", "hooks")));
+  assert.equal((await installer.install({ registerMcp: false })).changed, false);
 });

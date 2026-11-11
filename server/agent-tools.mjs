@@ -531,6 +531,9 @@ export function agentTools(context) {
           `${changed ? "Saved. " : ""}Publish artifacts as the main account: ${settings.publishAsMain ? "on" : "off"}. Target: ${target}.`,
           claude.length < 2 ? "ZeroSub has fewer than two Claude accounts here, so this changes nothing yet." : `Claude accounts: ${claude.map((account) => account.name).join(", ")}.`,
         ];
+        // The publishing hook only reaches a seat session whose ZeroSub home links the main settings.
+        const install = await callPlugin("smart-session.install.status", {}).catch(() => null);
+        for (const home of install?.report?.homes ?? []) lines.push(home.line);
         return lines.join("\n");
       },
     },

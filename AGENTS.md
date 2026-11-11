@@ -67,7 +67,8 @@
 - `server/install.ts` writes to `~/.claude/settings.json`, which the plugin does not own. It may only
   add, update or remove entries whose command points at one of our `hooks/*.mjs`; it must never
   write a path it has not confirmed exists, must not write at all when reconciling changes nothing,
-  and must leave a malformed file alone rather than rewriting it from a partial parse. MCP
+  and must leave a malformed file alone rather than rewriting it from a partial parse. A symlinked settings.json is
+  written through to its target (`writeTarget`), never replaced by a copy (`install.test.ts`). MCP
   attachment goes through `server.before("agent.session_open")`. Never register globally: a user-scope
   entry starts `mcp.mjs` in every Claude session on the machine. `server/mcp-registrations.ts` removes an
   older version's entry from every Claude and Codex home Paseo launches with (defaults, provider `env`,
@@ -395,8 +396,10 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
   target, then prompt, wait (capped), and archive in a `finally`. One at a time; each run is logged. Never prompt a
   helper that isn't confirmed on the target, and never read a credential file.
 - Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.
-- `server/install.ts` also reconciles our hooks in each ZeroSub account home whose `settings.json` is its own file (by
-  real path, never created, a symlink to the main file is left a symlink): seat sessions read only that file.
+- A seat session reads its ZeroSub home's `settings.json`, which ZeroSub links to the main one. Never write into
+  those homes: per-home copies are how a hook silently stops reaching seat sessions (2026-11-10).
+  `server/settings-links.ts` only checks the links (read-only) and `install()` reports a broken one in `homes`,
+  shown on the settings page and by `publish_as_settings`.
 
 ## Chat timeline
 

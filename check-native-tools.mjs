@@ -140,7 +140,7 @@ async function fixtureCheck() {
     const tools = (await mcp(server, session, { id: 2, method: "tools/list" })).tools.map((t) => t.name);
     result.smartTools = tools.filter((n) => n.startsWith("smart_")).length;
     if (!STDIO) {
-      assert.deepEqual(tools.filter((n) => n.startsWith("smart_")).sort(), ["smart_budget_status", "smart_checkpoint", "smart_context_status", "smart_defer_compaction", "smart_request_compaction"]);
+      assert.deepEqual(tools.filter((n) => n.startsWith("smart_")).sort(), ["smart_budget_status", "smart_checkpoint", "smart_context_status", "smart_defer_compaction", "smart_publish_as", "smart_publish_as_settings", "smart_request_compaction"]);
       const call = async (id, name, args) => (await mcp(server, session, { id, method: "tools/call", params: { name, arguments: args } })).content[0].text;
       const written = await call(3, "smart_checkpoint", { goal: "Synthetic goal", current_step: "Synthetic step" });
       // The daemon's caller identity picked the state file: the first agent's, keyed by its id.

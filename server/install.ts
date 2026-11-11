@@ -31,14 +31,15 @@
 
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { access, copyFile, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, readdir, readlink, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { PLUGIN_VERSION } from "../shared/version.ts";
 import { complete, pointerHealthy, pointShimsAt } from "./hook-path.ts";
 import { readSettings } from "./settings.ts";
+import { brokenHomeLinks, describeHomeLinks } from "./settings-links.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -88,6 +89,8 @@ export interface InstallReport {
   readonly hooks: string[];
   readonly mcp: "present" | "added" | "updated" | "unavailable" | "skipped" | "session";
   readonly error: string | null;
+  /** ZeroSub account homes whose settings.json no longer links to this one (read-only check). */
+  readonly homes?: { accountId: string; problem: "copy" | "elsewhere" | "missing"; line: string }[];
 }
 
 const claudeDir = (): string => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
@@ -256,11 +259,27 @@ async function backupOnce(path: string): Promise<void> {
   }
 }
 
+/**
+ * The file a write to `path` should land in: through any symlink, to its target. A rename onto
+ * the link itself would replace it with a copy, and a linked settings.json (dotfiles, or a ZeroSub
+ * account home linked to the main one) would silently stop following its original for good.
+ */
+export async function writeTarget(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    // A missing file, or a link whose target doesn't exist yet: write where the link points.
+    const link = await readlink(path).catch(() => null);
+    return link === null ? path : resolve(dirname(path), link);
+  }
+}
+
 async function writeAtomic(path: string, text: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temp = join(dirname(path), `.smart-session-${randomUUID()}.tmp`);
+  const target = await writeTarget(path);
+  await mkdir(dirname(target), { recursive: true });
+  const temp = join(dirname(target), `.smart-session-${randomUUID()}.tmp`);
   await writeFile(temp, text, "utf8");
-  await rename(temp, path);
+  await rename(temp, target);
 }
 
 export interface McpDefinition {
@@ -379,23 +398,6 @@ async function reconcileFile(path: string, shims: string | null, create: boolean
   return { changed, error: null };
 }
 
-/**
- * The settings.json of every ZeroSub account home that has one of its own, by real path, minus
- * `main`. A home whose file is still a symlink to `main` resolves to it and is skipped, so the
- * symlink is never replaced by a copy.
- */
-export async function zerosubSettingsFiles(main: string, paseoHome = process.env.PASEO_HOME ?? join(homedir(), ".paseo")): Promise<string[]> {
-  const mainReal = await realpath(main).catch(() => main);
-  const homes = join(paseoHome, "zerosub", "homes");
-  const found = new Set<string>();
-  for (const entry of await readdir(homes, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isDirectory()) continue;
-    const real = await realpath(join(homes, entry.name, "settings.json")).catch(() => null);
-    if (real !== null && real !== mainReal && (await stat(real).catch(() => null))?.isFile()) found.add(real);
-  }
-  return [...found];
-}
-
 let tail: Promise<unknown> = Promise.resolve();
 
 /** One writer at a time: this is read-modify-write over a file we do not own. */
@@ -455,23 +457,21 @@ export function install(options: { registerMcp?: boolean } = {}): Promise<Instal
     if (main.error !== null) {
       return { pluginDir, settingsPath: path, changed: false, hooks: [], mcp: "skipped", error: main.error };
     }
-    // ZeroSub's account homes each have their own settings.json once anything rewrote the symlink
-    // it starts as, and their sessions read only that one. Same rules; never created there.
-    let changed = main.changed;
-    for (const extra of await zerosubSettingsFiles(path)) {
-      const result = await reconcileFile(extra, pluginDir === null ? null : shims, false).catch(() => ({ changed: false, error: null }));
-      changed ||= result.changed;
-    }
+    const changed = main.changed;
 
     const lines = pluginDir === null
       ? []
       : MANAGED.map(({ event, matcher }) => `${event}${matcher === "" ? "" : `:${matcher}`}`);
 
+    // Read-only: a home that stopped linking here misses these hooks. Said, never repaired.
+    const broken = await brokenHomeLinks(path).catch(() => []);
+    const described = describeHomeLinks(broken, path);
     return {
       pluginDir,
       settingsPath: path,
       changed,
       hooks: lines,
+      homes: broken.map((link, index) => ({ accountId: link.accountId, problem: link.problem, line: described[index]! })),
       mcp: pluginDir === null ? "skipped" : !registerMcp ? "session" : await ensureMcp(pluginDir),
       error: null,
     };
