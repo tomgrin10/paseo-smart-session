@@ -25,7 +25,7 @@ test("overview distinguishes due resets, held continuations, and native manual r
 const data: TimelineData = { pauseId: "p", event: "paused", at: pause.pausedAt, provider: "claude", native: true, autoResume: true, resetAt: pause.anchorResetsAt, usedPct: 100, note: null };
 test("timeline language states actual pause coverage, quota/reset, and distinct recovery outcomes", () => {
   const paused = timelinePresentation(data);
-  assert.equal(paused.title, "Paused for session limit"); assert.match(paused.detail, /100%/); assert.match(paused.detail, /native subagents/); assert.match(paused.detail, /Expected reset/);
+  assert.equal(paused.title, "Held at the session limit"); assert.match(paused.detail, /100%/); assert.match(paused.detail, /native subagents/); assert.match(paused.detail, /Expected reset/);
   assert.match(timelinePresentation({ ...data, autoResume: false }).detail, /continue manually/);
   assert.equal(timelinePresentation({ ...data, event: "resumed" }).title, "Session resumed");
   assert.equal(timelinePresentation({ ...data, event: "released", native: false }).title, "Automatic resume cancelled");

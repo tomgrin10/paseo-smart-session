@@ -9,7 +9,7 @@ import { linesSummary, outlookSentence } from "../shared/compact-lines";
 import { contextOutlook } from "../shared/forecast";
 import { confirmation, listCompactions, setEnrolment, type CompactionRequest } from "../shared/governor";
 import { cancelResumeRpc, dismissPauseRpc, resumeNowRpc, setProtectionRpc, statusRpc } from "../shared/guard/contracts";
-import { PAUSE_ACTIONS, governorNotice, pausePresentation } from "../shared/guard/presentation";
+import { PAUSE_ACTIONS, THEN, governorNotice, heldWork, pausePresentation } from "../shared/guard/presentation";
 import { contextStatus } from "../shared/smart-session";
 import { profileFor } from "../shared/thresholds";
 import type { AgentDirectory } from "./agents";
@@ -142,14 +142,17 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       const stuck = pause.phase === "attention";
       const reset = resumeMoment(pause);
       const auto = guard.policy.enabled && guard.policy.autoResume;
-      const moment = stuck ? "Needs a look" : pause.demo ? "Test pause" : reset === null ? "Reset time unknown" : reset <= now ? "Reset due" : `${auto ? "Resumes" : "Resets"} ${formatClock(pause.anchorResetsAt)}`;
+      const work = heldWork(pause);
+      const held = auto || work === "idle";
+      const moment = stuck ? "Needs a look" : pause.demo ? "Test pause" : reset === null ? "Held · reset time unknown" : reset <= now ? "Held · reset due" : `${held ? "Held until" : "Resets"} ${formatClock(pause.anchorResetsAt)}`;
+      // The moment says when; this line says what happens then, and what the hold covers.
       const after = stuck ? (pause.note ?? "It stopped before the pause was confirmed. Check it before continuing by hand.")
         : pause.demo ? "a test pause that waits for you"
           : reset === null ? "Waiting for the provider to report the reset"
             : reset <= now ? "Waiting for a fresh usage reading"
-              : `in ${formatDuration(reset - now)} · ${auto ? "continues in this conversation" : "continue it by hand"}`;
+              : `in ${formatDuration(reset - now)} · ${work === "idle" ? "no turn runs before then" : held ? THEN[work] : "continue it by hand"}`;
       const tone = stuck ? c.statusDanger : c.statusWarning;
-      const meta = [stuck ? null : "Paused at the session limit", after, look.coverage.toLowerCase()].filter(Boolean).join(" · ");
+      const meta = [after, look.coverage.toLowerCase()].filter(Boolean).join(" · ");
       const waiting = pause.phase === "waiting";
       return <View style={{ gap: 8 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -177,7 +180,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       if (protection.kind === "unknown") return null;
       if (protection.kind === "on") {
         const meta = protection.protected
-          ? `Pauses at ${protection.thresholdPct}%, ${protection.autoResume ? "continues after the reset" : "you continue after the reset"}`
+          ? `Held at ${protection.thresholdPct}% until the reset, ${protection.autoResume ? "then continues" : "then you continue it"}`
           : "Off for this session · at the limit the provider refuses work and nothing continues it";
         const source = protection.override === null ? (protection.byDefault ? "Your default" : "Your default is off") : "Changed for this session";
         return <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>

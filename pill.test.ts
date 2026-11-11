@@ -49,15 +49,19 @@ test("the quiet case stays quiet; only an excluded session says so, in words", (
 
 test("paused, the pill becomes the pause and leads with the moment it comes back", () => {
   const view = describePill("a", agent, pills, status({ pauses: [pause()] }), NOW);
-  assert.match(view.label, /^Resumes /);
-  assert.match(view.title, /^Paused at the limit · resumes /);
+  assert.match(view.label, /^Held until /);
+  assert.match(view.title, /^Held until .* · continues then$/);
   const policy = PolicySchema.parse({ enabled: true });
-  assert.equal(pausePill(pause(), policy, NOW, clock).label, "Resumes 17:58");
-  assert.equal(pausePill(pause(), { ...policy, autoResume: false }, NOW, clock).label, "Paused · resets 17:58");
-  assert.equal(pausePill(pause({ anchorResetsAt: "2026-11-05T14:00:00Z" }), policy, NOW, clock).label, "Paused · reset due");
-  assert.equal(pausePill(pause({ anchorResetsAt: null }), policy, NOW, clock).label, "Paused");
+  assert.equal(pausePill(pause(), policy, NOW, clock).label, "Held until 17:58");
+  assert.equal(pausePill(pause({ idle: true }), policy, NOW, clock).title, "Held at the limit until 17:58");
+  assert.equal(pausePill(pause({ lastUserMessageAt: new Date(NOW).toISOString() }), policy, NOW, clock).title, "Held until 17:58 · your message runs then");
+  assert.equal(pausePill(pause({ suspension: { rootPid: 2, processes: [] } }), policy, NOW, clock).title, "Held until 17:58 · carries on in place then");
+  assert.equal(pausePill(pause(), { ...policy, autoResume: false }, NOW, clock).label, "Held · resets 17:58");
+  assert.equal(pausePill(pause({ idle: true }), { ...policy, autoResume: false }, NOW, clock).label, "Held until 17:58", "an idle hold just lets go at the reset");
+  assert.equal(pausePill(pause({ anchorResetsAt: "2026-11-05T14:00:00Z" }), policy, NOW, clock).label, "Held · reset due");
+  assert.equal(pausePill(pause({ anchorResetsAt: null }), policy, NOW, clock).label, "Held");
   assert.equal(pausePill(pause({ phase: "attention" }), policy, NOW, clock).tone, "danger");
-  assert.equal(pausePill(pause(), { ...policy, enabled: false }, NOW, clock).label, "Paused · on hold");
+  assert.equal(pausePill(pause(), { ...policy, enabled: false }, NOW, clock).label, "On hold");
   // A clock, not a countdown: the label is the same a minute later, so the pill is not re-sent.
   assert.equal(pausePill(pause(), policy, NOW + 60_000, clock).label, pausePill(pause(), policy, NOW, clock).label);
 });
@@ -74,12 +78,12 @@ test("the overview lead says what is paused and when it comes back", () => {
   const ms = (value: number) => new Date(value).toISOString().slice(11, 16);
   assert.equal(pausedLead([], true, NOW, ms), null);
   const two = [pause(), pause({ id: "q", agentId: "b" })];
-  assert.equal(pausedLead(two, true, NOW, ms)!.title, "2 sessions resume at 17:58");
+  assert.equal(pausedLead(two, true, NOW, ms)!.title, "2 sessions held until 17:58");
   assert.equal(pausedLead(two, false, NOW, ms)!.title, "2 sessions wait for the 17:58 reset");
   const stuck = pausedLead([...two, pause({ id: "r", agentId: "c", phase: "attention" })], true, NOW, ms)!;
   assert.equal(stuck.tone, "danger");
   assert.match(stuck.title, /1 needs a look/);
-  assert.equal(pausedLead([pause(), pause({ id: "q", agentId: "b", anchorResetsAt: "2026-11-05T19:00:00Z" })], true, NOW, ms)!.title, "2 sessions paused · next resumes at 17:58");
+  assert.equal(pausedLead([pause(), pause({ id: "q", agentId: "b", anchorResetsAt: "2026-11-05T19:00:00Z" })], true, NOW, ms)!.title, "2 sessions held · next runs at 17:58");
 });
 
 test("limit timing is checked field by field, and an untouched draft saves the same values", () => {

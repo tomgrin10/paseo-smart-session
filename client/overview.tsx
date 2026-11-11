@@ -323,7 +323,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
                     <StatusGlyph theme={theme} status={agent.status} />
                     <Text numberOfLines={1} style={{ ...t.label, flexShrink: 1 }}>{agent.title ?? `Session ${agent.agentId.slice(0, 8)}`}</Text>
                     <View style={{ flex: 1 }} />
-                    {governed.some((p) => p.agentId === agent.agentId) ? <Chip theme={theme} icon="Pause" label="Paused" color={c.statusWarning} /> : null}
+                    {governed.some((p) => p.agentId === agent.agentId) ? <Chip theme={theme} icon="Pause" label="Held" color={c.statusWarning} /> : null}
                     {on ? <Chip theme={theme} label="Smart Compact" /> : compact ? null : <Text style={t.small}>Not enrolled</Text>}
                     <Ring size={16} color={outlook.tone !== "default" ? toneFill(c, outlook.tone) : on ? c.foreground : c.foregroundMuted} fraction={outlook.pct / 100} mark={on ? agent.compactAtPct / 100 : null} upper={upper === null ? null : upper / 100} />
                     <Text style={{ color: c.foreground, fontSize: 15, lineHeight: 20, fontWeight: "600", minWidth: 36, textAlign: "right", ...tabular }}>{`${Math.round(outlook.pct)}%`}</Text>

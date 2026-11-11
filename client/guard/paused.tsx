@@ -64,7 +64,7 @@ export function PausedSection({ theme, layout, host, navigation, status, shared:
     const after = stuck ? (pause.note ?? "It stopped before the pause was confirmed. Check it before continuing by hand.")
       : pause.demo ? "Test pause, waits for you"
         : reset === null ? "Waiting for the provider to report the reset"
-          : reset > now ? (ownTime === null && shared !== null ? null : `${autoResume ? "Resumes" : "Resets"} in ${formatDuration(reset - now)}`)
+          : reset > now ? (ownTime === null && shared !== null ? null : `${autoResume ? "Held" : "Resets"} for ${formatDuration(reset - now)}`)
             : `Reset was ${formatMoment(pause.anchorResetsAt!, now)} · waiting for a fresh reading`;
     // The lead says when a shared reset lands and what happens then; a row adds only what differs.
     const facts = [after, providerName(pause.provider), presentation.coverage.toLowerCase()].filter(Boolean).join(" · ");

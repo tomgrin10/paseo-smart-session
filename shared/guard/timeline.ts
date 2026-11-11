@@ -29,6 +29,6 @@ export function timelinePresentation(data: TimelineData) {
     detail: "This empty test session is suspended so you can try Resume now. No provider quota was changed, and no task was sent. It will wait for you to resume it." };
   const reset = data.resetAt ? Date.parse(data.resetAt) : NaN;
   const resetLabel = Number.isFinite(reset) ? `Expected reset ${new Date(reset).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}.` : "The provider has not reported a reset time yet.";
-  return { title: "Paused for session limit", icon: "Pause", tone: "warning" as const,
-    detail: `${provider}${data.usedPct === null ? "" : ` · ${data.usedPct}% used`}. ${data.native ? "This session and its native subagents are paused." : "The active turn was interrupted."} ${resetLabel} ${data.autoResume ? "Automatic resume was scheduled after reset confirmation." : "Automatic resume was off; continue manually when ready."}` };
+  return { title: "Held at the session limit", icon: "Pause", tone: "warning" as const,
+    detail: `${provider}${data.usedPct === null ? "" : ` · ${data.usedPct}% used`}. ${data.native ? "This session and its native subagents are frozen." : "Its turn was interrupted."} ${resetLabel} ${data.autoResume ? "No turn runs before the reset; then it continues." : "Automatic resume was off; continue manually when ready."}` };
 }
