@@ -191,6 +191,14 @@
   person typed is never overridden.
 - Deliver only at a turn boundary, only when task state on disk is current, and never retry an
   interrupted `/compact` — it is destructive and not idempotent.
+- **A compaction counts only once it is confirmed.** Delivering `/compact` is not a compaction: the person or the
+  client can cancel it ("Compaction canceled.") or it can fail, and the request stays `sent`. Confirmed means the
+  context really emptied after delivery (under 60% of `preTokens`; the governor sets `confirmedAt`) or the session's
+  PostCompact/SessionStart:compact hook recorded one after delivery (`compaction-events.jsonl`). Everything that reads
+  "last compaction" goes through `confirmation` in `shared/governor.ts` (the hooks' mirror is `confirmedAt` in
+  `hooks/ask.mjs`, pinned to it in `compaction.test.ts`): the thrash advice, the continuation, the popover's Last
+  compaction. A delivery that never lands is settled with `NOT_COMPACTED` when its watch runs out. 2026-11-11: a
+  cancelled `/compact` was read as a compaction and the Stop hook told the session compacting again "would not help".
 - `settings.enabled` is the master switch; `showPill` and `autoEnrol` qualify it and mean nothing
   while it is off. There is no third pill state — a session is enrolled or it is not. With Smart
   Compact off the pill is drawn only while Pause at the limit runs here (muted ring, no tick).
