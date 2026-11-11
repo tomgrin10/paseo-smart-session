@@ -288,6 +288,28 @@ also got a message 1.5 s later, while its status was still `running`.
 This is why `hooks/cancelled.mjs` reads the transcript on `UserPromptSubmit` (and on `Stop` as a fallback) and the
 governor re-queues the request.
 
+### 3.7 A session reopen kills background jobs — measured on Paseo 0.16.0-beta.1 and Claude Code 2.1.322 (2026-11-11)
+
+- Paseo closes the agent's Claude process whenever it reopens a session (`reloadAgentSessionInternal`:
+  `closeReloadedSession`, then `clearBackgroundWork`). The process takes its `run_in_background` shells and Monitors with
+  it. Paseo keeps an inventory of that work (`agent.background_work`) but nothing that reopens a session checks it.
+- A plugin reload kills nothing by itself. It only bumps the session-open generation, and only for plugins with an
+  `agent.open.before` hook (`notifySessionOpenChange`), which is every plugin with native agent tools. The kill comes on
+  the agent's next prompt while idle (`reloadStalePluginSession`), or on any refresh (`refreshAgent`, which ZeroSub's
+  pace and account moves use), busy or not.
+- Harness (isolated daemon, two probe plugins, one Haiku agent per case, each with `sleep` in the background): reload
+  alone, a reload of a plugin without the hook followed by a prompt, and a prompt with no reload all kept the job; a
+  prompt after a reload of the hooked plugin, and a refresh, killed it.
+- The dying process enqueues `<status>killed</status>` "was stopped" and is gone before it is delivered. The next process
+  spawns lazily (first prompt or client request), then enqueues one `<status>stopped</status>` "didn't finish before the
+  previous session ended" notice (several tasks share one notice, plus an `__orphan_summary__` marker) and starts a turn on
+  it. After a refresh with no prompt there is no process, no hook and no notice until something touches the agent.
+- Live, 14:20: a ZeroSub pace move refreshed an idle agent and killed its render job; it sat idle until 14:45, and the
+  notice turn that came then was cut by the next reopen before the agent answered. 13:32: a reload, then a message 35 s
+  later, killed another agent's watcher.
+- So the hooks read the "stopped" notice (`hooks/killed-jobs.mjs`); prevention is outside the plugin: hold reloads while
+  agents have background work, and don't refresh an agent that has some.
+
 ## 4. Triggering compaction
 
 - `/compact [instructions]` is a **root-only** command; Paseo knows it and forwards it:

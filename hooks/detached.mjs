@@ -9,12 +9,14 @@
  * call `smart_*` at all, so the notice rides every hook that fires anyway. It is said once per agent per worker
  * instance (`detachedOnce`).
  *
- * On `UserPromptSubmit` it also looks for a `/compact` the prompt just cancelled (`cancelled.mjs`).
+ * On `UserPromptSubmit` it also looks for a `/compact` the prompt just cancelled (`cancelled.mjs`) and for
+ * background jobs a session restart killed (`killed-jobs.mjs`).
  */
 
 import { BRIDGE } from "./ask.mjs";
 import { noteCancelledCompaction } from "./cancelled.mjs";
 import { detachedOnce, markDetachedTold } from "./context.mjs";
+import { killedJobsNotice, markKilledTold } from "./killed-jobs.mjs";
 
 async function main() {
   const raw = await new Promise((resolve) => {
@@ -35,11 +37,14 @@ async function main() {
   if (name !== "PostToolUseFailure" && name !== "UserPromptSubmit") return;
   // The replacing prompt is the first thing to run after a cancelled /compact: record it and say so.
   const cancelled = name === "UserPromptSubmit" ? noteCancelledCompaction(event, { prompting: true }) : null;
+  // The first prompt after a restart: name the background jobs it killed.
+  const killed = name === "UserPromptSubmit" ? killedJobsNotice(event) : null;
   const notice = detachedOnce(BRIDGE);
-  const text = [cancelled, notice?.text ?? null].filter((part) => part !== null).join("\n\n");
+  const text = [killed?.text ?? null, cancelled, notice?.text ?? null].filter((part) => part !== null).join("\n\n");
   if (text === "") return;
   process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: name, additionalContext: text }, suppressOutput: true })}\n`);
   if (notice !== null) markDetachedTold(notice.instance);
+  if (killed !== null) markKilledTold(killed.agentId, killed.jobs);
 }
 
 void main().catch(() => {});
