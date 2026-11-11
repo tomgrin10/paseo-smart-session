@@ -228,13 +228,16 @@ export function reportWindow(window: SubscriptionWindow, stale: boolean, now: nu
 const inDuration = (ms: number) => (ms <= 60_000 ? "now" : `in ${formatDuration(ms)}`);
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** "3 accounts" · "last 24h+" / "run out in 3h 10m" / "all at the limit · back in 1h" / "2 with room". */
+/**
+ * The pool, on the lead card. Its label names the subject ("All 3 accounts", "Both
+ * accounts") so it never reads as the lead account's own runway.
+ */
 export function poolDetail(pool: PoolForecast, now: number): UsageDetailOut | null {
   if (pool.total < 2) return null;
-  const label = plural(pool.usable, "account", "accounts");
+  const label = pool.total === 2 ? "Both accounts" : `All ${pool.total} accounts`;
   if (pool.runsOutAt !== null && pool.runsOutAt <= now) {
     const back = pool.backAt === null ? "" : ` · back ${inDuration(pool.backAt - now)}`;
-    return { id: "pool", label: plural(pool.total, "account", "accounts"), value: `all at the limit${back}`, tone: "danger" };
+    return { id: "pool", label, value: `at the limit${back}`, tone: "danger" };
   }
   if (pool.runsOutAt !== null) {
     const soon = pool.runsOutAt - now <= 30 * 60_000;
@@ -244,24 +247,46 @@ export function poolDetail(pool: PoolForecast, now: number): UsageDetailOut | nu
   return { id: "pool", label, value: `${pool.withRoom} with room` };
 }
 
-/** What sets this account apart in the pool: at the limit, set aside, or next to take over. */
-export function statusDetail(account: Subscription, pool: PoolForecast | null, now: number): UsageDetailOut | null {
+/** The window a limit lifts with, by its reset, so the row can name it instead of repeating a countdown Paseo prints. */
+function windowEnding(account: Subscription, at: number): string | null {
+  const window = account.windows.find((w) => w.resetsAt !== null && Math.abs(Date.parse(w.resetsAt) - at) <= 20 * 60_000);
+  if (!window) return null;
+  return window.id === "five_hour" ? "the 5-hour reset" : window.id === "seven_day" ? "the weekly reset" : `the ${paseoWindow(window.id).label} reset`;
+}
+
+/**
+ * What sets this account apart in the pool: at the limit, set aside, or next to take
+ * over. Times Paseo already prints on the card (a window's reset, the lead's run-out)
+ * are named, not repeated as a second countdown that rounds a minute differently.
+ */
+export function statusDetail(account: Subscription, pool: PoolForecast | null, now: number, nameOf: (id: string) => string = (id) => id): UsageDetailOut | null {
   const state = subscriptionState(account, now);
   if (state.kind === "limit") {
-    return { id: "status", label: "At the limit", value: state.until === null ? "no reset reported" : `back ${inDuration(state.until - now)}`, tone: "danger" };
+    const ending = state.until === null ? null : windowEnding(account, state.until);
+    const value = state.until === null ? "no reset reported" : ending ? `until ${ending}` : `back ${inDuration(state.until - now)}`;
+    return { id: "status", label: "At the limit", value, tone: "danger" };
   }
-  if (state.kind === "aside") return { id: "status", label: "Set aside in ZeroSub", value: "not used" };
+  if (state.kind === "aside") return { id: "status", label: "Set aside", value: "in ZeroSub" };
   if (pool === null) return null;
   // The account the work is on now is not "taking over", even if the work comes back to it later.
   if (pool.current === account.id) return null;
-  const takeover = pool.takeovers.find((t) => t.accountId === account.id);
-  return takeover ? { id: "status", label: "Takes over", value: inDuration(takeover.at - now) } : null;
+  const index = pool.takeovers.findIndex((t) => t.accountId === account.id);
+  if (index === -1) return null;
+  const from = pool.takeovers[index]!.from;
+  return { id: "status", label: "Takes over", value: from ? `when ${nameOf(from)} runs out` : inDuration(pool.takeovers[index]!.at - now) };
+}
+
+/** On the card the work is on: who carries it next, so the run-out above has its answer on the same card. */
+function handoffDetail(account: Subscription, pool: PoolForecast | null, nameOf: (id: string) => string): UsageDetailOut | null {
+  if (pool === null || pool.current !== account.id) return null;
+  const next = pool.takeovers[0];
+  return next ? { id: "then", label: "Then", value: `${nameOf(next.accountId)} takes over` } : null;
 }
 
 function readingDetail(readAt: string | null, now: number): UsageDetailOut | null {
   const at = readAt === null ? NaN : Date.parse(readAt);
   if (!Number.isFinite(at)) return null;
-  return { id: "reading", label: "Last reading", value: `${formatDuration(now - at)} ago`, tone: "warning" };
+  return { id: "reading", label: "Reading", value: `${formatDuration(now - at)} old · no forecast`, tone: "warning" };
 }
 
 const extraDetail = (enabled: boolean | null): UsageDetailOut | null =>
@@ -295,17 +320,26 @@ export function buildReport(state: SourceState, input: UsageInput, now: number):
   const extras = zs.extras[account.id];
   const stale = readingAge(account, now) !== null;
   const pool = claudeAccounts(state).length > 1 ? poolForecast(zs.accounts, "claude", now, { autoSwitch: zs.autoSwitch }) : null;
-  const details = [
-    input.lead && pool ? poolDetail(pool, now) : null,
-    statusDetail(account, pool, now),
-    stale ? readingDetail(account.readAt, now) : null,
-    extraDetail(extras?.extraUsage ?? null),
-  ].filter((d): d is UsageDetailOut => d !== null);
+  const nameOf = (id: string) => zs.accounts.find((a) => a.id === id)?.name ?? "another account";
   const shown = input.lead ? account.windows : account.windows.filter((w) => BASE_WINDOWS.has(w.id));
+  const windows = windowsOf(shown, stale, now, extras?.windowLabels ?? {});
+  const status = statusDetail(account, pool, now, nameOf);
+  // Extra usage is the built-in card's row, so the session's own card always carries it; elsewhere only where it matters.
+  const atStake = status?.label === "At the limit" || windows.some((w) => w.runsOutAt);
+  const details = [
+    // A stale reading leads: everything under it is that old, and nothing is forecast from it.
+    stale ? readingDetail(account.readAt, now) : null,
+    input.lead && pool && !stale ? poolDetail(pool, now) : null,
+    status,
+    stale ? null : handoffDetail(account, pool, nameOf),
+    input.lead || atStake ? extraDetail(extras?.extraUsage ?? null) : null,
+  ].filter((d): d is UsageDetailOut => d !== null);
+  const age = stale && account.readAt ? `${formatDuration(now - Date.parse(account.readAt))} old` : null;
   return {
     status: "available",
-    planLabel: badge(account.name, extras?.plan ?? null),
-    windows: windowsOf(shown, stale, now, extras?.windowLabels ?? {}),
+    // Stale, the badge says so: it is the most visible slot a card gives us.
+    planLabel: age ? `${account.name} · ${age}` : badge(account.name, extras?.plan ?? null),
+    windows,
     balances: [],
     details,
   };

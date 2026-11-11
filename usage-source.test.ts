@@ -186,7 +186,7 @@ test("the lead card carries the pool line; the others do not", () => {
   if (lead.status !== "available" || other.status !== "available") return;
   const pool = lead.details!.find((d) => d.id === "pool");
   assert.ok(pool, "lead has the pool line");
-  assert.equal(pool!.label, "2 accounts");
+  assert.equal(pool!.label, "Both accounts");
   assert.match(pool!.value, /^run out in .+ at this pace$/);
   assert.equal(pool!.tone, "warning");
   assert.equal(other.details!.some((d) => d.id === "pool"), false);
@@ -203,7 +203,8 @@ test("a limited account says so in red, with when it is back", () => {
   const report = buildReport(state, { account: "claude-two", lead: false }, NOW);
   assert.equal(report.status, "available");
   if (report.status !== "available") return;
-  assert.deepEqual(report.details!.find((d) => d.id === "status"), { id: "status", label: "At the limit", value: "back in 1h 30m", tone: "danger" });
+  // Its 5-hour window resets when the limit lifts, and Paseo prints that reset: name it, don't repeat it.
+  assert.deepEqual(report.details!.find((d) => d.id === "status"), { id: "status", label: "At the limit", value: "until the 5-hour reset", tone: "danger" });
   assert.equal(report.windows[0]!.tone, "danger");
 });
 
@@ -213,7 +214,9 @@ test("a stale account says how old its reading is and is never hideable", () => 
   const report = buildReport(state, { account: "claude-two", lead: false }, NOW);
   assert.equal(report.status, "available");
   if (report.status !== "available") return;
-  assert.deepEqual(report.details!.find((d) => d.id === "reading"), { id: "reading", label: "Last reading", value: "42m ago", tone: "warning" });
+  // The age leads the details and is in the badge, the most visible slot on the card.
+  assert.deepEqual(report.details![0], { id: "reading", label: "Reading", value: "42m old · no forecast", tone: "warning" });
+  assert.equal(report.planLabel, "Account 2 · 42m old");
   assert.deepEqual(hideableCards(state, NOW).map((c) => c.key), ["claude-main"]);
 });
 
@@ -307,4 +310,25 @@ test("the account in use is never 'taking over', and other cards keep to the 5-h
   assert.equal(other.details!.find((d) => d.id === "status")?.label, "Takes over");
   assert.deepEqual(lead.windows.map((w) => w.id), ["five_hour", "weekly", "weekly_model_fable"]);
   assert.deepEqual(other.windows.map((w) => w.id), ["five_hour", "weekly"]);
+});
+
+test("the card the work is on names who takes over next; the next one says when", () => {
+  const busy = [win("five_hour", 60, 4 * HOUR, 30), win("seven_day", 40, 3 * 24 * HOUR)];
+  const state = zerosubState([account("claude-main", { windows: busy, isDefault: true }), account("claude-two", { windows: [win("five_hour", 10, 1 * HOUR, 1), win("seven_day", 10, 3 * 24 * HOUR)] })]);
+  const lead = buildReport(state, { account: "claude-main", lead: true }, NOW);
+  const other = buildReport(state, { account: "claude-two", lead: false }, NOW);
+  if (lead.status !== "available" || other.status !== "available") return assert.fail("both available");
+  assert.deepEqual(lead.details!.find((d) => d.id === "then"), { id: "then", label: "Then", value: "Account 2 takes over" });
+  assert.deepEqual(other.details!.find((d) => d.id === "status"), { id: "status", label: "Takes over", value: "when CLI login runs out" });
+});
+
+test("a stale lead card leaves the pool out, and extra usage shows on other cards only when at stake", () => {
+  const state = zerosubState([account("claude-main", { isDefault: true, readAt: iso(-50 * MIN) }), account("claude-two")]);
+  for (const id of ["claude-main", "claude-two"]) (state.zerosub!.extras as Record<string, AccountExtras>)[id] = extras({ extraUsage: true });
+  const lead = buildReport(state, { account: "claude-main", lead: true }, NOW);
+  const other = buildReport(state, { account: "claude-two", lead: false }, NOW);
+  if (lead.status !== "available" || other.status !== "available") return assert.fail("both available");
+  assert.equal(lead.details!.some((d) => d.id === "pool"), false);
+  assert.equal(lead.details!.some((d) => d.id === "extra_usage"), true);
+  assert.equal(other.details!.some((d) => d.id === "extra_usage"), false);
 });
