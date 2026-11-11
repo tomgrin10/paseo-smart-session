@@ -342,6 +342,10 @@ when you have not looked, and never describe a screenshot you did not take.
   always an explicit human step. The workflow then checks that the release sits on its tag and that
   a beta never moved `latest`. `release-tag.test.ts` holds the rules and pins the workflow to them.
   A prerelease's GitHub release is marked pre-release.
+- **A release needs Tom's manual permission, every time.** No agent releases on its own. Features and fixes ship to a
+  beta by default (`X.Y.Z-beta.N`, npm `beta` dist-tag). Anything else needs Tom's explicit OK for that exact version
+  before it's tagged: an rc (`X.Y.Z-rc.N`), a stable version, npm `latest` (the workflow's `allow_latest` run), or a
+  hotfix (a hotfix skips the beta, not the permission). Ask him, and quote his OK in the release commit body.
 - Wait for the publish workflow and npm registry propagation, then verify installation with
   `paseo plugin install npm:paseo-smart-session@X.Y.Z` on Paseo 0.9 or newer. Title the GitHub
   release `paseo-smart-session vX.Y.Z`, and test the public tag-pinned installer and badge URLs.
