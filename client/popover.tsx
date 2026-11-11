@@ -152,7 +152,8 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
             : reset <= now ? "Waiting for a fresh usage reading"
               : `in ${formatDuration(reset - now)} · ${work === "idle" ? "no turn runs before then" : held ? THEN[work] : "continue it by hand"}`;
       const tone = stuck ? c.statusDanger : c.statusWarning;
-      const meta = [after, look.coverage.toLowerCase()].filter(Boolean).join(" · ");
+      // "your message runs then" already says a message waits; coverage would only repeat it.
+      const meta = [after, work === "message" ? null : look.coverage.toLowerCase()].filter(Boolean).join(" · ");
       const waiting = pause.phase === "waiting";
       return <View style={{ gap: 8 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>

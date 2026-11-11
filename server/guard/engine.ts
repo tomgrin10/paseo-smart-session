@@ -19,7 +19,7 @@ import {
   isPending, protects, resetReady, sessionWindow, timestamp, usedPct,
   type Agent, type Pause, type Policy, type State, type Usage,
 } from "../../shared/guard/policy.ts";
-import { continuesAtReset, freezesIdle, holdKind, messageArrived } from "../../shared/guard/hold.ts";
+import { continuesAtReset, freezesIdle, holdKind, messageArrived, messageWaiting } from "../../shared/guard/hold.ts";
 
 /** Shown while a session is held in the foreground because its provider process couldn't be confirmed as its own. */
 const FALLBACK_ERROR = process.platform === "linux"
@@ -76,9 +76,12 @@ export class Engine {
         if (pause.notifications.some(n => n.data.event === event)) continue;
         const native = event === "resumed" ? !!pause.resumedInPlace : event === "recovery" ? false
           : !!pause.suspension || !!pause.resumedInPlace || pause.notifications.some(n => n.data.native);
-        const window = this.usage?.providers.find(p => p.providerId === pause.provider)?.windows.find(w => w.id === pause.windowId);
+        // The agent's own account: under ZeroSub that is not the CLI login Paseo measures.
+        const usage = this.usage && (this.accounts?.usageFor(pause.agentId, pause.provider) ?? this.usage);
+        const window = usage?.providers.find(p => p.providerId === pause.provider)?.windows.find(w => w.id === pause.windowId);
         pause.notifications.push({ id: `session-guard:${pause.id}:${event}`, delivery: "pending", data: {
-          pauseId: pause.id, event, at: event === "paused" ? pause.pausedAt : pause.settledAt ?? new Date(this.now()).toISOString(),
+          // A card for a message held in an idle hold is written when the message arrives, and says so.
+          pauseId: pause.id, event, at: event === "paused" ? (messageWaiting(pause) ? pause.lastUserMessageAt! : pause.pausedAt) : pause.settledAt ?? new Date(this.now()).toISOString(),
           provider: pause.provider, native, autoResume: !pause.demo && policy.autoResume && policy.enabled,
           resetAt: pause.anchorResetsAt, usedPct: window ? usedPct(window) : null, note: pause.note,
           ...(pause.manualResume ? { manualResume: true } : {}), ...(pause.demo ? { demo: true } : {}), ...(pause.dismissed ? { dismissed: true } : {}),

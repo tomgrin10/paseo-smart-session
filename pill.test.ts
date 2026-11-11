@@ -49,16 +49,16 @@ test("the quiet case stays quiet; only an excluded session says so, in words", (
 
 test("paused, the pill becomes the pause and leads with the moment it comes back", () => {
   const view = describePill("a", agent, pills, status({ pauses: [pause()] }), NOW);
-  assert.match(view.label, /^Held until /);
+  assert.match(view.label, /^Until /);
   assert.match(view.title, /^Held until .* · continues then$/);
   const policy = PolicySchema.parse({ enabled: true });
-  assert.equal(pausePill(pause(), policy, NOW, clock).label, "Held until 17:58");
+  assert.equal(pausePill(pause(), policy, NOW, clock).label, "Until 17:58");
   assert.equal(pausePill(pause({ idle: true }), policy, NOW, clock).title, "Held at the limit until 17:58");
   assert.equal(pausePill(pause({ lastUserMessageAt: new Date(NOW).toISOString() }), policy, NOW, clock).title, "Held until 17:58 · your message runs then");
   assert.equal(pausePill(pause({ suspension: { rootPid: 2, processes: [] } }), policy, NOW, clock).title, "Held until 17:58 · carries on in place then");
-  assert.equal(pausePill(pause(), { ...policy, autoResume: false }, NOW, clock).label, "Held · resets 17:58");
-  assert.equal(pausePill(pause({ idle: true }), { ...policy, autoResume: false }, NOW, clock).label, "Held until 17:58", "an idle hold just lets go at the reset");
-  assert.equal(pausePill(pause({ anchorResetsAt: "2026-11-05T14:00:00Z" }), policy, NOW, clock).label, "Held · reset due");
+  assert.equal(pausePill(pause(), { ...policy, autoResume: false }, NOW, clock).label, "Resets 17:58");
+  assert.equal(pausePill(pause({ idle: true }), { ...policy, autoResume: false }, NOW, clock).label, "Until 17:58", "an idle hold just lets go at the reset");
+  assert.equal(pausePill(pause({ anchorResetsAt: "2026-11-05T14:00:00Z" }), policy, NOW, clock).label, "Reset due");
   assert.equal(pausePill(pause({ anchorResetsAt: null }), policy, NOW, clock).label, "Held");
   assert.equal(pausePill(pause({ phase: "attention" }), policy, NOW, clock).tone, "danger");
   assert.equal(pausePill(pause(), { ...policy, enabled: false }, NOW, clock).label, "On hold");

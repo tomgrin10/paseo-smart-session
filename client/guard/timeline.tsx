@@ -119,7 +119,7 @@ export function GuardTimelineItem({ theme, agentId, item, layout, openOverview }
     : `${!auto ? "resets" : work === "message" ? "your message runs" : "continues"} in ${formatDuration(reset - now)}`;
   const facts = [providerName(item.data.provider),
     item.data.usedPct === null ? null : `${Math.round(item.data.usedPct)}% used`,
-    work === "message" ? "your message waits" : work === "frozen" ? "native subagents frozen" : work === "idle" ? null : "turn interrupted",
+    work === "message" ? (auto ? null : "your message waits") : work === "frozen" ? "native subagents frozen" : work === "idle" ? null : "turn interrupted",
     auto ? null : "continue by hand"].filter(Boolean).join(" · ");
   const accent = stuck ? c.statusDanger : c.statusWarning;
 

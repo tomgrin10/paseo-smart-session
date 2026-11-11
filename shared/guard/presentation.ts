@@ -32,7 +32,7 @@ export function pausePresentation(pause: Pause, policy: Policy, now = Date.now()
     : !policy.autoResume ? "Automatic resume off" : "Will resume automatically after reset";
   return {
     title: pause.title?.trim() || "Untitled session", state, resetLabel,
-    coverage: pause.phase === "attention" ? "Check session state" : pause.idle ? "Nothing running" : messageWaiting(pause) ? "Your message waits"
+    coverage: pause.phase === "attention" ? "Check session state" : pause.idle ? "Nothing running" : messageWaiting(pause) ? "Message waiting"
       : pause.suspension ? "Includes native subagents" : pause.restartRecovery ? "Saved conversation · waiting after restart" : "Interrupted turn",
     actionLabel: "Release and turn off",
     actionHint: pause.suspension ? "Resume these workers now and exclude this session from protection."
@@ -114,15 +114,17 @@ export function pausePill(pause: Pause, policy: Policy, now = Date.now(), clock:
   if (pause.phase === "resuming") return { label: "Resuming…", title: "The window reset · continuing now", tone: "warning" as const };
   if (pause.demo) return { label: "Paused · test", title: "Test pause · waits for you", tone: "warning" as const };
   if (!policy.enabled) return { label: "On hold", title: "On hold while Pause at the limit is off", tone: "warning" as const };
+  // The composer cuts a pill label at about 14 characters, and the amber pause glyph already
+  // says it is held: the label is the moment, the title says the rest.
   if (reset === null) return { label: "Held", title: "Held at the limit · reset time not reported yet", tone: "warning" as const };
   const at = clock(pause.anchorResetsAt!);
-  if (reset <= now) return { label: "Held · reset due", title: `Held at the limit · reset was ${at}, waiting for a fresh reading`, tone: "warning" as const };
+  if (reset <= now) return { label: "Reset due", title: `Held at the limit · reset was ${at}, waiting for a fresh reading`, tone: "warning" as const };
   const work = heldWork(pause);
   // An idle hold just lets go at the reset, so it reads the same with automatic continuation off.
   if (policy.autoResume || work === "idle") {
-    return { label: `Held until ${at}`, title: work === "idle" ? `Held at the limit until ${at}` : `Held until ${at} · ${THEN[work]}`, tone: "warning" as const };
+    return { label: `Until ${at}`, title: work === "idle" ? `Held at the limit until ${at}` : `Held until ${at} · ${THEN[work]}`, tone: "warning" as const };
   }
-  return { label: `Held · resets ${at}`, title: `Held at the limit · resets ${at}, continue by hand`, tone: "warning" as const };
+  return { label: `Resets ${at}`, title: `Held at the limit · resets ${at}, continue by hand`, tone: "warning" as const };
 }
 
 /**

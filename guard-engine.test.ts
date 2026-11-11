@@ -752,3 +752,15 @@ test("Resume now right after a message adopts it rather than refusing a changed 
     assert.deepEqual(f.calls.sent, [], "its own turn runs; no extra message");
   }
 });
+test("the card's usage is the agent's own account, not the CLI login's", async t => {
+  // Harness 2026-11-11: an account at 100% under ZeroSub carried a card saying "47% used", the CLI login's reading.
+  const f = await fixture(t);
+  f.usage({ fetchedAt: iso(base), providers: [{ providerId: "claude", status: "available", windows: [{ id: "five_hour", usedPct: 47, resetsAt: iso(end) }] }] });
+  const own: Usage = { fetchedAt: iso(base), providers: [{ providerId: "claude", status: "available", windows: [{ id: "five_hour", usedPct: 100, resetsAt: iso(end) }] }] };
+  const view = { usageFor: () => own, failsOver: () => false, switchesAtLimit: () => false, roomSince: () => null, continuedElsewhere: () => false };
+  const events: { usedPct: number | null }[] = [];
+  const engine = new Engine(f.store, async () => policyOf(), async work => work(f.client), () => base, undefined,
+    async (_a, n) => { events.push(n.data); }, client => client.listProviderUsage(), async () => view);
+  await engine.tick(); await engine.deliverTimeline();
+  assert.deepEqual(events.map(e => e.usedPct), [100]);
+});
