@@ -18,7 +18,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readAgents, sendToAgent, withDaemon, type AgentRow } from "./daemon.ts";
-import { compactionInstructions, continuationInstructions, type CompactionRequest } from "../shared/governor.ts";
+import { compactionInstructions, confirmation, continuationInstructions, landed, NOT_COMPACTED, type CompactionRequest } from "../shared/governor.ts";
 import { lifecycle } from "../shared/lifecycle.ts";
 import { readSettings } from "./settings.ts";
 import { dataDir } from "./store.ts";
@@ -58,6 +58,7 @@ function normalize(item: CompactionRequest): CompactionRequest {
     continueAfterCompaction: item.continueAfterCompaction ?? true,
     continuationMessage: item.continuationMessage ?? null,
     resumedAt: item.resumedAt ?? null,
+    confirmedAt: item.confirmedAt ?? null,
   };
 }
 
@@ -103,6 +104,7 @@ export const queue = {
         createdAt: new Date().toISOString(),
         state: "pending",
         settledAt: null,
+        confirmedAt: null,
         error: null,
         preTokens: null,
         postTokens: null,
@@ -158,6 +160,7 @@ const grading = new Map<
   string,
   {
     requestId: string;
+    deliveredAt: string;
     preTokens: number | null;
     statePath: string | null;
     continueAfterCompaction: boolean;
@@ -180,16 +183,24 @@ async function flush(): Promise<void> {
     const agents = new Map<string, AgentRow>();
     for (const agent of await readAgents(client)) agents.set(agent.id, agent);
 
-    // Land compactions that have already happened.
+    // Land compactions that have already happened. Read the hook's records only while one is out.
+    const events = grading.size > 0 ? await compactionEvents() : [];
     for (const [agentId, watch] of [...grading]) {
       const agent = agents.get(agentId);
       if (Date.now() > watch.until || agent === undefined) {
+        // Delivered, but the context never shrank: the /compact was cancelled or failed, unless the
+        // session's own PostCompact hook says otherwise. Either way this decides it for good.
         grading.delete(agentId);
+        await settleUnlanded(watch.requestId);
         continue;
       }
       if (agent.status !== "idle" || agent.usedTokens === null) continue;
-      if (watch.preTokens !== null && agent.usedTokens >= watch.preTokens) continue; // Not shrunk yet.
-      await queue.update(watch.requestId, { postTokens: agent.usedTokens });
+      // Landed means the context really emptied, or the session's PostCompact hook says it compacted.
+      // A wobble of a few tokens, or an idle session with no reading from before, proves nothing: a
+      // cancelled /compact leaves the session idle at the same size.
+      const recorded = confirmation({ agentId, state: "sent", settledAt: watch.deliveredAt, confirmedAt: null, postTokens: null }, events);
+      if (!landed(watch.preTokens, agent.usedTokens) && recorded === null) continue;
+      await queue.update(watch.requestId, { postTokens: agent.usedTokens, confirmedAt: recorded ?? new Date().toISOString() });
       grading.delete(agentId);
 
       const continuation = continuationInstructions(watch);
@@ -231,9 +242,11 @@ async function flush(): Promise<void> {
       const claimed = await queue.update(item.id, { state: "sending", preTokens: agent.usedTokens });
       try {
         await sendToAgent(client, item.agentId, compactionInstructions(claimed ?? item));
-        await queue.update(item.id, { state: "sent", settledAt: new Date().toISOString() });
+        const deliveredAt = new Date().toISOString();
+        await queue.update(item.id, { state: "sent", settledAt: deliveredAt });
         grading.set(item.agentId, {
           requestId: item.id,
+          deliveredAt,
           preTokens: agent.usedTokens,
           statePath: item.statePath,
           continueAfterCompaction: item.continueAfterCompaction,
@@ -250,6 +263,32 @@ async function flush(): Promise<void> {
       }
     }
   });
+}
+
+/** PostCompact's own records (`hooks/post-compact.mjs`), the tail only. */
+async function compactionEvents(): Promise<{ agentId?: unknown; event?: unknown; at?: unknown }[]> {
+  try {
+    const raw = (await readFile(join(dataDir(), "compaction-events.jsonl"), "utf8")).slice(-65_536);
+    return raw.split("\n").flatMap((line) => {
+      try {
+        const event = JSON.parse(line) as unknown;
+        return event !== null && typeof event === "object" ? [event as { agentId?: unknown; event?: unknown; at?: unknown }] : [];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** A delivered compaction whose watch ran out: confirmed by the hook's record, or marked as never compacted. */
+async function settleUnlanded(requestId: string): Promise<void> {
+  const item = (await queue.list()).find((candidate) => candidate.id === requestId);
+  if (item === undefined || confirmation(item) !== null) return;
+  const at = confirmation(item, await compactionEvents());
+  await queue.update(requestId, at !== null ? { confirmedAt: at } : { error: NOT_COMPACTED });
+  if (at === null) console.log(`[smart-session] ${item.agentId.slice(0, 8)}'s /compact was delivered but never compacted`);
 }
 
 function startGovernor(): void {

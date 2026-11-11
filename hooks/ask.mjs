@@ -54,14 +54,62 @@ export function alreadyQueued(items, agentId) {
   );
 }
 
-export function thrashing(items, agentId, now = Date.now()) {
-  return items.some(
-    (item) =>
-      item.agentId === agentId &&
-      item.state === "sent" &&
-      item.settledAt !== null &&
-      now - Date.parse(item.settledAt) < THRASH_WINDOW_MS,
+/**
+ * PostCompact's own records (`hooks/post-compact.mjs`), newest last. Only the tail is read: the
+ * file gains a line per compaction and only the last few minutes matter here.
+ */
+export function compactionEvents() {
+  try {
+    const raw = readFileSync(join(pluginDir(), "compaction-events.jsonl"), "utf8").slice(-65_536);
+    return raw.split("\n").flatMap((line) => {
+      try {
+        const event = JSON.parse(line);
+        return event !== null && typeof event === "object" ? [event] : [];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * When a queued compaction is known to have happened, or null.
+ *
+ * Invariant: a compaction counts only once it is confirmed. Delivering `/compact` is not a
+ * compaction: the person or the client can cancel it ("Compaction canceled."), and it can fail.
+ * Confirmed means the governor saw the context shrink after delivery (`confirmedAt`; `postTokens`
+ * on rows written before that field existed), or the session's own PostCompact or
+ * SessionStart:compact hook recorded a compaction after the delivery. Mirrors `confirmation` in
+ * `shared/governor.ts`.
+ */
+export function confirmedAt(item, events) {
+  if (item.state !== "sent" || typeof item.settledAt !== "string") return null;
+  if (typeof item.confirmedAt === "string") return item.confirmedAt;
+  if (typeof item.postTokens === "number") return item.settledAt;
+  const delivered = Date.parse(item.settledAt);
+  const record = events.find(
+    (event) =>
+      event.agentId === item.agentId &&
+      (event.event === "PostCompact" || event.event === "SessionStart") &&
+      typeof event.at === "string" &&
+      Date.parse(event.at) >= delivered,
   );
+  return record === undefined ? null : record.at;
+}
+
+/** A confirmed compaction of this agent within the thrash window: the window refilled too fast. */
+export function thrashing(items, agentId, now = Date.now(), events = null) {
+  const recent = items.filter(
+    (item) => item.agentId === agentId && item.state === "sent" && typeof item.settledAt === "string" && now - Date.parse(item.settledAt) < THRASH_WINDOW_MS,
+  );
+  if (recent.length === 0) return false;
+  const records = events ?? compactionEvents();
+  return recent.some((item) => {
+    const at = confirmedAt(item, records);
+    return at !== null && now - Date.parse(at) < THRASH_WINDOW_MS;
+  });
 }
 
 function headline({ used, max, pct }) {

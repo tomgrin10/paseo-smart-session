@@ -158,7 +158,7 @@ test("a queued compaction is not asked for again mid-turn", async () => {
 
 test("a window that refilled within minutes hears the thrashing advice instead", async () => {
   const root = home();
-  queue(root, [{ agentId: AGENT, state: "sent", settledAt: new Date().toISOString() }]);
+  queue(root, [{ agentId: AGENT, state: "sent", settledAt: new Date().toISOString(), confirmedAt: new Date().toISOString() }]);
   const text = said(await toolCall(root, 450_000));
   assert.match(text, /refilled/);
   assert.doesNotMatch(text, /request_compaction/);

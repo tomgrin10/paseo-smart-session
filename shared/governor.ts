@@ -27,7 +27,14 @@ export const CompactionRequestSchema = z.object({
   continuationMessage: z.string().nullable(),
   createdAt: z.string(),
   state: CompactionStateSchema,
+  /** When the request settled: for `sent`, when `/compact` was delivered, which is not when it compacted. */
   settledAt: z.string().nullable(),
+  /**
+   * When the compaction is known to have happened: the context shrank after delivery. Null until
+   * then, and for good when it never did (cancelled or failed; `error` then says so). See
+   * `confirmation`.
+   */
+  confirmedAt: z.string().nullable(),
   error: z.string().nullable(),
   /** Context occupancy either side of the compaction, for grading the policy. */
   preTokens: z.number().nullable(),
@@ -43,6 +50,41 @@ export const CompactionRequestSchema = z.object({
   resumedAt: z.string().nullable(),
 });
 export type CompactionRequest = z.infer<typeof CompactionRequestSchema>;
+
+/** Whether the context emptied the way a compaction empties it, not by a few tokens. */
+export function landed(preTokens: number | null, usedTokens: number): boolean {
+  return preTokens !== null && preTokens > 0 && usedTokens < preTokens * COMPACTED_FRACTION;
+}
+
+/** A compaction leaves well under this share of the context it started with (300k becomes 20-60k). */
+const COMPACTED_FRACTION = 0.6;
+
+/** What the governor writes when a delivered `/compact` never compacted. */
+export const NOT_COMPACTED = "The /compact was delivered but no compaction followed (cancelled or failed), so it does not count.";
+
+/**
+ * When a queued compaction is known to have happened, or null.
+ *
+ * Invariant: a compaction counts only once it is confirmed. A request, a delivery and a
+ * cancelled or failed `/compact` never count: the person or the client can cancel a delivered
+ * `/compact` ("Compaction canceled."), which leaves the request `sent`. Confirmed means the
+ * context shrank after delivery (`confirmedAt`, or `postTokens` on rows from before that field), or
+ * the session's PostCompact or SessionStart:compact hook recorded a compaction after delivery
+ * (`events`, the hook's `compaction-events.jsonl`). `hooks/ask.mjs` mirrors this as `confirmedAt`.
+ */
+export function confirmation(
+  item: Pick<CompactionRequest, "agentId" | "state" | "settledAt" | "confirmedAt" | "postTokens">,
+  events: readonly { agentId?: unknown; event?: unknown; at?: unknown }[] = [],
+): string | null {
+  if (item.state !== "sent" || item.settledAt === null) return null;
+  if (item.confirmedAt) return item.confirmedAt;
+  if (typeof item.postTokens === "number") return item.settledAt;
+  const delivered = Date.parse(item.settledAt);
+  const record = events.find((event) => event.agentId === item.agentId
+    && (event.event === "PostCompact" || event.event === "SessionStart")
+    && typeof event.at === "string" && Date.parse(event.at) >= delivered);
+  return record === undefined ? null : (record.at as string);
+}
 
 /**
  * Queues a compaction for an agent, delivered once that agent is idle.

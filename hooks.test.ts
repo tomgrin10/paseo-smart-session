@@ -489,19 +489,53 @@ test("a queued compaction is not asked for twice", async () => {
   assert.equal(await stopHook(home, 900_000), "");
 });
 
-test("a window that refilled within minutes is told to stop compacting, not to compact", async () => {
+/** Writes the governor's queue and, optionally, the PostCompact hook's own records. */
+function compactionHistory(home: string, items: Array<Record<string, unknown>>, events: Array<Record<string, unknown>> = []): void {
+  const dir = join(home, "plugin-data", "smart-session");
+  writeFileSync(join(dir, "compactions.json"), JSON.stringify({ version: 1, items }), "utf8");
+  if (events.length > 0) writeFileSync(join(dir, "compaction-events.jsonl"), events.map((event) => `${JSON.stringify(event)}\n`).join(""), "utf8");
+}
+
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+
+test("a window that refilled within minutes of a confirmed compaction is told to stop compacting", async () => {
   const home = enrolledHome();
-  writeFileSync(
-    join(home, "plugin-data", "smart-session", "compactions.json"),
-    JSON.stringify({
-      version: 1,
-      items: [{ agentId: AGENT, state: "sent", settledAt: new Date().toISOString() }],
-    }),
-    "utf8",
-  );
+  compactionHistory(home, [{ agentId: AGENT, state: "sent", settledAt: minutesAgo(3), confirmedAt: minutesAgo(2), postTokens: 40_000 }]);
   const advice = await adviceFrom(await stopHook(home, 340_000));
   assert.match(advice, /refilled/);
   assert.doesNotMatch(advice, /request_compaction/);
+});
+
+test("a /compact that was delivered and then cancelled is not a compaction", async () => {
+  // 2026-11-11: compaction f01c50e2 was delivered, Claude Code printed "Compaction canceled.",
+  // and the next Stop said the session "refilled within minutes of its last compaction" and
+  // that compacting again would not help. No compaction had run: only PostCompact (or the
+  // context shrinking after delivery) proves one did.
+  const home = enrolledHome();
+  compactionHistory(home, [{ agentId: AGENT, state: "sent", settledAt: minutesAgo(2), confirmedAt: null, preTokens: 307_740, postTokens: null }]);
+  const ask = await adviceFrom(await stopHook(home, 340_000));
+  assert.doesNotMatch(ask, /refilled/);
+  assert.match(ask, /request_compaction/);
+});
+
+test("PostCompact's own record confirms a delivered compaction before the governor does", async () => {
+  const home = enrolledHome();
+  compactionHistory(
+    home,
+    [{ agentId: AGENT, state: "sent", settledAt: minutesAgo(2), confirmedAt: null, postTokens: null }],
+    [{ at: minutesAgo(1), event: "PostCompact", sessionId: "s1", agentId: AGENT, trigger: "manual" }],
+  );
+  assert.match(await adviceFrom(await stopHook(home, 340_000)), /refilled/);
+});
+
+test("a PostCompact from before the delivery confirms nothing", async () => {
+  const home = enrolledHome();
+  compactionHistory(
+    home,
+    [{ agentId: AGENT, state: "sent", settledAt: minutesAgo(2), confirmedAt: null, postTokens: null }],
+    [{ at: minutesAgo(5), event: "PostCompact", sessionId: "s1", agentId: AGENT, trigger: "manual" }],
+  );
+  assert.doesNotMatch(await adviceFrom(await stopHook(home, 340_000)), /refilled/);
 });
 
 test("the Stop hook labels its output as Stop, or Claude Code rejects all of it", async () => {
