@@ -268,18 +268,17 @@ export function statusDetail(account: Subscription, pool: PoolForecast | null, n
   }
   if (state.kind === "aside") return { id: "status", label: "Set aside", value: "in ZeroSub" };
   if (pool === null) return null;
-  // The account the work is on now is not "taking over", even if the work comes back to it later.
-  if (pool.current === account.id) return null;
-  const index = pool.takeovers.findIndex((t) => t.accountId === account.id);
-  if (index === -1) return null;
-  const from = pool.takeovers[index]!.from;
-  return { id: "status", label: "Takes over", value: from ? `when ${nameOf(from)} runs out` : inDuration(pool.takeovers[index]!.at - now) };
+  // The pool runs one stream of work per busy account; a takeover is work moving from one account to another.
+  // Work coming back to an account that ran out earlier is not news on that account's card.
+  const takeover = pool.takeovers.find((t) => t.accountId === account.id && t.from !== account.id);
+  if (!takeover) return null;
+  if (pool.takeovers.some((t) => t.from === account.id && t.at < takeover.at)) return null;
+  return { id: "status", label: "Takes over", value: `when ${nameOf(takeover.from)} runs out` };
 }
 
-/** On the card the work is on: who carries it next, so the run-out above has its answer on the same card. */
+/** On a card whose own work moves on: who carries it next, so its run-out has the answer on the same card. */
 function handoffDetail(account: Subscription, pool: PoolForecast | null, nameOf: (id: string) => string): UsageDetailOut | null {
-  if (pool === null || pool.current !== account.id) return null;
-  const next = pool.takeovers[0];
+  const next = pool?.takeovers.find((t) => t.from === account.id && t.accountId !== account.id);
   return next ? { id: "then", label: "Then", value: `${nameOf(next.accountId)} takes over` } : null;
 }
 

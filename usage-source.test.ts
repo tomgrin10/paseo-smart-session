@@ -332,3 +332,16 @@ test("a stale lead card leaves the pool out, and extra usage shows on other card
   assert.equal(lead.details!.some((d) => d.id === "extra_usage"), true);
   assert.equal(other.details!.some((d) => d.id === "extra_usage"), false);
 });
+
+test("handoffs follow each account's own work, not the pool's first busy account (live 3.7.0-beta.1)", () => {
+  // As seen live: the CLI login is the default and busy but light; the session's managed account runs short first.
+  const cli = account("claude-main", { isDefault: true, agents: 1, windows: [win("five_hour", 9, 4 * HOUR, 3), win("seven_day", 30, 3 * 24 * HOUR)] });
+  const seat = account("claude-two", { agents: 1, windows: [win("five_hour", 20, 4 * HOUR, 40), win("seven_day", 40, 3 * 24 * HOUR)] });
+  const state = zerosubState([cli, seat]);
+  const seatCard = buildReport(state, { account: "claude-two", lead: true }, NOW);
+  const cliCard = buildReport(state, { account: "claude-main", lead: false }, NOW);
+  if (seatCard.status !== "available" || cliCard.status !== "available") return assert.fail("both available");
+  assert.deepEqual(seatCard.details!.find((d) => d.id === "then"), { id: "then", label: "Then", value: "CLI login takes over" });
+  assert.equal(cliCard.details!.some((d) => d.id === "then"), false, "the CLI login does not hand off to itself");
+  assert.deepEqual(cliCard.details!.find((d) => d.id === "status"), { id: "status", label: "Takes over", value: "when Account 2 runs out" });
+});
