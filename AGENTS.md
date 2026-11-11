@@ -192,8 +192,9 @@
   chooses whether to send it and may supply its exact text; omission preserves the state-aware
   default for compatibility. It is sent only for queue-originated compactions, so a `/compact` a
   person typed is never overridden.
-- Deliver only at a turn boundary, only when task state on disk is current, and never retry an
-  interrupted `/compact` — it is destructive and not idempotent.
+- Deliver only at a turn boundary, only when task state on disk is current, and never retry a `/compact` whose send
+  a restart interrupted (`recoverInterrupted`): it is destructive and not idempotent, and nobody knows whether it ran.
+  A `/compact` Claude Code reports cancelled is different: no compaction ran, so it is retried (below).
 - **A compaction counts only once it is confirmed.** Delivering `/compact` is not a compaction: the person or the
   client can cancel it ("Compaction canceled.") or it can fail, and the request stays `sent`. Confirmed means the
   context really emptied after delivery (under 60% of `preTokens`; the governor sets `confirmedAt`) or the session's
@@ -202,6 +203,19 @@
   `hooks/ask.mjs`, pinned to it in `compaction.test.ts`): the thrash advice, the continuation, the popover's Last
   compaction. A delivery that never lands is settled with `NOT_COMPACTED` when its watch runs out. 2026-11-11: a
   cancelled `/compact` was read as a compaction and the Stop hook told the session compacting again "would not help".
+- **Invariant: a requested compaction either lands, or is retried and visibly reported; never silently dropped.**
+  Paseo (0.16) can't steer a message into a slash-command turn, so a message that reaches an agent while its
+  `/compact` runs (an agent notification, a person's message) replaces the turn and Claude Code writes
+  "Compaction canceled." (`RESEARCH.md` §3.6). No hook fires for the cancel and Paseo offers plugins no way to hold a
+  prompt, so it can't be prevented from here. `hooks/cancelled.mjs`, on `UserPromptSubmit` (the replacing prompt) and
+  `Stop`, finds the line in the transcript while the agent has a delivered, unconfirmed `/compact`, records
+  `CompactCanceled` (request id, `replaced` or `stopped`) in `compaction-events.jsonl` once, and tells the agent on the
+  prompt. The governor settles that request (`queue.settleCancelled`, `server/compaction-queue.ts`) by `retryVerdict`:
+  a replaced one is re-queued as the same request (`attempt`, `retryOf`; `retryLine` marks the `/compact`), at most
+  `RETRY_LIMIT` (2) per agent per hour and not when another is queued; a Stop is never retried. Every ending has its
+  own `compactionLine` in the popover and the card says "retry n" (`compact-retry.test.ts` walks them). A retry is the
+  agent's own request again, not the plugin deciding to compact. 2026-11-11 11:27: a notification cancelled a
+  delivered `/compact` nine seconds in; nothing retried it and the agent read it as a person cancelling.
 - `settings.enabled` is the master switch; `showPill` and `autoEnrol` qualify it and mean nothing
   while it is off. There is no third pill state — a session is enrolled or it is not. With Smart
   Compact off the pill is drawn only while Pause at the limit runs here (muted ring, no tick).

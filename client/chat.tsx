@@ -78,7 +78,7 @@ function PromptCardView({ item, theme, layout }: PluginTimelineItemProps<PromptC
     <View style={[{ borderRadius: 12, backgroundColor: c.surface1, overflow: "hidden" }, raised(c)]}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingTop: 11, paddingBottom: 4 }}>
         <Icon name={look.icon} size={14} color={c.foregroundMuted} />
-        <Text numberOfLines={1} style={{ flex: 1, color: c.foreground, fontSize: 13, lineHeight: 18, fontWeight: "600" }}>{look.title}</Text>
+        <Text numberOfLines={1} style={{ flex: 1, color: c.foreground, fontSize: 13, lineHeight: 18, fontWeight: "600" }}>{card.retry ? `Compaction retry ${card.retry}` : look.title}</Text>
         <Pressable accessibilityRole="button" aria-expanded={expanded} accessibilityLabel={expanded ? "Hide the full message" : "Show the full message"} onPress={() => setExpanded((v) => !v)} hitSlop={6}
           style={(state) => ({ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: state.pressed ? c.surface2 : "transparent" })}>
           <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{expanded ? "Hide" : "Full message"}</Text>
@@ -87,7 +87,7 @@ function PromptCardView({ item, theme, layout }: PluginTimelineItemProps<PromptC
       <View style={{ paddingHorizontal: 14, paddingBottom: 11, gap: 4 }}>
         <Text selectable style={{ color: c.foreground, fontSize: 13, lineHeight: 19 }}>{cardBody(card)}</Text>
         <Text style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 17 }}>
-          {card.kind === "compact" ? `Sent by ${sender} once the agent was idle${card.statePath ? ` · keeps the goal, current step, decisions and dead ends · state in ${fileName(card.statePath)}` : ""}` : `Sent by ${sender}`}
+          {card.kind === "compact" ? `${card.retry ? `A message interrupted the last compaction, so ${sender} sent it again once the agent was idle` : `Sent by ${sender} once the agent was idle`}${card.statePath ? ` · keeps the goal, current step, decisions and dead ends · state in ${fileName(card.statePath)}` : ""}` : `Sent by ${sender}`}
         </Text>
       </View>
       {expanded ? <View style={{ borderTopWidth: 1, borderTopColor: c.border }}>

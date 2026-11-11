@@ -263,6 +263,31 @@ smart_probe not found" }` (what a detached Paseo agent MCP answers) and one answ
 This is why `hooks/detached.mjs` sits on `PostToolUseFailure` (matcher `mcp__paseo__smart_.*`) and `UserPromptSubmit`,
 and `hooks/context-threshold.mjs` says the same notice on any `PostToolUse`.
 
+### 3.6 A message during `/compact` cancels it — measured on Paseo 0.16.0-beta.1 and Claude Code 2.1.322 (2026-11-11)
+
+An isolated 0.16 daemon (temp `PASEO_HOME`), two Haiku agents with two short turns each. Both got `/compact`; one
+also got a message 1.5 s later, while its status was still `running`.
+
+- **The message cancels the compaction.** The control wrote a `compact_boundary`; the other wrote
+  `{"type":"system","subtype":"local_command","content":"<local-command-stdout>Compaction canceled.</local-command-stdout>"}`
+  and no boundary. Live on 2026-11-11 at 11:27 the same thing happened to a queued `/compact` when an agent
+  notification arrived nine seconds in.
+- **Why, in Paseo:** `sendPromptToAgent` tries to steer into a running turn, but the Claude session's
+  `steerActiveTurn` answers "unavailable" for a slash-command turn or while compacting, so the send falls back to
+  `replaceRunning`, which cancels the turn.
+- **What follows a replacement:** a prompt within milliseconds (`queue-operation` enqueue +18 ms live, +19 to 28 ms in
+  the harness, then the user row). A Stop leaves the line with nothing after it.
+- **No hook fires for the cancel** (no PostCompact, no Stop for the command turn), but **`UserPromptSubmit` fires for
+  the replacing prompt** about 100 ms later, with the cancel line already in the transcript, and its
+  `additionalContext` reaches the model. Measured with the plugin's own `hooks/detached.mjs` and `ask-compact.mjs` in
+  the agent's project settings: it recorded `CompactCanceled` (`replaced`) for the seeded request, and the notice was in
+  the next model request.
+- **Paseo gives a plugin no way to hold a prompt.** Its waiting (`before`) hooks are `worktree.create`, `agent.create`,
+  `agent.open` and `workspace.create`; `agent.turn.before` is a notification. So the plugin can only retry.
+
+This is why `hooks/cancelled.mjs` reads the transcript on `UserPromptSubmit` (and on `Stop` as a fallback) and the
+governor re-queues the request.
+
 ## 4. Triggering compaction
 
 - `/compact [instructions]` is a **root-only** command; Paseo knows it and forwards it:
