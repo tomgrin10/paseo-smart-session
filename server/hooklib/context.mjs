@@ -112,7 +112,8 @@ export function isEnrolled(agentId, settings = readSettings()) {
 }
 
 /** The tail of a file as text, or null if it cannot be read. */
-function tail(path, bytes) {
+/** The last `bytes` of a file as text, or null when it can't be read. */
+export function readTail(path, bytes) {
   let fd;
   try {
     fd = openSync(path, "r");
@@ -140,7 +141,7 @@ function tail(path, bytes) {
  * sanctioned way to ask "how much of the window is currently occupied".
  */
 export function readContextTokens(transcriptPath) {
-  const text = tail(transcriptPath, TAIL_BYTES);
+  const text = readTail(transcriptPath, TAIL_BYTES);
   if (text === null) return null;
   const lines = text.split("\n");
 
@@ -189,7 +190,7 @@ function recordedWindow() {
   const agentId = process.env.PASEO_AGENT_ID;
   if (agentId === undefined || agentId === "") return null;
   const month = new Date().toISOString().slice(0, 7);
-  const text = tail(join(pluginDir(), `context-${month}.jsonl`), 64 * 1024);
+  const text = readTail(join(pluginDir(), `context-${month}.jsonl`), 64 * 1024);
   if (text === null) return null;
 
   const lines = text.split("\n");

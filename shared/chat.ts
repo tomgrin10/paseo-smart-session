@@ -27,6 +27,8 @@ export const PromptCardSchema = z.object({
   reason: z.string(),
   /** compact / continue: the state file it re-reads, when named. */
   statePath: z.string(),
+  /** compact: n when this is the governor's nth retry of a /compact a message cancelled (`retryLine`). */
+  retry: z.number().optional(),
   text: z.string(),
 });
 export type PromptCard = z.infer<typeof PromptCardSchema>;
@@ -185,9 +187,10 @@ const GUARD_RESUME_PREFIX = "You explicitly chose Resume now while Session Guard
 export function promptCard(text: string): PromptCard | null {
   const body = text.trim();
   if (body.startsWith(COMPACT_PREFIX)) {
-    const reason = /Reason for compacting now: ([\s\S]*?)(?: Authoritative state lives at |$)/.exec(body)?.[1]?.trim() ?? "";
+    const reason = /Reason for compacting now: ([\s\S]*?)(?: Authoritative state lives at | Retry \d+: the previous \/compact |$)/.exec(body)?.[1]?.trim() ?? "";
     const statePath = /Authoritative state lives at (.+?)\. Re-read that file/.exec(body)?.[1]?.trim() ?? "";
-    return { kind: "compact", reason, statePath, text: body };
+    const retry = Number(/ Retry (\d+): the previous \/compact was cancelled/.exec(body)?.[1] ?? 0);
+    return retry > 0 ? { kind: "compact", reason, statePath, retry, text: body } : { kind: "compact", reason, statePath, text: body };
   }
   if (body.startsWith(CONTINUE_PREFIX)) {
     const statePath = /^That compaction was the one you asked for\. Re-read (.+?) and continue from/.exec(body)?.[1]?.trim() ?? "";

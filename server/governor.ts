@@ -13,15 +13,17 @@
  * an agent.
  */
 
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readAgents, sendToAgent, withDaemon, type AgentRow } from "./daemon.ts";
-import { compactionInstructions, confirmation, continuationInstructions, landed, NOT_COMPACTED, type CompactionRequest } from "../shared/governor.ts";
+import { cancellation, compactionInstructions, confirmation, continuationInstructions, landed, NOT_COMPACTED } from "../shared/governor.ts";
+import { queue } from "./compaction-queue.ts";
 import { lifecycle } from "../shared/lifecycle.ts";
 import { readSettings } from "./settings.ts";
 import { dataDir } from "./store.ts";
+
+export { queue };
 
 const TICK_MS = 15_000;
 
@@ -31,122 +33,6 @@ const TICK_MS = 15_000;
  * a few minutes of ticks is plenty.
  */
 const GRADE_WINDOW_MS = 5 * 60_000;
-
-const queuePath = () => join(dataDir(), "compactions.json");
-
-let tail: Promise<unknown> = Promise.resolve();
-
-function serialize<T>(work: () => Promise<T>): Promise<T> {
-  const next = tail.then(work, work);
-  tail = next.then(
-    () => undefined,
-    () => undefined,
-  );
-  return next;
-}
-
-/**
- * Fills in fields added after a row was written.
- *
- * The queue is validated against `CompactionRequestSchema` on its way out over the
- * RPC boundary, so a row from an older version missing a key would fail there
- * rather than here. Defaulting on read is the migration.
- */
-function normalize(item: CompactionRequest): CompactionRequest {
-  return {
-    ...item,
-    continueAfterCompaction: item.continueAfterCompaction ?? true,
-    continuationMessage: item.continuationMessage ?? null,
-    resumedAt: item.resumedAt ?? null,
-    confirmedAt: item.confirmedAt ?? null,
-  };
-}
-
-async function readAll(): Promise<CompactionRequest[]> {
-  try {
-    const raw = await readFile(queuePath(), "utf8");
-    const parsed = JSON.parse(raw) as { version?: number; items?: CompactionRequest[] };
-    return (parsed.items ?? []).map(normalize);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") console.error("[smart-session] could not read the compaction queue", String(error));
-    return [];
-  }
-}
-
-async function writeAll(items: CompactionRequest[]): Promise<void> {
-  await mkdir(dataDir(), { recursive: true });
-  const target = queuePath();
-  const temp = `${target}.${randomUUID()}.tmp`;
-  await writeFile(temp, JSON.stringify({ version: 1, items }, null, 2), "utf8");
-  await rename(temp, target);
-}
-
-export const queue = {
-  list: (): Promise<CompactionRequest[]> => serialize(readAll),
-
-  add: (input: {
-    agentId: string;
-    reason: string;
-    statePath: string | null;
-    continueAfterCompaction: boolean;
-    continuationMessage: string | null;
-  }): Promise<CompactionRequest> =>
-    serialize(async () => {
-      const items = await readAll();
-      const request: CompactionRequest = {
-        id: randomUUID(),
-        agentId: input.agentId,
-        reason: input.reason,
-        statePath: input.statePath,
-        continueAfterCompaction: input.continueAfterCompaction,
-        continuationMessage: input.continuationMessage,
-        createdAt: new Date().toISOString(),
-        state: "pending",
-        settledAt: null,
-        confirmedAt: null,
-        error: null,
-        preTokens: null,
-        postTokens: null,
-        resumedAt: null,
-      };
-      items.push(request);
-      await writeAll(items);
-      return request;
-    }),
-
-  update: (id: string, patch: Partial<CompactionRequest>): Promise<CompactionRequest | null> =>
-    serialize(async () => {
-      const items = await readAll();
-      const found = items.find((item) => item.id === id);
-      if (found === undefined) return null;
-      Object.assign(found, patch);
-      await writeAll(items);
-      return found;
-    }),
-
-  /**
-   * A request interrupted mid-send is failed, never retried.
-   *
-   * `/compact` is destructive and not idempotent: sending a second one after a
-   * restart could discard a context the first one already summarized. Failing
-   * closed costs one compaction; retrying could cost the task.
-   */
-  recoverInterrupted: (): Promise<number> =>
-    serialize(async () => {
-      const items = await readAll();
-      let count = 0;
-      for (const item of items) {
-        if (item.state !== "sending") continue;
-        item.state = "failed";
-        item.error = "The plugin stopped while sending; not retried, because a second /compact is destructive.";
-        item.settledAt = new Date().toISOString();
-        count += 1;
-      }
-      if (count > 0) await writeAll(items);
-      return count;
-    }),
-};
 
 /**
  * Agents whose compaction we are still waiting to land.
@@ -192,6 +78,13 @@ async function flush(): Promise<void> {
         // session's own PostCompact hook says otherwise. Either way this decides it for good.
         grading.delete(agentId);
         await settleUnlanded(watch.requestId);
+        continue;
+      }
+      // Claude Code cancelled it: a message replaced the /compact turn, or a Stop. The session's hook says so
+      // (`hooks/cancelled.mjs`); settle now so a retry goes out at the next idle moment, not after the watch.
+      const cancelled = await settleIfCancelled(watch.requestId, events);
+      if (cancelled) {
+        grading.delete(agentId);
         continue;
       }
       if (agent.status !== "idle" || agent.usedTokens === null) continue;
@@ -265,14 +158,16 @@ async function flush(): Promise<void> {
   });
 }
 
-/** PostCompact's own records (`hooks/post-compact.mjs`), the tail only. */
-async function compactionEvents(): Promise<{ agentId?: unknown; event?: unknown; at?: unknown }[]> {
+type CompactionEvent = { agentId?: unknown; event?: unknown; at?: unknown; requestId?: unknown; cause?: unknown };
+
+/** The session hooks' records: PostCompact/SessionStart (`hooks/post-compact.mjs`) and cancels (`hooks/cancelled.mjs`). */
+async function compactionEvents(): Promise<CompactionEvent[]> {
   try {
     const raw = (await readFile(join(dataDir(), "compaction-events.jsonl"), "utf8")).slice(-65_536);
     return raw.split("\n").flatMap((line) => {
       try {
         const event = JSON.parse(line) as unknown;
-        return event !== null && typeof event === "object" ? [event as { agentId?: unknown; event?: unknown; at?: unknown }] : [];
+        return event !== null && typeof event === "object" ? [event as CompactionEvent] : [];
       } catch {
         return [];
       }
@@ -282,11 +177,34 @@ async function compactionEvents(): Promise<{ agentId?: unknown; event?: unknown;
   }
 }
 
-/** A delivered compaction whose watch ran out: confirmed by the hook's record, or marked as never compacted. */
+/**
+ * Settles a delivered compaction the session recorded as cancelled, unless a compaction is confirmed after all.
+ * True when it was settled (or already was).
+ */
+async function settleIfCancelled(requestId: string, events: readonly CompactionEvent[]): Promise<boolean> {
+  const item = (await queue.list()).find((candidate) => candidate.id === requestId);
+  if (item === undefined) return true;
+  if (item.cancelledAt !== null) return true;
+  if (confirmation(item, events) !== null) return false;
+  const cancel = cancellation(item, events);
+  if (cancel === null) return false;
+  const settled = await queue.settleCancelled(requestId, cancel);
+  if (settled !== null) {
+    const who = item.agentId.slice(0, 8);
+    console.log(settled.retry !== null
+      ? `[smart-session] ${who}'s /compact was cancelled (${cancel.cause}); retry ${settled.retry.attempt} queued`
+      : `[smart-session] ${who}'s /compact was cancelled (${cancel.cause}); not retried (${settled.verdict})`);
+  }
+  return true;
+}
+
+/** A delivered compaction whose watch ran out: confirmed by the hook's record, settled as cancelled, or marked as never compacted. */
 async function settleUnlanded(requestId: string): Promise<void> {
   const item = (await queue.list()).find((candidate) => candidate.id === requestId);
-  if (item === undefined || confirmation(item) !== null) return;
-  const at = confirmation(item, await compactionEvents());
+  if (item === undefined || confirmation(item) !== null || item.cancelledAt !== null) return;
+  const events = await compactionEvents();
+  if (await settleIfCancelled(requestId, events)) return;
+  const at = confirmation(item, events);
   await queue.update(requestId, at !== null ? { confirmedAt: at } : { error: NOT_COMPACTED });
   if (at === null) console.log(`[smart-session] ${item.agentId.slice(0, 8)}'s /compact was delivered but never compacted`);
 }

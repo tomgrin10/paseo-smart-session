@@ -87,7 +87,7 @@ function PromptCardView({ item, theme, layout }: PluginTimelineItemProps<PromptC
       <View style={{ paddingHorizontal: 14, paddingBottom: 11, gap: 4 }}>
         <Text selectable style={{ color: c.foreground, fontSize: 13, lineHeight: 19 }}>{cardBody(card)}</Text>
         <Text style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 17 }}>
-          {card.kind === "compact" ? `Sent by ${sender} once the agent was idle${card.statePath ? ` · keeps the goal, current step, decisions and dead ends · state in ${fileName(card.statePath)}` : ""}` : `Sent by ${sender}`}
+          {card.kind === "compact" ? `Sent by ${sender} once the agent was idle${card.retry ? ` · retry ${card.retry}: a message interrupted the last /compact` : ""}${card.statePath ? ` · keeps the goal, current step, decisions and dead ends · state in ${fileName(card.statePath)}` : ""}` : `Sent by ${sender}`}
         </Text>
       </View>
       {expanded ? <View style={{ borderTopWidth: 1, borderTopColor: c.border }}>

@@ -25,6 +25,7 @@
  */
 
 import { askable, compose } from "./ask.mjs";
+import { noteCancelledCompaction } from "./cancelled.mjs";
 import { recordAsk, shouldAsk } from "./asks.mjs";
 
 function emit(text) {
@@ -58,6 +59,10 @@ async function main() {
 
   // Subagents have their own short-lived windows and their own stop conditions.
   if (event.agent_id !== undefined && event.agent_id !== null) return;
+
+  // A /compact cancelled since the last turn, in case UserPromptSubmit missed it. Recorded only: text
+  // on Stop would start another model turn.
+  noteCancelledCompaction(event);
 
   // "Stopped" and "waiting for work that is still running" are different states.
   // Compacting through the second one discards the context that work reports into.

@@ -7,7 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { formatClock, formatCompactTokens, formatDuration, formatRelative } from "../shared/format";
 import { linesSummary, outlookSentence } from "../shared/compact-lines";
 import { contextOutlook } from "../shared/forecast";
-import { confirmation, listCompactions, setEnrolment, type CompactionRequest } from "../shared/governor";
+import { compactionLine, listCompactions, setEnrolment } from "../shared/governor";
 import { cancelResumeRpc, dismissPauseRpc, resumeNowRpc, setProtectionRpc, statusRpc } from "../shared/guard/contracts";
 import { PAUSE_ACTIONS, governorNotice, pausePresentation } from "../shared/guard/presentation";
 import { contextStatus } from "../shared/smart-session";
@@ -21,19 +21,6 @@ import { tabular, toneColor } from "./theme";
 import { SETTINGS_SCREEN } from "./screens";
 import { hasSubscriptions, subscribeSubscriptions, subscriptionsSnapshot } from "./subscriptions";
 import { atTheLimit, sessionWindow, subscriptionState, weeklyWindow } from "../shared/subscriptions";
-
-/** What the last compaction did, in one line. */
-function compactionLine(item: CompactionRequest | undefined, now: number): string {
-  if (item === undefined) return "None yet";
-  if (item.state === "pending" || item.state === "sending") return "Queued · sent when this turn ends";
-  if (item.state === "failed") return `Failed ${formatRelative(item.settledAt ?? item.createdAt, now)}`;
-  if (item.state === "cancelled") return `Cancelled ${formatRelative(item.settledAt ?? item.createdAt, now)}`;
-  // Delivered is not compacted: a /compact can be cancelled or fail (`confirmation`).
-  const confirmed = confirmation(item);
-  if (confirmed === null) return `${item.error !== null ? "Didn't compact" : "Not confirmed"} · sent ${formatRelative(item.settledAt ?? item.createdAt, now)}`;
-  const when = formatRelative(confirmed, now);
-  return item.preTokens !== null && item.postTokens !== null ? `${when} · ${formatCompactTokens(item.preTokens)} → ${formatCompactTokens(item.postTokens)}` : when;
-}
 
 /** The pill's popover: a pause when there is one, this session's context and both of its switches. */
 export function makeContextPopover(client: PluginClientContext, agents: AgentDirectory) {

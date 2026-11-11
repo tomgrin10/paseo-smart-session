@@ -10,6 +10,7 @@
 
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { formatCompactTokens, formatRelative } from "./format.ts";
 import { ThresholdsSchema } from "./smart-session.ts";
 
 export const CompactionStateSchema = z.enum(["pending", "sending", "sent", "failed", "cancelled"]);
@@ -48,6 +49,16 @@ export const CompactionRequestSchema = z.object({
    * the default or agent-supplied follow-up once and records that it did.
    */
   resumedAt: z.string().nullable(),
+  /** 0 for a request an agent or person made; n for the governor's nth retry of a cancelled one. */
+  attempt: z.number(),
+  /** The cancelled request this one retries, or null. */
+  retryOf: z.string().nullable(),
+  /** The retry queued for this one after it was cancelled, or null. */
+  retriedBy: z.string().nullable(),
+  /** When Claude Code cancelled this delivered `/compact` ("Compaction canceled."), or null. */
+  cancelledAt: z.string().nullable(),
+  /** What cancelled it: a message that replaced the turn, or a Stop with nothing after it. */
+  cancelCause: z.enum(["replaced", "stopped"]).nullable(),
 });
 export type CompactionRequest = z.infer<typeof CompactionRequestSchema>;
 
@@ -61,6 +72,121 @@ const COMPACTED_FRACTION = 0.6;
 
 /** What the governor writes when a delivered `/compact` never compacted. */
 export const NOT_COMPACTED = "The /compact was delivered but no compaction followed (cancelled or failed), so it does not count.";
+
+/** The session hook's record of a delivered `/compact` that Claude Code cancelled (`hooks/cancelled.mjs`). */
+export const CANCEL_EVENT = "CompactCanceled";
+
+/** Retries per agent per hour. A session that keeps getting messages mid-compaction gets this many, then a report. */
+export const RETRY_LIMIT = 2;
+export const RETRY_WINDOW_MS = 60 * 60_000;
+
+export type CancelCause = "replaced" | "stopped";
+export interface Cancellation {
+  at: string;
+  cause: CancelCause;
+}
+
+/**
+ * Whether the session recorded that this delivered `/compact` was cancelled, and by what.
+ *
+ * Paseo 0.16 cannot steer a message into a slash-command turn, so a message that reaches an agent
+ * while its `/compact` runs replaces the turn and Claude Code cancels the compaction ("replaced").
+ * A Stop leaves the same line with no message after it ("stopped"). The hook ties its record to
+ * the request it found delivered, so a record never applies to a different request.
+ */
+export function cancellation(
+  item: Pick<CompactionRequest, "id" | "agentId" | "state" | "settledAt">,
+  events: readonly { agentId?: unknown; event?: unknown; at?: unknown; requestId?: unknown; cause?: unknown }[],
+): Cancellation | null {
+  if (item.state !== "sent" || item.settledAt === null) return null;
+  const record = events.find((event) => event.event === CANCEL_EVENT && event.agentId === item.agentId && event.requestId === item.id && typeof event.at === "string");
+  if (record === undefined) return null;
+  return { at: record.at as string, cause: record.cause === "stopped" ? "stopped" : "replaced" };
+}
+
+/**
+ * What happens to a cancelled `/compact`: retried, or reported with the reason it was not.
+ *
+ * A Stop is a person's decision and is never retried. A replaced one is, at the next idle moment,
+ * unless another request for the agent is already waiting (that one lands instead) or the agent
+ * already had `RETRY_LIMIT` retries this hour. Mirrored by `retryVerdict` in `hooks/cancelled.mjs`.
+ */
+export type RetryVerdict = "retry" | "stopped" | "queued" | "limit";
+
+export function retryVerdict(
+  items: readonly Pick<CompactionRequest, "id" | "agentId" | "state" | "createdAt" | "retryOf">[],
+  item: Pick<CompactionRequest, "id" | "agentId">,
+  cause: CancelCause,
+  now: number,
+): RetryVerdict {
+  if (cause === "stopped") return "stopped";
+  const mine = items.filter((other) => other.agentId === item.agentId && other.id !== item.id);
+  if (mine.some((other) => other.state === "pending" || other.state === "sending")) return "queued";
+  const recent = mine.filter((other) => other.retryOf !== null && other.retryOf !== undefined && now - Date.parse(other.createdAt) < RETRY_WINDOW_MS);
+  return recent.length >= RETRY_LIMIT ? "limit" : "retry";
+}
+
+/** What the governor writes on a cancelled `/compact`, per verdict. Says what happened and what happens next. */
+export function cancelledError(verdict: RetryVerdict): string {
+  switch (verdict) {
+    case "retry": return "Cancelled while it ran: a message reached the agent mid-compaction and replaced the turn. Retried once the agent is idle.";
+    case "queued": return "Cancelled while it ran: a message reached the agent mid-compaction and replaced the turn. Not retried: another compaction is already queued.";
+    case "limit": return `Cancelled while it ran: a message reached the agent mid-compaction and replaced the turn. Not retried: ${RETRY_LIMIT} retries already this hour.`;
+    case "stopped": return "Stopped while it ran, with no message after it. Not retried: a Stop is deliberate.";
+  }
+}
+
+/**
+ * What the last compaction did, in one line (the popover's "Last compaction").
+ *
+ * Invariant: a requested compaction either lands, or is retried and visibly reported; never silently
+ * dropped. Every way a request can end has its own line here, and `compaction.test.ts` walks them.
+ */
+export function compactionLine(item: CompactionRequest | undefined, now: number): string {
+  if (item === undefined) return "None yet";
+  if (item.state === "pending" || item.state === "sending") return item.attempt > 0 ? `Retry ${item.attempt} queued · last one interrupted` : "Queued · sent when this turn ends";
+  if (item.state === "failed") return `Failed ${formatRelative(item.settledAt ?? item.createdAt, now)}`;
+  if (item.state === "cancelled") return `Cancelled ${formatRelative(item.settledAt ?? item.createdAt, now)}`;
+  // Delivered is not compacted: a /compact can be cancelled or fail (`confirmation`).
+  const confirmed = confirmation(item);
+  if (confirmed === null) {
+    const sent = formatRelative(item.settledAt ?? item.createdAt, now);
+    if (item.cancelCause === "stopped") return `Stopped mid-compaction · ${sent}`;
+    if (item.cancelCause === "replaced") {
+      if (item.retriedBy !== null) return "Interrupted · retry queued";
+      return item.error === cancelledError("limit") ? `Interrupted · not retried (${RETRY_LIMIT} an hour)` : "Interrupted · another is queued";
+    }
+    return `${item.error !== null ? "Didn't compact" : "Not confirmed"} · sent ${sent}`;
+  }
+  const when = formatRelative(confirmed, now);
+  const sizes = item.preTokens !== null && item.postTokens !== null ? ` · ${formatCompactTokens(item.preTokens)} → ${formatCompactTokens(item.postTokens)}` : "";
+  return `${when}${sizes}${item.attempt > 0 ? ` · retry ${item.attempt}` : ""}`;
+}
+
+/** The retry of a cancelled request: the same ask, queued again. */
+export function retryRequest(item: CompactionRequest, id: string, createdAt: string): CompactionRequest {
+  return {
+    id,
+    agentId: item.agentId,
+    reason: item.reason,
+    statePath: item.statePath,
+    continueAfterCompaction: item.continueAfterCompaction,
+    continuationMessage: item.continuationMessage,
+    createdAt,
+    state: "pending",
+    settledAt: null,
+    confirmedAt: null,
+    error: null,
+    preTokens: null,
+    postTokens: null,
+    resumedAt: null,
+    attempt: item.attempt + 1,
+    retryOf: item.id,
+    retriedBy: null,
+    cancelledAt: null,
+    cancelCause: null,
+  };
+}
 
 /**
  * When a queued compaction is known to have happened, or null.
@@ -164,6 +290,7 @@ export const setEnrolment = defineRpc({
 export function compactionInstructions(request: {
   reason: string;
   statePath: string | null;
+  attempt?: number;
 }): string {
   const parts = [
     "/compact",
@@ -176,7 +303,13 @@ export function compactionInstructions(request: {
       `Authoritative state lives at ${request.statePath}. Re-read that file before acting; where it disagrees with this summary, the file wins.`,
     );
   }
+  if (request.attempt !== undefined && request.attempt > 0) parts.push(retryLine(request.attempt));
   return parts.join(" ");
+}
+
+/** The last sentence of a retried `/compact`, which the timeline card reads back (`promptCard`). */
+export function retryLine(attempt: number): string {
+  return `Retry ${attempt}: the previous /compact was cancelled because a message reached the agent while it ran.`;
 }
 
 /**
