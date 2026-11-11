@@ -1,6 +1,7 @@
 import { contributeGuard } from "./server/guard/index.ts";
 import { zerosubBudgetAccount } from "./server/guard/zerosub.ts";
 import { contributeSessionMcp } from "./server/session-mcp.ts";
+import { contributeUsageSource, usageCards } from "./server/usage-source.ts";
 import { budgetPool, subscriptionsView } from "./server/subscriptions.ts";
 import { displayPreferences } from "./shared/display";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
@@ -20,6 +21,7 @@ import {
   setSettings,
   spendSummary,
   subscriptionsStatus,
+  usageCardsStatus,
 } from "./shared/smart-session.ts";
 
 import {
@@ -75,6 +77,15 @@ export default function contribute(host: PluginServerContext) {
   server.registerSettings(displayPreferences);
   // Pauses work at a provider's session limit; off until someone turns it on.
   const removeGuard = contributeGuard(server);
+  // Paseo 0.16+: Smart Session's forecast and every ZeroSub account in Paseo's own usage card.
+  contributeUsageSource(server);
+  server.handle(usageCardsStatus, async () => {
+    try {
+      return await usageCards();
+    } catch {
+      return { cards: [] };
+    }
+  });
   server.handle(budgetStatus, async ({ agentId }) => {
     try {
       const since = Date.now() - 14 * 24 * 60 * 60 * 1000;

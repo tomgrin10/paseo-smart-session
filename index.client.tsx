@@ -12,6 +12,7 @@ import { OVERVIEW_SCREEN, PAUSED_SCREEN, SMART_COMPACT_SETTINGS, makeOverview } 
 import { contributeClient } from "./client/pill";
 import { makeSettings } from "./client/settings";
 import { watchSubscriptions } from "./client/subscriptions";
+import { watchUsageCards } from "./client/usage-hide";
 import { budgetStatus } from "./shared/smart-session";
 
 export default function contribute(host: PluginClientContext) {
@@ -42,10 +43,13 @@ export default function contribute(host: PluginClientContext) {
   const stopSubscriptions = watchSubscriptions(client, (next) => live.setSubscriptions(next));
   // The pill registers on the host's own client: a paused session keeps it even when pills are hidden.
   const removeClient = contributeClient(host, agents);
+  // Paseo 0.16, web and desktop: Paseo's own Claude usage card steps aside for ours.
+  const stopUsageCards = watchUsageCards(client);
   return () => {
     clearInterval(budgetTimer);
     stopGuard();
     stopSubscriptions();
+    stopUsageCards();
     removeClient();
     for (const remove of removers.splice(0)) void remove();
     visibility.dispose();

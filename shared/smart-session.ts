@@ -256,3 +256,16 @@ export const spendSummary = defineRpc({
   input: z.object({ days: z.number().optional() }),
   output: z.object({ summary: SpendSummarySchema, error: z.string().nullable() }),
 });
+
+/**
+ * Smart Session's usage cards that may stand in for Paseo's own Claude card right now
+ * (Paseo 0.16+): fresh, signed in, and tied to a login by its email's SHA-256, never
+ * the email. The web client hides a built-in card only beside one of these.
+ */
+export const usageCardsStatus = defineRpc({
+  name: "smart-session.usage-cards",
+  input: z.object({}),
+  output: z.object({
+    cards: z.array(z.object({ key: z.string(), emailHash: z.string() })),
+  }),
+});

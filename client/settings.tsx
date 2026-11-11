@@ -214,6 +214,8 @@ export function makeSettings(client: PluginClientContext) {
                 value={display.values.showSidebar} disabled={display.saving} onValueChange={(showSidebar) => void display.save({ ...display.values, showSidebar }, display.revision)} />
               <SettingsSwitch label="Pill on every session" hint="The context ring above each message box. A paused session keeps its pill either way."
                 value={pillOn} disabled={saving || display.saving} onValueChange={(next) => void setPill(next)} />
+              <SettingsSwitch label="Replace Paseo's Claude usage card" hint="Paseo 0.16 on web and desktop: in the context window details, Paseo's own Claude card steps aside while Smart Session's card for the same login has a fresh reading. Phones show both."
+                value={display.values.replaceUsageCard} disabled={display.saving} onValueChange={(replaceUsageCard) => void display.save({ ...display.values, replaceUsageCard }, display.revision)} />
             </SettingsCard>}
         {display.status === "ready" && display.saveError ? <Text accessibilityRole="alert" style={{ color: c.statusDanger }}>{display.saveError}</Text> : null}
       </SettingsSection>
