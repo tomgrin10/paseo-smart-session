@@ -282,10 +282,16 @@ fail before believing it.
 ### 2. Load it
 
 ```sh
-paseo plugin reload smart-session
+~/paseo-harness/tools/reload-gate run smart-session -- paseo plugin reload smart-session
 paseo plugin ls
 paseo plugin logs smart-session | tail -20
 ```
+
+On Tom's VM every live `paseo plugin update|reload|install|enable` goes through `~/paseo-harness/tools/reload-gate`
+(Tom's rule, 2026-11-11: at most one live reload window every 30 min, machine-wide, because each reload makes every
+live agent pay a close+resume on its next message). Installing a published beta:
+`~/paseo-harness/tools/reload-gate npm-beta smart-session paseo-smart-session` (exit 10 = already on it). Bypass only
+with `RELOAD_GATE_BYPASS="<Tom's words>, <when>"`. Harness daemons (temp `PASEO_HOME`) are exempt.
 
 Clean logs means no `[paseo]` error lines and no stack traces around the reload.
 
