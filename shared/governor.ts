@@ -144,23 +144,23 @@ export function cancelledError(verdict: RetryVerdict): string {
  */
 export function compactionLine(item: CompactionRequest | undefined, now: number): string {
   if (item === undefined) return "None yet";
-  if (item.state === "pending" || item.state === "sending") return item.attempt > 0 ? `Retry ${item.attempt} queued · last one interrupted` : "Queued · sent when this turn ends";
+  if (item.state === "pending" || item.state === "sending") return item.attempt > 0 ? `Interrupted · retry ${item.attempt} sent when idle` : "Queued · sent when this turn ends";
   if (item.state === "failed") return `Failed ${formatRelative(item.settledAt ?? item.createdAt, now)}`;
   if (item.state === "cancelled") return `Cancelled ${formatRelative(item.settledAt ?? item.createdAt, now)}`;
   // Delivered is not compacted: a /compact can be cancelled or fail (`confirmation`).
   const confirmed = confirmation(item);
   if (confirmed === null) {
     const sent = formatRelative(item.settledAt ?? item.createdAt, now);
-    if (item.cancelCause === "stopped") return `Stopped mid-compaction · ${sent}`;
+    if (item.cancelCause === "stopped") return `Stopped · not retried · ${sent}`;
     if (item.cancelCause === "replaced") {
-      if (item.retriedBy !== null) return "Interrupted · retry queued";
-      return item.error === cancelledError("limit") ? `Interrupted · not retried (${RETRY_LIMIT} an hour)` : "Interrupted · another is queued";
+      if (item.retriedBy !== null) return `Interrupted · retry ${item.attempt + 1} sent when idle`;
+      return item.error === cancelledError("limit") ? "Interrupted · retry limit reached" : "Interrupted · newer one queued";
     }
     return `${item.error !== null ? "Didn't compact" : "Not confirmed"} · sent ${sent}`;
   }
   const when = formatRelative(confirmed, now);
   const sizes = item.preTokens !== null && item.postTokens !== null ? ` · ${formatCompactTokens(item.preTokens)} → ${formatCompactTokens(item.postTokens)}` : "";
-  return `${when}${sizes}${item.attempt > 0 ? ` · retry ${item.attempt}` : ""}`;
+  return `${when}${sizes}${item.attempt > 0 ? ` · on retry ${item.attempt}` : ""}`;
 }
 
 /** The retry of a cancelled request: the same ask, queued again. */

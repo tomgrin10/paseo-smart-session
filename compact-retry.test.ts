@@ -142,12 +142,12 @@ test("every way a request ends is said in the popover, and the retry carries the
     stopped: compactionLine({ ...original, cancelledAt: iso(9_115), cancelCause: "stopped", error: cancelledError("stopped") }, now),
     landedOnRetry: compactionLine({ ...retry, state: "sent", settledAt: iso(60_000), confirmedAt: iso(70_000), preTokens: 310_000, postTokens: 40_000 }, now),
   };
-  assert.match(lines.retryQueued, /^Retry 1 queued/);
-  assert.match(lines.retried, /Interrupted · retry queued/);
-  assert.match(lines.limit, new RegExp(`not retried \\(${RETRY_LIMIT} an hour\\)`));
-  assert.match(lines.queued, /another is queued/);
-  assert.match(lines.stopped, /^Stopped mid-compaction/);
-  assert.match(lines.landedOnRetry, /retry 1$/);
+  assert.equal(lines.retryQueued, "Interrupted · retry 1 sent when idle");
+  assert.equal(lines.retried, "Interrupted · retry 1 sent when idle", "the original and its retry say the same");
+  assert.equal(lines.limit, "Interrupted · retry limit reached");
+  assert.equal(lines.queued, "Interrupted · newer one queued");
+  assert.match(lines.stopped, /^Stopped · not retried · /);
+  assert.match(lines.landedOnRetry, / · on retry 1$/);
   for (const verdict of ["retry", "queued", "limit", "stopped"] as const) assert.match(cancelledError(verdict), verdict === "retry" ? /Retried/ : /Not retried/);
 
   // The timeline card says it is a retry, and still reads the agent's reason and state file.
