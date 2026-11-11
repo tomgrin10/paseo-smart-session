@@ -130,11 +130,11 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | | Continue after the reset | On | Off, you continue each one by hand |
 | | Include native subagents | On | Freeze nested workers too (Linux) |
 | | Label paused workspaces | On | An amber Paused label in the sidebar |
+| Artifacts | Publish artifacts as the main account | On | With ZeroSub: pages from sessions on other Claude accounts are published on the main one |
+| | Publish as | Main account | Shown with more than one Claude account |
 | Display | Sidebar row | On | |
 | | Pill on every session | On | A paused session keeps its pill either way |
 | | Replace Paseo's Claude usage card | On | Paseo 0.16+, web and desktop |
-| Artifacts | Publish artifacts as the main account | On | With ZeroSub: pages from sessions on other Claude accounts are published on the main one |
-| | Publish as | Main account | Shown with more than one Claude account |
 | Claude Code | Register the hooks | On | Keep the context, compaction and publishing hooks installed. Flags a ZeroSub account home whose settings no longer link to these, so the hooks miss its sessions |
 | Limit timing | Pause at, check interval, wait after reset, spacing, continuation message, providers, windows | 100%, 15s, 30s, 5s | Behind **Edit**; each field is checked on its own |
 
