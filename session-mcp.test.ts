@@ -14,7 +14,7 @@ async function fixture(t: test.TestContext, config: Record<string, unknown> = {}
   t.after(async () => { if (previous === undefined) delete process.env.PASEO_HOME; else process.env.PASEO_HOME = previous; await rm(home, { recursive: true, force: true }); });
   const directory = join(home, "plugin");
   await mkdir(join(directory, "hooks"), { recursive: true });
-  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs"]) await writeFile(join(directory, "hooks", script), "// fixture");
+  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs", "detached.mjs"]) await writeFile(join(directory, "hooks", script), "// fixture");
   await writeFile(join(directory, "mcp.mjs"), "// fixture");
   await writeFile(join(home, "config.json"), JSON.stringify({ plugins: { "smart-session": { path: directory } }, ...config }));
   let callback: any, removed = false;

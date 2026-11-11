@@ -247,6 +247,22 @@ indistinguishable from one a person typed. Telling an agent-mandated compaction 
 therefore has to be done by correlating against the plugin's own queue, not by reading the trigger.
 
 
+### 3.5 A failed MCP call — measured against 2.1.322 (2026-11-11)
+
+A throwaway `claude -p` (Haiku, `--setting-sources project`, `--settings` with logging hooks, `--strict-mcp-config`
+with a stdio server named `paseo`) called two tools: one returning `{ isError: true, content: "MCP error -32602: Tool
+smart_probe not found" }` (what a detached Paseo agent MCP answers) and one answering with a JSON-RPC error.
+
+- **Both raise `PostToolUseFailure`, and neither raises `PostToolUse`.** Payload: `tool_name`
+  (`mcp__paseo__smart_probe`), `tool_input`, `tool_use_id`, `error` (the text above), `is_interrupt`, `duration_ms`,
+  `mcp_server`. So a `PostToolUse` hook that waits for a failed `smart_*` call never runs.
+- **`PostToolUseFailure` can speak.** `hookSpecificOutput: { hookEventName: "PostToolUseFailure", additionalContext }`
+  reached the model (it quoted a word only the hook gave it).
+- `UserPromptSubmit` fired once per prompt; the deferred-tool `ToolSearch` raised an ordinary `PostToolUse`.
+
+This is why `hooks/detached.mjs` sits on `PostToolUseFailure` (matcher `mcp__paseo__smart_.*`) and `UserPromptSubmit`,
+and `hooks/context-threshold.mjs` says the same notice on any `PostToolUse`.
+
 ## 4. Triggering compaction
 
 - `/compact [instructions]` is a **root-only** command; Paseo knows it and forwards it:

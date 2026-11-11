@@ -83,9 +83,13 @@ test("a node registration is stale once the plugin runs under the desktop app", 
   assert.equal(mcpPointsAtPlugin(desktopRegistration.replace("ELECTRON_RUN_AS_NODE=1", ""), desktop), false);
 });
 
-test("an empty settings file gains exactly the five managed entries", () => {
+test("an empty settings file gains exactly the seven managed entries", () => {
   const next = reconcile({}, SHIMS);
-  assert.deepEqual(Object.keys(next).sort(), ["PostCompact", "PostToolUse", "PreToolUse", "SessionStart", "Stop"]);
+  assert.deepEqual(Object.keys(next).sort(), ["PostCompact", "PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart", "Stop", "UserPromptSubmit"]);
+  // A detached session hears how to reach its tools: a failed smart_* call raises PostToolUseFailure, not PostToolUse.
+  assert.deepEqual(commandsFor(next, "PostToolUseFailure"), [cmd("detached.mjs")]);
+  assert.equal(next.PostToolUseFailure?.[0]?.matcher, "mcp__paseo__smart_.*");
+  assert.deepEqual(commandsFor(next, "UserPromptSubmit"), [cmd("detached.mjs")]);
   // Publishing as the main account runs a helper agent: Artifact only, with a long timeout.
   assert.deepEqual(commandsFor(next, "PreToolUse"), [cmd("publish-as.mjs")]);
   assert.equal(next.PreToolUse?.[0]?.matcher, "Artifact");
@@ -195,7 +199,7 @@ test("a matcher group that only ever held our hook is dropped, not left empty", 
 /** An install directory holding every script a shim can name, at a given version. */
 function stubInstall(dir: string, version: string): void {
   mkdirSync(join(dir, "hooks"), { recursive: true });
-  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs"]) {
+  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs", "detached.mjs"]) {
     writeFileSync(join(dir, "hooks", script), "// stub\n", "utf8");
   }
   writeFileSync(join(dir, "mcp.mjs"), "// stub\n", "utf8");
@@ -350,15 +354,16 @@ function writePluginSettings(paseoHome: string, settings: Record<string, unknown
 const events = (path: string) => Object.keys(JSON.parse(readFileSync(path, "utf8")).hooks ?? {}).sort();
 
 test("each feature brings only its own hooks", () => {
-  assert.deepEqual(managedFor({ compact: false, publish: true }).map((m) => m.script), ["publish-as.mjs"]);
+  // The detached-tools hooks ride along with either feature: the tools exist whatever is on.
+  assert.deepEqual(managedFor({ compact: false, publish: true }).map((m) => m.script), ["publish-as.mjs", "detached.mjs", "detached.mjs"]);
   assert.ok(!managedFor({ compact: true, publish: false }).some((m) => m.script === "publish-as.mjs"));
   assert.deepEqual(managedFor({ compact: false, publish: false }), []);
   const publishOnly = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS, { compact: false, publish: true });
-  assert.deepEqual(Object.keys(publishOnly).sort(), ["PreToolUse", "Stop"]);
+  assert.deepEqual(Object.keys(publishOnly).sort(), ["PostToolUseFailure", "PreToolUse", "Stop", "UserPromptSubmit"]);
   assert.deepEqual(commandsFor(publishOnly, "Stop"), [foreign.command]);
 });
 
-test("a fresh install with Smart Compact off still gets the Artifact hook, and only that", async () => {
+test("a fresh install with Smart Compact off still gets the Artifact hook, and no compaction hook", async () => {
   // Publishing as the main account is on by default and needs only PreToolUse(Artifact).
   const { paseoHome, claudeDir } = fakeInstall();
   writePluginSettings(paseoHome, { enabled: false });
@@ -366,8 +371,8 @@ test("a fresh install with Smart Compact off still gets the Artifact hook, and o
 
   const report = await installer.install({ registerMcp: false });
   assert.equal(report.error, null);
-  assert.deepEqual(report.hooks, ["PreToolUse:Artifact"]);
-  assert.deepEqual(events(join(claudeDir, "settings.json")), ["PreToolUse"]);
+  assert.deepEqual(report.hooks, ["PreToolUse:Artifact", "PostToolUseFailure:mcp__paseo__smart_.*", "UserPromptSubmit"]);
+  assert.deepEqual(events(join(claudeDir, "settings.json")), ["PostToolUseFailure", "PreToolUse", "UserPromptSubmit"]);
 });
 
 test("turning publishing off removes the Artifact hook, and turning it on adds it back", async () => {
@@ -381,13 +386,13 @@ test("turning publishing off removes the Artifact hook, and turning it on adds i
   const off = await installer.install({ registerMcp: false });
   assert.equal(off.changed, true);
   assert.ok(!off.hooks.includes("PreToolUse:Artifact"));
-  assert.deepEqual(events(path), ["PostCompact", "PostToolUse", "SessionStart", "Stop"]);
+  assert.deepEqual(events(path), ["PostCompact", "PostToolUse", "PostToolUseFailure", "SessionStart", "Stop", "UserPromptSubmit"]);
 
   writePluginSettings(paseoHome, { publishAsMain: true });
   const on = await installer.install({ registerMcp: false });
   assert.equal(on.changed, true);
   assert.ok(on.hooks.includes("PreToolUse:Artifact"));
-  assert.deepEqual(events(path), ["PostCompact", "PostToolUse", "PreToolUse", "SessionStart", "Stop"]);
+  assert.deepEqual(events(path), ["PostCompact", "PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart", "Stop", "UserPromptSubmit"]);
 });
 
 test("turning Smart Compact off removes its hooks and keeps the Artifact hook", async () => {
@@ -398,7 +403,7 @@ test("turning Smart Compact off removes its hooks and keeps the Artifact hook", 
 
   writePluginSettings(paseoHome, { enabled: false });
   await installer.install({ registerMcp: false });
-  assert.deepEqual(events(path), ["PreToolUse"]);
+  assert.deepEqual(events(path), ["PostToolUseFailure", "PreToolUse", "UserPromptSubmit"]);
 
   writePluginSettings(paseoHome, { enabled: false, publishAsMain: false });
   const none = await installer.install({ registerMcp: false });

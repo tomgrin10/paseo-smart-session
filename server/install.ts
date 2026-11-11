@@ -62,6 +62,10 @@ const MANAGED = [
   // Publishes an artifact as the main account through a helper agent, which takes 10-20 s and may
   // queue behind another; the hook gives up at 160 s (`hooks/publish-as.mjs`).
   { event: "PreToolUse", matcher: "Artifact", script: "publish-as.mjs", timeout: 180, feature: "publish" },
+  // A plugin update detaches the smart_* tools from open sessions; these tell such a session how to reach them
+  // (`hooks/detached.mjs`). A failed smart_* call raises PostToolUseFailure, never PostToolUse (Claude Code 2.1.322).
+  { event: "PostToolUseFailure", matcher: "mcp__paseo__smart_.*", script: "detached.mjs", feature: "tools" },
+  { event: "UserPromptSubmit", matcher: "", script: "detached.mjs", feature: "tools" },
 ] as const;
 
 /** Which features are on: Smart Compact (`enabled`) and publishing as the main account. */
@@ -74,11 +78,12 @@ const ALL_FEATURES: HookFeatures = { compact: true, publish: true };
 
 /** The hooks the enabled features need; a feature that is off gets none registered. */
 export function managedFor(features: HookFeatures) {
-  return MANAGED.filter((managed) => features[managed.feature]);
+  // The tools exist whatever is on, so their hooks ride along with any feature's.
+  return MANAGED.filter((managed) => (managed.feature === "tools" ? features.compact || features.publish : features[managed.feature]));
 }
 
 /** Every script we might have written, including into an older install's path. */
-const OUR_SCRIPTS = ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs"];
+const OUR_SCRIPTS = ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs", "detached.mjs"];
 
 const HOOK_TIMEOUT_SECONDS = 10;
 

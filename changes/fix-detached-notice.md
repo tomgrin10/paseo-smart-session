@@ -1,0 +1,2 @@
+- After a Smart Session update, a session whose smart_* tools went missing is now told how to reach them (the bridge command) the first time a hook runs, once per update.
+- That note now says the tools come back only when the session reopens for a prompt that arrives while it is idle, so a busy session knows the bridge is its way meanwhile.

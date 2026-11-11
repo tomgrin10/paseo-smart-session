@@ -23,7 +23,7 @@ import { dirname, join } from "node:path";
 
 import { askable, compose } from "./ask.mjs";
 import { recordNowAsk, shouldAskNow } from "./asks.mjs";
-import { BANDS, DEFAULT_THRESHOLDS, detachedNotice, occupancy, readSettings, toolsMode } from "./context.mjs";
+import { BANDS, DEFAULT_THRESHOLDS, detachedOnce, markDetachedTold, occupancy, readSettings } from "./context.mjs";
 import { BRIDGE } from "./ask.mjs";
 import { clearPending, pluginDir, readPending, statePath } from "./pointer.mjs";
 
@@ -108,11 +108,13 @@ async function main() {
   const parts = [];
   const pending = readPending(sessionId);
   if (pending !== null) parts.push(pending);
-  // A smart_* call that just failed because a plugin update detached the tools: say how to reach them meanwhile.
-  if (/^mcp__paseo__smart_/.test(String(event.tool_name ?? "")) && toolsMode() === "detached") parts.push(detachedNotice(BRIDGE));
+  // A plugin update detached the smart_* tools: said on any tool call, once per worker instance, because a failed
+  // smart_* call raises PostToolUseFailure (hooks/detached.mjs), not this event, and a busy agent may not call them.
+  const detached = detachedOnce(BRIDGE);
+  if (detached !== null) parts.push(detached.text);
 
   const now = occupancy(transcriptPath, readSettings());
-  if (now === null) return emit(sessionId, parts, pending);
+  if (now === null) return emit(sessionId, parts, pending, detached);
 
   const latchPath = latchPathFor(sessionId);
   const latch = readLatch(latchPath);
@@ -133,7 +135,7 @@ async function main() {
   const asked = now.pct >= now.profile.now ? askNow(event) : null;
   if (asked !== null) {
     parts.push(asked.text);
-    emit(sessionId, parts, pending);
+    emit(sessionId, parts, pending, detached);
     // Recorded only once it has reached stdout, like the `Stop` hook's ask.
     recordNowAsk(sessionId, asked.ledger);
     return;
@@ -141,7 +143,7 @@ async function main() {
 
   // A session that jumped two bands in one turn hears the more urgent one.
   if (crossed.length > 0) parts.push(advice(crossed[crossed.length - 1], now.pct, now.used, now.max, statePath()));
-  return emit(sessionId, parts, pending);
+  return emit(sessionId, parts, pending, detached);
 }
 
 /** The upper line's question, or null when one of the shared guards says no. */
@@ -159,7 +161,7 @@ function askNow(event) {
  * Writes whatever there is to say, and only then forgets the pending pointer:
  * clearing it before it reaches stdout would lose it on any later failure.
  */
-function emit(sessionId, parts, pending) {
+function emit(sessionId, parts, pending, detached = null) {
   if (parts.length === 0) return;
   process.stdout.write(
     `${JSON.stringify({
@@ -168,6 +170,7 @@ function emit(sessionId, parts, pending) {
     })}\n`,
   );
   if (pending !== null) clearPending(sessionId);
+  if (detached !== null) markDetachedTold(detached.instance);
 }
 
 void main();

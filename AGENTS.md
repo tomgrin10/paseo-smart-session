@@ -409,10 +409,19 @@ interactive Claude/Codex sessions:
   is off, or the provider's `paseoTools` disables them.
 - `SMART_SESSION_TOOLS=native|stdio` in the agent env tells the hooks which names to use (`named`/`forTools` in
   `server/hooklib/context.mjs`); sessions opened before the change keep the bare names.
-- **Updates detach native tools.** A plugin reload drops them from open sessions until each reopens, which Paseo 0.15.2
-  does only before the agent's next prompt. The worker records its instance (`tools-instance.json`) and each attach its
-  instance (`tools/native-<agentId>.json`); a mismatch is "detached", and the asks and a failed `smart_*` call point
-  the agent at `node mcp.mjs call <tool> '<json>'` meanwhile.
+- **Updates detach native tools.** A plugin reload drops them from open sessions until each reopens. Paseo (0.15-0.16)
+  reopens a session only for a prompt that arrives while the agent is idle; messages to a busy agent run on the
+  detached session, so a busy agent can stay detached for hours (the cause is Paseo's: tools are bound to the worker
+  instance and re-bound only by a session open). The worker records its instance
+  (`tools-instance.json`) and each attach its instance (`tools/native-<agentId>.json`); a mismatch is "detached", and the
+  agent is pointed at `node mcp.mjs call <tool> '<json>'` meanwhile.
+- **Invariant: a detached session is told once per worker instance, through a hook that actually fires.**
+  `detachedOnce`/`markDetachedTold` (`server/hooklib/context.mjs`, latch `tools/told-<agentId>.json`) gate it; it rides
+  `PostToolUse` on any tool (`context-threshold.mjs`), `PostToolUseFailure` on `mcp__paseo__smart_.*` and
+  `UserPromptSubmit` (`hooks/detached.mjs`). A failed MCP call raises `PostToolUseFailure`, never `PostToolUse`
+  (`RESEARCH.md` §3.5), and a client that re-listed its tools never calls `smart_*` at all. The asks still append the
+  notice, since they name the tools. 2026-11-11: the notice sat on `PostToolUse` for a failed `smart_*` call and never
+  reached a session.
 
 `check-native-tools.mjs` (`npm run test:native`, in CI) proves it against an isolated daemon: no per-agent server,
 the tools answer as the calling agent, and across a plugin reload the native call fails mid-turn, the bridge works,
