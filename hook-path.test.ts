@@ -52,7 +52,7 @@ function configure(paseoHome: string, pluginDir: string): void {
 function stubInstall(dir: string, version: string, label: string): void {
   mkdirSync(join(dir, "hooks"), { recursive: true });
   const say = (script: string) => `process.stdout.write(${JSON.stringify(`${label}:${script}`)});\n`;
-  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs"]) {
+  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs", "detached.mjs"]) {
     writeFileSync(join(dir, "hooks", script), say(script));
   }
   writeFileSync(join(dir, "mcp.mjs"), say("mcp.mjs"));
@@ -68,7 +68,7 @@ function realInstall(dir: string, version: string, label: string, marker: string
   cpSync(join(REPO, "mcp.mjs"), join(dir, "mcp.mjs"));
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "paseo-smart-session", version, type: "module" }));
   // Each hook records that it ran, from which install, before doing its real work.
-  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs"]) {
+  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "detached.mjs"]) {
     const path = join(dir, "hooks", script);
     const record = `import { appendFileSync as __ran } from "node:fs";\n__ran(${JSON.stringify(marker)}, ${JSON.stringify(`${label}:${script}\n`)});\n`;
     writeFileSync(path, record + readFileSync(path, "utf8").replace(/^#!.*\n/, ""));
@@ -118,7 +118,7 @@ test("a shim whose pointer names a missing install exits 0 and says nothing", as
   assert.equal(runShim(box, "ask-compact.mjs").stdout, "gone:ask-compact.mjs", "the shim runs its target while it exists");
 
   rmSync(dir, { recursive: true, force: true });
-  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs", "mcp.mjs"]) {
+  for (const script of ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs", "detached.mjs", "mcp.mjs"]) {
     const result = runShim(box, script);
     assert.equal(result.status, 0, script);
     assert.equal(result.stdout, "", script);
@@ -170,7 +170,7 @@ test("update simulation: install vA, install vB, delete vA — the hooks run vB"
   assert.equal(settings.model, "opus");
   const commands: string[] = Object.values(settings.hooks as Record<string, { hooks: { command: string }[] }[]>)
     .flat().flatMap((group) => group.hooks.map((hook) => hook.command));
-  assert.equal(commands.length, 5);
+  assert.equal(commands.length, 7);
   for (const command of commands) {
     assert.doesNotMatch(command, /aaaa-old|bbbb-new/, "no command names an install directory");
     // Exactly as Claude Code runs it: through a shell, the hook event on stdin.
@@ -180,7 +180,7 @@ test("update simulation: install vA, install vB, delete vA — the hooks run vB"
     assert.doesNotMatch(result.stderr, /MODULE_NOT_FOUND|Cannot find module/);
   }
   const ran = readFileSync(marker, "utf8").trim().split("\n").sort();
-  assert.deepEqual(ran, ["B:ask-compact.mjs", "B:context-threshold.mjs", "B:post-compact.mjs", "B:post-compact.mjs"]);
+  assert.deepEqual(ran, ["B:ask-compact.mjs", "B:context-threshold.mjs", "B:detached.mjs", "B:detached.mjs", "B:post-compact.mjs", "B:post-compact.mjs"]);
 
   // The real bridge runs through its shim from vB too.
   const bridge = await execFileAsync(process.execPath, [join(box.shims, "mcp.mjs"), "call", "no_such_tool", "{}"], {

@@ -10,7 +10,7 @@
  * on the hot path, and the newest row is the only one that matters.
  */
 
-import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { pluginDir } from "./pointer.mjs";
@@ -258,22 +258,55 @@ export function named(text, native = toolsMode() === "native") {
 
 /**
  * Which tools this session has. Native tools live in the plugin process, so a plugin update or reload detaches them
- * from every open session until it reopens (Paseo 0.15.2 reopens a session before that agent's next prompt). The
- * worker records its instance in `tools-instance.json` and each native attach the instance that attached it in
- * `tools/native-<agentId>.json`; a mismatch means "detached".
+ * from every open session until it reopens. Paseo (0.15-0.16) reopens a session only for a prompt that arrives while
+ * the agent is idle; messages that reach a busy agent run on the detached session. The worker records its instance in
+ * `tools-instance.json` and each native attach the instance that attached it in `tools/native-<agentId>.json`; a
+ * mismatch means "detached".
  */
 export function toolsMode(env = process.env) {
-  if (env.SMART_SESSION_TOOLS !== "native") return env.SMART_SESSION_TOOLS === "stdio" ? "stdio" : "legacy";
-  const read = (path) => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; } };
-  const current = read(join(pluginDir(), "tools-instance.json"));
+  return toolsState(env).mode;
+}
+
+const safeId = (id) => id.replace(/[^A-Za-z0-9_-]/g, "_");
+const readJson = (path) => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; } };
+
+function toolsState(env) {
+  if (env.SMART_SESSION_TOOLS !== "native") return { mode: env.SMART_SESSION_TOOLS === "stdio" ? "stdio" : "legacy", instance: null };
+  const current = readJson(join(pluginDir(), "tools-instance.json"));
   const agentId = env.PASEO_AGENT_ID;
-  const mine = agentId ? read(join(pluginDir(), "tools", `native-${agentId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`)) : null;
-  return current?.instance && mine?.instance !== current.instance ? "detached" : "native";
+  const mine = agentId ? readJson(join(pluginDir(), "tools", `native-${safeId(agentId)}.json`)) : null;
+  const detached = current?.instance && mine?.instance !== current.instance;
+  return { mode: detached ? "detached" : "native", instance: current?.instance ?? null };
 }
 
 /** What a detached session is told: the same tools, one call each, through mcp.mjs beside this plugin's hooks. */
 export function detachedNotice(bridge) {
-  return `Smart Session was updated while this session was open, so its smart_* tools are detached and fail with "Tool not found" until this session reopens (Paseo reopens it before your next prompt). Until then run the same tools by their plain names: node ${JSON.stringify(bridge)} call <tool> '<json>' (for example: call checkpoint '{"current_step":"..."}'). Do not mention this to the user.`;
+  return `Smart Session was updated while this session was open, so its smart_* tools are detached: they are missing or fail with "Tool not found" until this session reopens. Paseo reopens it only for a prompt that arrives while you are idle, not for messages that reach you mid-turn, so a busy session can stay detached for a long time. Meanwhile the same tools work through the bridge, by their plain names: node ${JSON.stringify(bridge)} call <tool> '<json>' (for example: call checkpoint '{"current_step":"..."}'). Do not mention this to the user.`;
+}
+
+/**
+ * The detached notice, once per agent per worker instance (invariant: a detached session is told once per worker
+ * instance, through a hook that actually fires). Null when attached, already told, or not a Paseo agent.
+ * Call `markDetachedTold` once the text has reached stdout.
+ */
+export function detachedOnce(bridge, env = process.env) {
+  const { mode, instance } = toolsState(env);
+  if (mode !== "detached" || !instance || !env.PASEO_AGENT_ID) return null;
+  if (readJson(toldPath(env.PASEO_AGENT_ID))?.instance === instance) return null;
+  return { text: detachedNotice(bridge), instance };
+}
+
+export function markDetachedTold(instance, env = process.env) {
+  try {
+    mkdirSync(join(pluginDir(), "tools"), { recursive: true });
+    writeFileSync(toldPath(env.PASEO_AGENT_ID), JSON.stringify({ instance, at: new Date().toISOString() }));
+  } catch {
+    // Telling again is better than failing the hook.
+  }
+}
+
+function toldPath(agentId) {
+  return join(pluginDir(), "tools", `told-${safeId(agentId)}.json`);
 }
 
 /** Agent-facing text for this session's tools: smart_ names, plain names, or plain names plus the bridge. */
