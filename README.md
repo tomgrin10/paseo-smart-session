@@ -77,7 +77,7 @@ Smart Session keeps each account's readings in its own history (by ZeroSub's acc
 
 ## In Paseo's own usage card (Paseo 0.16+)
 
-On Paseo 0.16 or newer, Smart Session is also one of Paseo's usage sources, named **Claude · Smart Session**. Its cards show in the context window details (the composer's context meter), in the Usage screen and in the sidebar usage summary. On older Paseo nothing changes.
+On Paseo 0.16 or newer, Smart Session is also one of Paseo's usage sources, named **Smart Session**. Its cards show in the context window details (the composer's context meter), in the Usage screen and in the sidebar usage summary. On older Paseo nothing changes.
 
 - **The session's own account first,** with each window's forecast: Paseo shows "runs out in 1h 40m" where the reset line was, and the bar turns amber or red only when the pace says the window runs out before it resets. Session, Weekly and every Weekly · model window that the account reports.
 - **Every other ZeroSub Claude account** as its own card: at the limit (and when it is back), set aside, next to take over, and how old its reading is when that is over half an hour.
@@ -86,7 +86,7 @@ On Paseo 0.16 or newer, Smart Session is also one of Paseo's usage sources, name
 
 Paseo's card shows a few things Smart Session's card can't: the plan tier suffix ("Team 5x" shows as "Team"), the login email (the card names the account as ZeroSub does, "CLI login", "Account 2" or the name you gave it), and Extra usage for accounts other than the CLI login until ZeroSub records it.
 
-**Sidebar summary, once:** Paseo pins windows per source. To have the sidebar summary show Smart Session's windows instead of Paseo's, open **Usage**, unpin Claude's Session and Weekly, and pin Claude · Smart Session's. The choice is remembered.
+**Sidebar summary, once:** Paseo pins windows per source. To have the sidebar summary show Smart Session's windows instead of Paseo's, open **Usage**, unpin Claude's Session and Weekly, and pin Smart Session's. The choice is remembered.
 
 ## Pause at the limit (Session Guard)
 

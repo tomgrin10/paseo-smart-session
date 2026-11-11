@@ -190,7 +190,9 @@ test("the lead card carries the pool line; the others do not", () => {
   assert.match(pool!.value, /^run out in .+ at this pace$/);
   assert.equal(pool!.tone, "warning");
   assert.equal(other.details!.some((d) => d.id === "pool"), false);
-  assert.equal(lead.planLabel, "Team");
+  // The badge names the account, then the plan.
+  assert.equal(lead.planLabel, "CLI login · Team");
+  assert.equal(other.planLabel, "Account 2 · Team");
   // Detail times are durations, never clocks: the daemon's timezone is not the viewer's.
   for (const detail of [...lead.details!, ...other.details!]) assert.doesNotMatch(detail.value, /\b\d{1,2}:\d{2}\b/);
 });
@@ -293,4 +295,16 @@ test("the login is the card's one email-shaped text", () => {
   assert.equal(loginText(["Claude", "Team", "Session", "20%", " Me@Example.com "]), "me@example.com");
   assert.equal(loginText(["Claude", "Session"]), null);
   assert.equal(loginText(["a@b.co", "c@d.co"]), null);
+});
+
+test("the account in use is never 'taking over', and other cards keep to the 5-hour and weekly windows", () => {
+  const busy = [win("five_hour", 60, 4 * HOUR, 30), win("seven_day", 40, 3 * 24 * HOUR), win("weekly_fable", 3, 3 * 24 * HOUR)];
+  const state = zerosubState([account("claude-main", { windows: busy, isDefault: true }), account("claude-two", { windows: [win("five_hour", 10, 1 * HOUR, 1), win("seven_day", 10, 3 * 24 * HOUR), win("weekly_fable", 1, 3 * 24 * HOUR)] })]);
+  const lead = buildReport(state, { account: "claude-main", lead: true }, NOW);
+  const other = buildReport(state, { account: "claude-two", lead: false }, NOW);
+  if (lead.status !== "available" || other.status !== "available") return assert.fail("both available");
+  assert.equal(lead.details!.some((d) => d.label === "Takes over"), false);
+  assert.equal(other.details!.find((d) => d.id === "status")?.label, "Takes over");
+  assert.deepEqual(lead.windows.map((w) => w.id), ["five_hour", "weekly", "weekly_model_fable"]);
+  assert.deepEqual(other.windows.map((w) => w.id), ["five_hour", "weekly"]);
 });

@@ -28,7 +28,7 @@ import {
 } from "./subscriptions.ts";
 
 export const USAGE_SOURCE_ID = "smart-session";
-export const USAGE_SOURCE_LABEL = "Claude · Smart Session";
+export const USAGE_SOURCE_LABEL = "Smart Session";
 /** The key of the one account shown without ZeroSub: the CLI's own login, as the recorder measures it. */
 export const CLI_KEY = "cli";
 
@@ -240,7 +240,7 @@ export function poolDetail(pool: PoolForecast, now: number): UsageDetailOut | nu
     const soon = pool.runsOutAt - now <= 30 * 60_000;
     return { id: "pool", label, value: `run out ${inDuration(pool.runsOutAt - now)} at this pace`, tone: soon ? "danger" : "warning" };
   }
-  if (pool.pace !== null) return { id: "pool", label, value: `last ${formatDuration(pool.horizon - now)}+ at this pace` };
+  if (pool.pace !== null) return { id: "pool", label, value: `last ${Math.round((pool.horizon - now) / 3_600_000)}h+ at this pace` };
   return { id: "pool", label, value: `${pool.withRoom} with room` };
 }
 
@@ -252,6 +252,8 @@ export function statusDetail(account: Subscription, pool: PoolForecast | null, n
   }
   if (state.kind === "aside") return { id: "status", label: "Set aside in ZeroSub", value: "not used" };
   if (pool === null) return null;
+  // The account the work is on now is not "taking over", even if the work comes back to it later.
+  if (pool.current === account.id) return null;
   const takeover = pool.takeovers.find((t) => t.accountId === account.id);
   return takeover ? { id: "status", label: "Takes over", value: inDuration(takeover.at - now) } : null;
 }
@@ -265,7 +267,11 @@ function readingDetail(readAt: string | null, now: number): UsageDetailOut | nul
 const extraDetail = (enabled: boolean | null): UsageDetailOut | null =>
   enabled === null ? null : { id: "extra_usage", label: "Extra usage", value: enabled ? "Enabled" : "Disabled" };
 
-const planLabel = (plan: string | null) => (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined);
+/** The badge beside the header: which account, then its plan ("Work · Team"), so a card says whose it is at the top. */
+const badge = (name: string, plan: string | null) => (plan ? `${name} · ${plan.charAt(0).toUpperCase()}${plan.slice(1)}` : name);
+
+/** Windows a card shows: all of them on the session's own card; the plan's 5-hour and weekly on the others, to keep the list short. */
+const BASE_WINDOWS = new Set(["five_hour", "seven_day"]);
 
 // ---------------------------------------------------------------- the report
 
@@ -295,11 +301,11 @@ export function buildReport(state: SourceState, input: UsageInput, now: number):
     stale ? readingDetail(account.readAt, now) : null,
     extraDetail(extras?.extraUsage ?? null),
   ].filter((d): d is UsageDetailOut => d !== null);
-  const plan = planLabel(extras?.plan ?? null);
+  const shown = input.lead ? account.windows : account.windows.filter((w) => BASE_WINDOWS.has(w.id));
   return {
     status: "available",
-    ...(plan ? { planLabel: plan } : {}),
-    windows: windowsOf(account.windows, stale, now, extras?.windowLabels ?? {}),
+    planLabel: badge(account.name, extras?.plan ?? null),
+    windows: windowsOf(shown, stale, now, extras?.windowLabels ?? {}),
     balances: [],
     details,
   };
