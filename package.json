@@ -34,7 +34,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types *.test.ts",
     "check": "node check-bundles.mjs && node check-gitinstall.mjs && node check-teardown.mjs && node check-mcp-resolve.mjs",
-    "verify": "npm run typecheck && npm run test && npm run check && node --test button-visibility.test.mjs",
+    "verify": "npm run typecheck && npm run test && npm run check && node --test button-visibility.test.mjs && node release-notes.mjs check",
     "test:native": "node check-native-tools.mjs && node check-native-tools.mjs --stdio"
   },
   "devDependencies": {

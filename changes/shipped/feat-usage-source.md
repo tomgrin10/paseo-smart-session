@@ -1,0 +1,9 @@
+- On Paseo 0.16 and newer, Smart Session appears in Paseo's own usage card: the context window details, the Usage screen and the sidebar summary. On older Paseo nothing changes.
+- The session's own Claude account comes first, with each window's forecast ("runs out in 50m"). Every other ZeroSub Claude account follows.
+- The lead card carries the pool line, for example "All 3 accounts · last 24h+ at this pace".
+- A stale reading says its age ("57m old") and shows no forecast.
+- On web and desktop, Paseo's own Claude card steps aside while Smart Session's card for the same login has a fresh reading. If anything doesn't match, Paseo's card stays.
+- Turn that off in Settings → Display → Replace Paseo's Claude usage card (on by default).
+- Logins are matched without copying any email address out of ZeroSub's files.
+- Phones and other native apps show both cards.
+- To see Smart Session's numbers in the sidebar summary, open Usage once, unpin Claude's Session and Weekly, and pin Smart Session's.

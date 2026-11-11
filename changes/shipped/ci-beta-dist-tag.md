@@ -1,0 +1,1 @@
+- Betas are published to npm's beta tag, so `paseo plugin install npm:paseo-smart-session` keeps installing the latest stable version.
