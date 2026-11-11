@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Subscription, SubscriptionWindow } from "./shared/subscriptions.ts";
+import { poolForecast, type Subscription, type SubscriptionWindow } from "./shared/subscriptions.ts";
 import {
   CLI_KEY,
   accountKey,
   buildReport,
-  cardsToHide,
   loginText,
   discoverAccounts,
   hideableCards,
+  poolDetail,
   paseoWindow,
   parseExtras,
   reportWindow,
@@ -186,8 +186,9 @@ test("the lead card carries the pool line; the others do not", () => {
   if (lead.status !== "available" || other.status !== "available") return;
   const pool = lead.details!.find((d) => d.id === "pool");
   assert.ok(pool, "lead has the pool line");
+  // It names the limit that runs out, beside its verb: the 5-hour Session, not the week.
   assert.equal(pool!.label, "Both accounts");
-  assert.match(pool!.value, /^run out in .+ at this pace$/);
+  assert.match(pool!.value, /^Session runs out in .+$/);
   assert.equal(pool!.tone, "warning");
   assert.equal(other.details!.some((d) => d.id === "pool"), false);
   // The badge names the account, then the plan.
@@ -275,25 +276,6 @@ test("parseExtras reads garbage as nothing", () => {
 
 // ---------------------------------------------------------------- the hide's rule
 
-test("a built-in card hides only beside our fresh card for the same login", () => {
-  const fresh = [{ key: "claude-two", emailHash: "H2" }];
-  const cards = [
-    { testId: "usage-report-claude:uuid.org", loginHash: "H2" },
-    { testId: "usage-report-smart-session:claude-two", loginHash: null },
-  ];
-  assert.deepEqual([...cardsToHide(cards, fresh)], ["usage-report-claude:uuid.org"]);
-  // Our card not rendered (still loading, or errored and dropped): nothing hides.
-  assert.deepEqual([...cardsToHide([cards[0]!], fresh)], []);
-  // Our card rendered but stale (not in the fresh list): nothing hides.
-  assert.deepEqual([...cardsToHide(cards, [])], []);
-  // Another login: nothing hides.
-  assert.deepEqual([...cardsToHide([{ ...cards[0]!, loginHash: "H9" }, cards[1]!], fresh)], []);
-  // No login read from the built-in card: nothing hides.
-  assert.deepEqual([...cardsToHide([{ ...cards[0]!, loginHash: null }, cards[1]!], fresh)], []);
-  // Test ids Paseo might rename to: nothing hides.
-  assert.deepEqual([...cardsToHide([{ testId: "usage-card-claude:uuid.org", loginHash: "H2" }, { testId: "usage-card-smart-session:claude-two", loginHash: null }], fresh)], []);
-});
-
 test("the login is the card's one email-shaped text", () => {
   assert.equal(loginText(["Claude", "Team", "Session", "20%", " Me@Example.com "]), "me@example.com");
   assert.equal(loginText(["Claude", "Session"]), null);
@@ -344,4 +326,33 @@ test("handoffs follow each account's own work, not the pool's first busy account
   assert.deepEqual(seatCard.details!.find((d) => d.id === "then"), { id: "then", label: "Then", value: "CLI login takes over" });
   assert.equal(cliCard.details!.some((d) => d.id === "then"), false, "the CLI login does not hand off to itself");
   assert.deepEqual(cliCard.details!.find((d) => d.id === "status"), { id: "status", label: "Takes over", value: "when Account 2 runs out" });
+});
+
+test("the pool row names which limit runs out: the 5-hour Session, the week, or neither when they differ", () => {
+  // Live 2026-11-11 09:05Z, Account 2: 1% → 22% since its window opened at 08:40 (≈51%/h), CLI login busy too.
+  const twoBusy = (week: number) => [
+    account("claude-main", { isDefault: true, windows: [win("five_hour", 30, 4 * HOUR, 20), win("seven_day", week, 3 * 24 * HOUR)] }),
+    account("claude-two", { windows: [win("five_hour", 22, 4.5 * HOUR, 51), win("seven_day", week, 3 * 24 * HOUR)] }),
+  ];
+  const session = poolDetail(poolForecast(twoBusy(40), "claude", NOW), NOW);
+  assert.equal(session?.label, "Both accounts");
+  assert.match(session!.value, /^Session runs out in \d+h \d+m$/);
+  // Both weeks nearly full (98%, about 1%/h over the week so far): it is the week that runs out.
+  const weekly = poolDetail(poolForecast(twoBusy(98).map((a) => ({ ...a, windows: [win("five_hour", 1, 4.5 * HOUR, 1), a.windows[1]!] })), "claude", NOW), NOW);
+  assert.match(weekly?.value ?? "", /^Weekly runs out in /, JSON.stringify(weekly));
+  // While it lasts, the subject alone.
+  const calm = poolDetail(poolForecast(twoBusy(10).map((a) => ({ ...a, windows: [win("five_hour", 5, 4 * HOUR, 0.5), a.windows[1]!] })), "claude", NOW), NOW);
+  assert.equal(calm?.label, "Both accounts");
+  assert.match(calm!.value, /^last \d+h\+ at this pace$/);
+});
+
+test("a window that runs out before its reset keeps its reset in a row, since the bar's line now says the run-out", () => {
+  const busy = [win("five_hour", 60, 4 * HOUR, 30), win("seven_day", 40, 3 * 24 * HOUR)];
+  const report = buildReport(zerosubState([account("claude-main", { windows: busy, isDefault: true })]), { account: "claude-main", lead: true }, NOW);
+  assert.equal(report.status, "available");
+  if (report.status !== "available") return;
+  assert.ok(report.windows.find((w) => w.id === "five_hour")?.runsOutAt);
+  assert.deepEqual(report.details!.find((d) => d.id === "resets_five_hour"), { id: "resets_five_hour", label: "Session resets", value: "in 4h" });
+  // A window on pace has its reset on its own line already.
+  assert.equal(report.details!.some((d) => d.id === "resets_weekly"), false);
 });

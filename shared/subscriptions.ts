@@ -200,6 +200,11 @@ export interface PoolForecast {
   readonly takeovers: readonly Takeover[];
   /** When no account has room at this pace (now, when it already happened); null when it lasts. */
   readonly runsOutAt: number | null;
+  /**
+   * Which limit runs out then: every account's 5-hour session window, or every account's
+   * week. Null when it lasts, or when the accounts stop for different reasons.
+   */
+  readonly limit?: "session" | "weekly" | null;
   /** After it runs dry: when the first account is back, and which. */
   readonly backAt: number | null;
   readonly backAccount: string | null;
@@ -309,6 +314,7 @@ export function poolForecast(
 
   const takeovers: Takeover[] = [];
   let runsOutAt: number | null = null;
+  let limit: "session" | "weekly" | null = null;
   let backAt: number | null = null;
   let backAccount: string | null = null;
 
@@ -335,7 +341,7 @@ export function poolForecast(
       }
       const next = options.autoSwitch ? mostRoom(sims, t) : null;
       if (next === null) {
-        if (!work.stalled) { work.stalled = true; if (runsOutAt === null) runsOutAt = t; }
+        if (!work.stalled) { work.stalled = true; if (runsOutAt === null) { runsOutAt = t; limit = limitAt(sims, t); } }
         continue;
       }
       if (work.stalled) { if (backAt === null) { backAt = t; backAccount = next.a.id; } }
@@ -346,7 +352,7 @@ export function poolForecast(
     // Nothing in use: only the limits now and their resets.
     if (streams.length === 0) {
       const open = mostRoom(sims, t);
-      if (open === null && t === now) runsOutAt = now;
+      if (open === null && t === now) { runsOutAt = now; limit = limitAt(sims, t); }
       else if (open !== null && runsOutAt !== null && backAt === null) { backAt = t; backAccount = open.a.id; }
     }
     for (const s of sims) {
@@ -370,10 +376,21 @@ export function poolForecast(
     current: lead === null ? opener?.a.id ?? null : first?.[0] ?? null,
     takeovers,
     runsOutAt,
+    limit,
     backAt,
     backAccount,
     lanes,
   };
+}
+
+/** Why every usable account is out at `t`: all on their week, all on their session (or a limit the CLI reported), or a mix. */
+function limitAt(sims: readonly SimAccount[], t: number): "session" | "weekly" | null {
+  const weekly = (s: SimAccount) => s.weeklyFullAt !== null && t >= s.weeklyFullAt && (s.wReset === null || t < s.wReset);
+  const out = sims.filter((s) => s.usable);
+  if (out.length === 0) return null;
+  if (out.every(weekly)) return "weekly";
+  if (out.every((s) => !weekly(s))) return "session";
+  return null;
 }
 
 // ---------------------------------------------------------------- words
