@@ -68,7 +68,7 @@ test("an unreadable or empty PASEO_PASSWORD_FILE fails without exposing its path
 });
 
 test("every direct daemon client forwards the resolved password and never logs it", async () => {
-  for (const file of ["server/daemon.ts", "mcp.mjs", "probe.mjs"]) {
+  for (const file of ["server/daemon.ts", "server/hooklib/daemon.mjs", "probe.mjs"]) {
     const source = await readFile(file, "utf8");
     assert.match(source, /resolveDaemonPassword\(\)/, `${file} must resolve daemon authentication`);
     assert.match(
@@ -81,5 +81,11 @@ test("every direct daemon client forwards the resolved password and never logs i
       /console\.(?:log|error|warn)\([^\n]*password/i,
       `${file} must not log the daemon password`,
     );
+  }
+  // The scripts Claude Code runs reach the daemon only through the shared client above.
+  for (const file of ["mcp.mjs", "hooks/publish-as.mjs"]) {
+    const source = await readFile(file, "utf8");
+    assert.doesNotMatch(source, /new DaemonClient\(/, `${file} must not open its own daemon client`);
+    assert.match(source, /from "\.\.?\/server\/hooklib\/daemon\.mjs"/, `${file} must use server/hooklib/daemon.mjs`);
   }
 });
