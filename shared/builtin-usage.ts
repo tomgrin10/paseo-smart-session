@@ -37,6 +37,10 @@ export interface BuiltinReading {
   /** True when this is the report's current answer; false for the last good one kept beside an error. */
   readonly current: boolean;
   readonly windows: readonly BuiltinWindow[];
+  /** Its plan badge ("Team 5x"): the tier ZeroSub doesn't record. */
+  readonly planLabel?: string | null;
+  /** Its Extra usage row's value ("Disabled", or what was spent). */
+  readonly extraUsage?: string | null;
 }
 
 const rec = (value: unknown): Record<string, unknown> | null =>
@@ -76,13 +80,20 @@ export function builtinEntry(entry: unknown): { login: string; reading: BuiltinR
     const fetchedAt = instant(e.successfulAt) ?? instant(e.fetchedAt);
     const windows = windowsOf(report);
     if (fetchedAt === null || windows.length === 0) return null;
-    return { login, reading: { id, fetchedAt, current: true, windows } };
+    return { login, reading: { id, fetchedAt, current: true, windows, ...extrasOf(report) } };
   }
   const last = rec(e.lastSuccessful);
   const fetchedAt = instant(last?.fetchedAt);
   const windows = windowsOf(rec(last?.report));
   if (fetchedAt === null || windows.length === 0) return null;
-  return { login, reading: { id, fetchedAt, current: false, windows } };
+  return { login, reading: { id, fetchedAt, current: false, windows, ...extrasOf(rec(last?.report)) } };
+}
+
+/** The facts on Paseo's card beside the windows: its plan badge and its Extra usage row. */
+function extrasOf(report: Record<string, unknown> | null): { planLabel: string | null; extraUsage: string | null } {
+  const details = Array.isArray(report?.details) ? report!.details : [];
+  const extra = details.map(rec).find((d) => d?.id === "extra_usage");
+  return { planLabel: str(report?.planLabel), extraUsage: str(extra?.value) };
 }
 
 /** The built-in window that is the same limit as one of ours, by Paseo's id or, for a scoped weekly, its label. */

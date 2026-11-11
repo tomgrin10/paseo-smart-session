@@ -143,3 +143,19 @@ test("live bug A: deciding a card never waits on the server, the hash or a frame
   assert.ok(body.length > 0);
   assert.doesNotMatch(body, /await|\.rpc\(|requestAnimationFrame|digest\(/);
 });
+
+test("hiding Paseo's card loses neither its plan tier nor its Extra usage row", () => {
+  const withExtras = entry({ report: { ...entry().report, planLabel: "Team 5x", details: [{ id: "extra_usage", label: "Extra usage", value: "$4.20 of $50.00" }] } });
+  const found = builtinEntry(withExtras)!.reading;
+  assert.equal(found.planLabel, "Team 5x");
+  assert.equal(found.extraUsage, "$4.20 of $50.00");
+  const state: SourceState = {
+    zerosub: { accounts: [account()], autoSwitch: true, extras: { "claude-two": { emailHash: "H2", plan: "team", windowLabels: {}, extraUsage: null } }, sessions: {}, homes: {} },
+    recorded: null,
+  };
+  const report = buildReport(withBuiltin(state, (h) => (h === "H2" ? found : null)), { account: "claude-two", lead: true }, NOW);
+  assert.equal(report.status, "available");
+  if (report.status !== "available") return;
+  assert.equal(report.planLabel, "Account 2 · Team 5x");
+  assert.deepEqual(report.details!.find((d) => d.id === "extra_usage"), { id: "extra_usage", label: "Extra usage", value: "$4.20 of $50.00" });
+});

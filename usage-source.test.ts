@@ -186,9 +186,9 @@ test("the lead card carries the pool line; the others do not", () => {
   if (lead.status !== "available" || other.status !== "available") return;
   const pool = lead.details!.find((d) => d.id === "pool");
   assert.ok(pool, "lead has the pool line");
-  // It names the limit that runs out: the 5-hour Session of both accounts, not the week.
-  assert.equal(pool!.label, "Session · both accounts");
-  assert.match(pool!.value, /^run out in .+ at this pace$/);
+  // It names the limit that runs out, beside its verb: the 5-hour Session, not the week.
+  assert.equal(pool!.label, "Both accounts");
+  assert.match(pool!.value, /^Session runs out in .+$/);
   assert.equal(pool!.tone, "warning");
   assert.equal(other.details!.some((d) => d.id === "pool"), false);
   // The badge names the account, then the plan.
@@ -335,12 +335,24 @@ test("the pool row names which limit runs out: the 5-hour Session, the week, or 
     account("claude-two", { windows: [win("five_hour", 22, 4.5 * HOUR, 51), win("seven_day", week, 3 * 24 * HOUR)] }),
   ];
   const session = poolDetail(poolForecast(twoBusy(40), "claude", NOW), NOW);
-  assert.equal(session?.label, "Session · both accounts");
-  assert.match(session!.value, /^run out in \d+h \d+m at this pace$/);
-  // Both weeks nearly full: it is the week that runs out.
-  const weekly = poolDetail(poolForecast(twoBusy(99.9).map((a) => ({ ...a, windows: [win("five_hour", 1, 4.5 * HOUR, 1), a.windows[1]!] })), "claude", NOW), NOW);
-  assert.equal(weekly?.label, "Weekly · both accounts");
+  assert.equal(session?.label, "Both accounts");
+  assert.match(session!.value, /^Session runs out in \d+h \d+m$/);
+  // Both weeks nearly full (98%, about 1%/h over the week so far): it is the week that runs out.
+  const weekly = poolDetail(poolForecast(twoBusy(98).map((a) => ({ ...a, windows: [win("five_hour", 1, 4.5 * HOUR, 1), a.windows[1]!] })), "claude", NOW), NOW);
+  assert.match(weekly?.value ?? "", /^Weekly runs out in /, JSON.stringify(weekly));
   // While it lasts, the subject alone.
   const calm = poolDetail(poolForecast(twoBusy(10).map((a) => ({ ...a, windows: [win("five_hour", 5, 4 * HOUR, 0.5), a.windows[1]!] })), "claude", NOW), NOW);
   assert.equal(calm?.label, "Both accounts");
+  assert.match(calm!.value, /^last \d+h\+ at this pace$/);
+});
+
+test("a window that runs out before its reset keeps its reset in a row, since the bar's line now says the run-out", () => {
+  const busy = [win("five_hour", 60, 4 * HOUR, 30), win("seven_day", 40, 3 * 24 * HOUR)];
+  const report = buildReport(zerosubState([account("claude-main", { windows: busy, isDefault: true })]), { account: "claude-main", lead: true }, NOW);
+  assert.equal(report.status, "available");
+  if (report.status !== "available") return;
+  assert.ok(report.windows.find((w) => w.id === "five_hour")?.runsOutAt);
+  assert.deepEqual(report.details!.find((d) => d.id === "resets_five_hour"), { id: "resets_five_hour", label: "Session resets", value: "in 4h" });
+  // A window on pace has its reset on its own line already.
+  assert.equal(report.details!.some((d) => d.id === "resets_weekly"), false);
 });

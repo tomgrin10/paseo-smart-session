@@ -93,6 +93,8 @@ export interface AccountExtras {
   readonly windowLabels: Readonly<Record<string, string>>;
   /** Extra usage switched on for the account, when known. */
   readonly extraUsage: boolean | null;
+  /** Paseo's own card's Extra usage value for the login ("Disabled", or what was spent), when it has one. */
+  readonly extraUsageText?: string | null;
 }
 
 export interface SourceState {
@@ -237,16 +239,17 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
  */
 export function poolDetail(pool: PoolForecast, now: number): UsageDetailOut | null {
   if (pool.total < 2) return null;
-  const subject = pool.total === 2 ? "Both accounts" : `All ${pool.total} accounts`;
-  const which = pool.runsOutAt === null ? null : pool.limit === "session" ? "Session" : pool.limit === "weekly" ? "Weekly" : null;
-  const label = which === null ? subject : `${which} · ${subject.charAt(0).toLowerCase()}${subject.slice(1)}`;
+  const label = pool.total === 2 ? "Both accounts" : `All ${pool.total} accounts`;
+  const which = pool.limit === "session" ? "Session" : pool.limit === "weekly" ? "Weekly" : null;
   if (pool.runsOutAt !== null && pool.runsOutAt <= now) {
     const back = pool.backAt === null ? "" : ` · back ${inDuration(pool.backAt - now)}`;
     return { id: "pool", label, value: `at the limit${back}`, tone: "danger" };
   }
   if (pool.runsOutAt !== null) {
     const soon = pool.runsOutAt - now <= 30 * 60_000;
-    return { id: "pool", label, value: `run out ${inDuration(pool.runsOutAt - now)} at this pace`, tone: soon ? "danger" : "warning" };
+    // The limit sits next to its verb, where it can't be read as a window row of this card.
+    const value = which ? `${which} runs out ${inDuration(pool.runsOutAt - now)}` : `run out ${inDuration(pool.runsOutAt - now)} at this pace`;
+    return { id: "pool", label, value, tone: soon ? "danger" : "warning" };
   }
   if (pool.pace !== null) return { id: "pool", label, value: `last ${Math.round((pool.horizon - now) / 3_600_000)}h+ at this pace` };
   return { id: "pool", label, value: `${pool.withRoom} with room` };
@@ -293,8 +296,21 @@ function readingDetail(readAt: string | null, now: number): UsageDetailOut | nul
   return { id: "reading", label: "Reading", value: `${formatDuration(now - at)} old · no forecast`, tone: "warning" };
 }
 
-const extraDetail = (enabled: boolean | null): UsageDetailOut | null =>
-  enabled === null ? null : { id: "extra_usage", label: "Extra usage", value: enabled ? "Enabled" : "Disabled" };
+const extraDetail = (enabled: boolean | null, text?: string | null): UsageDetailOut | null =>
+  text ? { id: "extra_usage", label: "Extra usage", value: text }
+    : enabled === null ? null : { id: "extra_usage", label: "Extra usage", value: enabled ? "Enabled" : "Disabled" };
+
+/**
+ * Where a window runs out before it resets, Paseo prints the run-out where the reset
+ * was. The reset still answers "when is it back", so it gets a row.
+ */
+function resetDetails(windows: readonly UsageWindowOut[], now: number): UsageDetailOut[] {
+  return windows.flatMap((w) => {
+    const at = w.resetsAt === null ? NaN : Date.parse(w.resetsAt);
+    if (!w.runsOutAt || !Number.isFinite(at) || at <= now) return [];
+    return [{ id: `resets_${w.id}`, label: `${w.label} resets`, value: inDuration(at - now) }];
+  });
+}
 
 /** The badge beside the header: which account, then its plan ("Work · Team"), so a card says whose it is at the top. */
 const badge = (name: string, plan: string | null) => (plan ? `${name} · ${plan.charAt(0).toUpperCase()}${plan.slice(1)}` : name);
@@ -335,8 +351,9 @@ export function buildReport(state: SourceState, input: UsageInput, now: number):
     stale ? readingDetail(account.readAt, now) : null,
     input.lead && pool && !stale ? poolDetail(pool, now) : null,
     status,
+    ...resetDetails(windows, now),
     stale ? null : handoffDetail(account, pool, nameOf),
-    input.lead || atStake ? extraDetail(extras?.extraUsage ?? null) : null,
+    input.lead || atStake ? extraDetail(extras?.extraUsage ?? null, extras?.extraUsageText) : null,
   ].filter((d): d is UsageDetailOut => d !== null);
   const age = stale && account.readAt ? `${formatDuration(now - Date.parse(account.readAt))} old` : null;
   return {
@@ -373,7 +390,14 @@ export function withBuiltin(state: SourceState, readingOf: (emailHash: string | 
     const labelOf = (id: string) => paseoWindow(id, extras?.windowLabels[id]).label;
     return mergeBuiltin(account, readingOf(extras?.emailHash ?? null), labelOf);
   });
-  return { ...state, zerosub: { ...zs, accounts } };
+  // Paseo's card also knows the plan's tier ("Team 5x") and its Extra usage row: carried over so hiding it loses neither.
+  const merged: Record<string, AccountExtras> = { ...zs.extras };
+  for (const [id, extras] of Object.entries(zs.extras)) {
+    const reading = readingOf(extras.emailHash);
+    if (!reading) continue;
+    merged[id] = { ...extras, plan: reading.planLabel ?? extras.plan, extraUsageText: reading.extraUsage ?? null };
+  }
+  return { ...state, zerosub: { ...zs, accounts, extras: merged } };
 }
 
 /** An account's login hash, by its Paseo key. */
