@@ -275,7 +275,14 @@ export const usageCardsStatus = defineRpc({
   name: "smart-session.usage-cards",
   input: z.object({}),
   output: z.object({
-    cards: z.array(z.object({ key: z.string(), emailHash: z.string() })),
+    cards: z.array(
+      z.object({
+        key: z.string(),
+        emailHash: z.string(),
+        /** Used percentages of the built-in reading the server holds for this login, when ours is at least as new. */
+        supersedes: z.array(z.number()).nullable().optional(),
+      }),
+    ),
   }),
 });
 

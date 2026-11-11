@@ -103,17 +103,17 @@ function counterpart(ours: SubscriptionWindow, theirs: readonly BuiltinWindow[],
 }
 
 /**
- * The account with the built-in's numbers where they are the ones to show: always while
- * the daemon holds a current reading (both cards then show the same numbers, which is
- * what lets the hide work), else only when its last good reading is newer than ours.
+ * The account with the built-in's numbers when its reading is newer than ours, current
+ * or a 429's last good one: ours is never older than Paseo's, and never made older by it.
  * The pace (`burnPctPerHour`) stays ours: the built-in has none. Limits only the built-in
  * reports are added, so ours never shows fewer.
  */
 export function mergeBuiltin(account: Subscription, reading: BuiltinReading | null, labelOf: (id: string) => string): Subscription {
   if (reading === null) return account;
   const theirsAt = Date.parse(reading.fetchedAt);
+  if (!Number.isFinite(theirsAt)) return account;
   const oursAt = account.readAt === null ? NaN : Date.parse(account.readAt);
-  if (!reading.current && Number.isFinite(oursAt) && oursAt >= theirsAt) return account;
+  if (Number.isFinite(oursAt) && oursAt >= theirsAt) return account;
 
   const used = new Set<string>();
   const windows: SubscriptionWindow[] = account.windows.map((w) => {

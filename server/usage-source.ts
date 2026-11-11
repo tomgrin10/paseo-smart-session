@@ -127,7 +127,7 @@ export function contributeUsageSource(server: PluginServerContext): boolean {
 
 /** For the client's hide: which of our cards may stand in for Paseo's own Claude card right now. */
 export async function usageCards(now = Date.now()) {
-  return { cards: hideableCards(withBuiltin(await sourceState(now), captured), now) };
+  return { cards: hideableCards(withBuiltin(await sourceState(now), captured), now, captured) };
 }
 
 /**

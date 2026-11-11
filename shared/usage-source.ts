@@ -413,16 +413,24 @@ export function emailHashOf(state: SourceState, key: string): string | null {
  * names a login for (by its email's hash), signed in, with a reading fresh enough to forecast from. The
  * client hides a built-in card only while one of these, for the same login, is on
  * screen beside it. Anything less (no ZeroSub, a stale or missing reading, no email)
- * leaves the built-in card alone.
+ * leaves the built-in card alone. `supersedes` carries the built-in reading the server
+ * holds for that login when ours is at least as new as it, so a card showing that very
+ * reading (a 429's last good one, say) steps aside even though the numbers differ.
  */
-export function hideableCards(state: SourceState, now: number): { key: string; emailHash: string }[] {
+export function hideableCards(
+  state: SourceState,
+  now: number,
+  readingOf: (emailHash: string | null) => BuiltinReading | null = () => null,
+): { key: string; emailHash: string; supersedes: number[] | null }[] {
   const zs = state.zerosub;
   if (!zs) return [];
   return claudeAccounts(state).flatMap((account) => {
     const emailHash = zs.extras[account.id]?.emailHash ?? null;
     if (emailHash === null || !account.signedIn || account.readAt === null || account.windows.length === 0) return [];
     if (readingAge(account, now) !== null || now - Date.parse(account.readAt) > STALE_MS) return [];
-    return [{ key: accountKey(account.id), emailHash }];
+    const reading = readingOf(emailHash);
+    const supersedes = reading !== null && Date.parse(account.readAt) >= Date.parse(reading.fetchedAt) ? reading.windows.map((w) => w.usedPct) : null;
+    return [{ key: accountKey(account.id), emailHash, supersedes }];
   });
 }
 
