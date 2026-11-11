@@ -47,7 +47,7 @@ test("publisher reconciles a lost append acknowledgement by ID before retrying",
 test("dismissal history states no message was sent and distinguishes existing native work", () => {
   for (const native of [true, false]) {
     const dismissed = timelinePresentation({ ...data, event: "released", dismissed: true, native });
-    assert.equal(dismissed.title, "Pause dismissed"); assert.match(dismissed.detail, /No message was sent/);
+    assert.equal(dismissed.title, "Released by you"); assert.match(dismissed.detail, /No message was sent/);
     assert.match(dismissed.detail, /Protection is off/); assert.equal(dismissed.detail.includes("current work may continue"), native);
   }
 });

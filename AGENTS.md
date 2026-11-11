@@ -243,7 +243,7 @@
   **Resume now** message a person asked for. It never compacts, never retries an unconfirmed send,
   and never sends into a session whose user message or turn changed.
 - **Invariant: while a protected session's account is at or over the pause threshold, no turn runs
-  in it unless a person explicitly resumes it** (Resume now, Release and turn off, Dismiss pause, the
+  in it unless a person explicitly resumes it** (Resume now, Release, Release and turn off, the
   pill's switch, or turning Session Guard off). So a pause is a hold: idle live sessions are held as
   well as running ones (`shared/guard/hold.ts`); a person's message joins a waiting hold instead of
   cancelling it (foreground: its turn is interrupted at once; frozen Claude: the message waits in the

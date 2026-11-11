@@ -14,7 +14,7 @@ export type Notification = z.infer<typeof NotificationSchema>;
 
 export function timelinePresentation(data: TimelineData) {
   const provider = data.provider === "claude" ? "Claude" : data.provider === "codex" ? "Codex" : data.provider;
-  if (data.event === "released" && data.dismissed) return { title: "Pause dismissed", icon: "ShieldOff", tone: "muted" as const,
+  if (data.event === "released" && data.dismissed) return { title: "Released by you", icon: "ShieldOff", tone: "muted" as const,
     detail: "No message was sent. Protection is off for this session." + (data.native ? " Existing workers were released; their current work may continue." : "") };
   if (data.event === "resumed") return { title: "Session resumed", icon: "Play", tone: "success" as const,
     detail: data.manualResume ? "Resumed by you. Pause at the limit is off for this session; turn it back on from the composer pill."

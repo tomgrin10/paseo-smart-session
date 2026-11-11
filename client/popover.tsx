@@ -9,7 +9,7 @@ import { linesSummary, outlookSentence } from "../shared/compact-lines";
 import { contextOutlook } from "../shared/forecast";
 import { confirmation, listCompactions, setEnrolment, type CompactionRequest } from "../shared/governor";
 import { cancelResumeRpc, dismissPauseRpc, resumeNowRpc, setProtectionRpc, statusRpc } from "../shared/guard/contracts";
-import { PAUSE_ACTIONS, THEN, governorNotice, heldWork, pausePresentation } from "../shared/guard/presentation";
+import { PAUSE_ACTIONS, THEN, actionNote, governorNotice, heldWork, pausePresentation } from "../shared/guard/presentation";
 import { contextStatus } from "../shared/smart-session";
 import { profileFor } from "../shared/thresholds";
 import type { AgentDirectory } from "./agents";
@@ -152,8 +152,9 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
             : reset <= now ? "Waiting for a fresh usage reading"
               : `in ${formatDuration(reset - now)} · ${work === "idle" ? "no turn runs before then" : held ? THEN[work] : "continue it by hand"}`;
       const tone = stuck ? c.statusDanger : c.statusWarning;
-      // "your message runs then" already says a message waits; coverage would only repeat it.
-      const meta = [after, work === "message" ? null : look.coverage.toLowerCase()].filter(Boolean).join(" · ");
+      // "your message runs then" already says a message waits, and "no turn runs before then"
+      // that nothing runs: coverage would only repeat them.
+      const meta = [after, work === "message" || work === "idle" ? null : look.coverage.toLowerCase()].filter(Boolean).join(" · ");
       const waiting = pause.phase === "waiting";
       return <View style={{ gap: 8 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -170,9 +171,9 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
           </> : stuck ? <Button theme={theme} small compact={compact} title={saving === "release" ? "Updating…" : look.actionLabel} disabled={saving !== null}
             accessibilityHint={look.actionHint} onPress={() => void release()} /> : null}
           <View style={{ flex: 1 }} />
-          <TextLink theme={theme} compact={compact} label="All paused sessions" onPress={() => openOverview("paused")} />
+          <TextLink theme={theme} compact={compact} label="All held sessions" onPress={() => openOverview("paused")} />
         </View>
-        {waiting ? <Text style={t.small}>{PAUSE_ACTIONS.note}</Text> : null}
+        {waiting ? <Text style={t.small}>{actionNote(pause)}</Text> : null}
       </View>;
     })();
 

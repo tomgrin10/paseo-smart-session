@@ -267,10 +267,10 @@ export class Engine {
       // must never revive its scheduled continuation on the next boot.
       await this.store.write(state);
       try {
-        await this.cancel(pause, "Pause dismissed without sending a message. Protection is off for this session.");
+        await this.cancel(pause, "Released without sending a message. Protection is off for this session.");
       } catch {
         pause.phase = "attention";
-        pause.note = "Pause dismissal could not be completed. Protection is off; worker release will retry without sending a message.";
+        pause.note = "Release could not be completed. Protection is off; worker release will retry without sending a message.";
         await this.save(state);
         throw new Error(pause.note);
       }

@@ -134,8 +134,8 @@ export function makeSettings(client: PluginClientContext) {
     const guardBusy = guard.status !== "ready" || guard.saving || timing !== null;
     const pending = status?.pauses.filter(isPending) ?? [];
     const overrides = status === null ? 0 : Object.keys(status.overrides).length;
-    const listHint = status === null ? "Paused sessions and sessions you changed from the default, on the overview."
-      : [pending.length === 0 ? "Nothing paused" : `${pending.length} paused`, overrides === 0 ? "no session changed from the default" : `${overrides} ${overrides === 1 ? "session" : "sessions"} changed from the default`].join(" · ");
+    const listHint = status === null ? "Held sessions and sessions you changed from the default, on the overview."
+      : [pending.length === 0 ? "Nothing held" : `${pending.length} held`, overrides === 0 ? "no session changed from the default" : `${overrides} ${overrides === 1 ? "session" : "sessions"} changed from the default`].join(" · ");
     const checked = timing === null ? null : checkTiming(timing.draft);
     const fieldError = (key: keyof Timing) => (timingTried ? checked?.errors[key] ?? null : null);
     async function saveTiming() {
@@ -210,12 +210,12 @@ export function makeSettings(client: PluginClientContext) {
                 value={guard.values.protectByDefault ? "all" : "opt-in"} options={[{ label: "Every session", value: "all" }, { label: "Only ones I turn on", value: "opt-in" }]}
                 disabled={guardBusy || !guard.values.enabled} onValueChange={(value) => changeGuard({ protectByDefault: value === "all" }, value === "all" ? "Every session pauses at the limit" : "Sessions pause only when you turn them on")} />
               <SettingsSwitch label="Continue after the reset" hint="Waits for a fresh usage reading below the line, then sends the continuation. Off, you continue each one by hand."
-                value={guard.values.autoResume} disabled={guardBusy || !guard.values.enabled} onValueChange={(autoResume) => changeGuard({ autoResume }, autoResume ? "Paused sessions continue after the reset" : "Paused sessions wait for you")} />
+                value={guard.values.autoResume} disabled={guardBusy || !guard.values.enabled} onValueChange={(autoResume) => changeGuard({ autoResume }, autoResume ? "Held sessions continue after the reset" : "Held sessions wait for you")} />
               <SettingsSwitch label="Include native subagents" hint="On Linux, freeze Claude and Codex sessions together with their nested workers. Off, only the foreground turn is interrupted."
                 value={guard.values.includeNativeSubagents} disabled={guardBusy || !guard.values.enabled} onValueChange={(includeNativeSubagents) => changeGuard({ includeNativeSubagents }, includeNativeSubagents ? "Subagents pause too" : "Only the foreground turn pauses")} />
-              <SettingsSwitch label="Label paused workspaces" hint="An amber Paused label in the sidebar until every session in the workspace continues."
+              <SettingsSwitch label="Label held workspaces" hint="An amber Held label in the sidebar until every session in the workspace continues."
                 value={guard.values.workspaceLabels} disabled={guardBusy || !guard.values.enabled} onValueChange={(workspaceLabels) => changeGuard({ workspaceLabels }, workspaceLabels ? "Paused workspaces are labelled" : "No workspace labels")} />
-              <SettingsAction label="Paused sessions and exceptions" hint={listHint} actionLabel="Open" onPress={openPaused} />
+              <SettingsAction label="Held sessions and exceptions" hint={listHint} actionLabel="Open" onPress={openPaused} />
             </SettingsCard>}
       </SettingsSection>
 

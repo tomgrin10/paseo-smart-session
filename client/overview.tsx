@@ -401,8 +401,8 @@ export function makeOverview(client: PluginClientContext, live: Live) {
 /** The sidebar row's right slot: what is paused, else the pool of subscriptions, else the session window. */
 export function sidebarTrailing(live: Live, now: number): { label: string; tone: Tone | "muted"; a11y: string } | null {
   const paused = live.paused();
-  if (paused.attention > 0) return { label: `${paused.attention + paused.waiting} paused`, tone: "danger", a11y: `${paused.attention + paused.waiting} sessions paused` };
-  if (paused.waiting > 0) return { label: `${paused.waiting} paused`, tone: "warning", a11y: `${paused.waiting} sessions paused` };
+  if (paused.attention > 0) return { label: `${paused.attention + paused.waiting} held`, tone: "danger", a11y: `${paused.attention + paused.waiting} sessions held` };
+  if (paused.waiting > 0) return { label: `${paused.waiting} held`, tone: "warning", a11y: `${paused.waiting} sessions held` };
   // Under ZeroSub one login is not the story: the row speaks for the pool, and is
   // amber or red only when the pool, not a single account, runs short.
   const subs = live.subscriptions();

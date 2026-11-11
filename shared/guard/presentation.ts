@@ -108,7 +108,8 @@ export function pauseOwnerNote(status: GovernorView): string | null {
  */
 export function pausePill(pause: Pause, policy: Policy, now = Date.now(), clock: (iso: string) => string = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })) {
   const reset = timestamp(pause.anchorResetsAt);
-  // The title is also the phone sheet's title: one short sentence, the detail is in the sheet.
+  // The title is also the phone sheet's title, right above the popover's "Held until …"
+  // headline: where that headline shows, the title stays neutral so the sheet doesn't say it twice.
   if (pause.phase === "attention") return { label: "Check session", title: "Paused, then something changed · check it", tone: "danger" as const };
   if (pause.phase === "pausing") return { label: "Pausing…", title: "Pausing at the session limit", tone: "warning" as const };
   if (pause.phase === "resuming") return { label: "Resuming…", title: "The window reset · continuing now", tone: "warning" as const };
@@ -122,9 +123,9 @@ export function pausePill(pause: Pause, policy: Policy, now = Date.now(), clock:
   const work = heldWork(pause);
   // An idle hold just lets go at the reset, so it reads the same with automatic continuation off.
   if (policy.autoResume || work === "idle") {
-    return { label: `Until ${at}`, title: work === "idle" ? `Held at the limit until ${at}` : `Held until ${at} · ${THEN[work]}`, tone: "warning" as const };
+    return { label: `Until ${at}`, title: "Held at the session limit", tone: "warning" as const };
   }
-  return { label: `Resets ${at}`, title: `Held at the limit · resets ${at}, continue by hand`, tone: "warning" as const };
+  return { label: `Resets ${at}`, title: "Held at the session limit · continue by hand", tone: "warning" as const };
 }
 
 /**
@@ -154,6 +155,20 @@ export function pausedLead(pending: readonly Pause[], autoResume: boolean, now: 
  */
 export const PAUSE_ACTIONS = {
   resume: { label: "Resume now", busy: "Resuming…", icon: "Play", hint: "Continues before the reset and stops this session pausing at the limit. The provider may still refuse work until the reset." },
-  dismiss: { label: "Dismiss pause", busy: "Dismissing…", hint: "Lets the session go without sending a message and stops it pausing at the limit." },
-  note: "Resume now stops this session pausing at the limit · Dismiss sends nothing",
+  dismiss: { label: "Release", busy: "Releasing…", hint: "Lets the session go without sending a message and stops it pausing at the limit." },
 } as const;
+
+/**
+ * The one line under the two actions: what each does to what is held, as the engine
+ * does it. A frozen session runs on SIGCONT either way (its message with it); a
+ * foreground hold runs again only through Resume now's message.
+ */
+export function actionNote(pause: Pause): string {
+  const off = "both turn off Pause at the limit for this session";
+  switch (heldWork(pause)) {
+    case "idle": return `Either lets this session run now and turns off Pause at the limit for it`;
+    case "message": return pause.suspension ? `Either runs your message now · ${off}` : `Resume now runs your message now · Release drops it · ${off}`;
+    case "frozen": return `Either lets it carry on now · ${off}`;
+    case "interrupted": return `Resume now continues it now · Release sends nothing · ${off}`;
+  }
+}

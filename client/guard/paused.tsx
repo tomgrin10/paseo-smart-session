@@ -39,7 +39,7 @@ export function PausedSection({ theme, layout, host, navigation, status, shared:
       if (kind === "release") await cancel({ agentId: pause.agentId });
       else await (kind === "resume" ? resumeNow : dismiss)({ agentId: pause.agentId, pauseId: pause.id });
       publishGuard(await read({}));
-      toast.show(kind === "resume" ? "Resumed · it no longer pauses at the limit" : kind === "dismiss" ? "Pause dismissed · nothing was sent" : "Released");
+      toast.show(kind === "resume" ? "Resumed · it no longer pauses at the limit" : kind === "dismiss" ? "Released · nothing was sent" : "Released");
     } catch { toast.error("Couldn't change this pause. Check the session and try again."); }
     finally { setBusy(null); }
   };
@@ -92,7 +92,7 @@ export function PausedSection({ theme, layout, host, navigation, status, shared:
   const attention = visible.filter((p) => p.phase === "attention");
   const waiting = visible.filter((p) => p.phase !== "attention");
   return <View style={{ gap: 8 }}>
-    <SectionHead theme={theme} title="Paused sessions" count={all.length || undefined} />
+    <SectionHead theme={theme} title="Held sessions" count={all.length || undefined} />
     {all.length > 5 || query !== "" ? <TextInput value={query} onChangeText={setQuery} placeholder="Find a paused session by title or provider" placeholderTextColor={c.foregroundMuted} accessibilityLabel="Find a paused session"
       style={{ minHeight: compact ? 44 : 34, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, color: c.foreground, fontSize: 13 }} /> : null}
     {status && all.length === 0 ? <Card theme={theme}><CardRow theme={theme} first style={{ gap: 4, paddingVertical: 16 }}>
