@@ -1,2 +1,3 @@
 - With ZeroSub, a session whose account reaches its limit is no longer held while another account has room: ZeroSub moves it, and a turn that was running carries on there right away.
 - A session already held is let go for ZeroSub to move as soon as another account gets room. It is held as before only when no account has room, automatic switching is off, or ZeroSub can't move it within two minutes.
+- The subscriptions forecast moves work where ZeroSub now moves it: to an account under 80% of its 5 hours before one past it.

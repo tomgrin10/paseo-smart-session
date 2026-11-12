@@ -268,10 +268,17 @@ const available = (s: SimAccount, t: number) =>
   s.usable && !(s.limitedUntil !== null && t < s.limitedUntil) && s.p5 < 100 &&
   !(s.weeklyFullAt !== null && t >= s.weeklyFullAt && (s.wReset === null || t < s.wReset));
 
-/** ZeroSub's pick: the least-used usable account; then the default, the CLI login, the oldest. */
+/** ZeroSub's 5-hour gate (`PACE.fiveHourMaxUsed`): an account past it ranks after every account under it. */
+export const ZEROSUB_FIVE_HOUR_GATE = 80;
+
+/**
+ * ZeroSub's pick (`mostAvailable`, pace.10+): an account under the 5-hour gate before one past it,
+ * then the least-used usable account; then the default, the CLI login, the oldest.
+ */
 function mostRoom(sims: readonly SimAccount[], t: number, exclude?: SimAccount): SimAccount | null {
   const candidates = sims.filter((s) => s !== exclude && available(s, t));
-  candidates.sort((x, y) => Math.max(x.p5, x.weeklyPct) - Math.max(y.p5, y.weeklyPct) || x.rank - y.rank);
+  const gated = (s: SimAccount) => (s.p5 >= ZEROSUB_FIVE_HOUR_GATE ? 1 : 0);
+  candidates.sort((x, y) => gated(x) - gated(y) || Math.max(x.p5, x.weeklyPct) - Math.max(y.p5, y.weeklyPct) || x.rank - y.rank);
   return candidates[0] ?? null;
 }
 

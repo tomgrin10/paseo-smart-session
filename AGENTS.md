@@ -141,7 +141,7 @@
   account id and never an email; it serves `smart-session.subscriptions` and `budget_status`'s
   optional `pool`. `shared/subscriptions.ts` holds the rules (`subscriptions.test.ts`): neutral names
   ("CLI login", "Account N") unless the person named the account, each account's work as its own
-  stream that moves to ZeroSub's pick (the usable account with the lowest peak, then the default,
+  stream that moves to ZeroSub's pick (an account under its 5-hour gate first, then the lowest peak, then the default,
   the CLI login, the oldest) when it fills, resets refilling windows, and stale readings (> 30 min)
   adding no pace. Rows, the lead, the runway and the popover all read their times from that one
   simulation, so they never disagree. `client/subscriptions.ts` is the one poll; without ZeroSub
