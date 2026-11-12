@@ -2,6 +2,69 @@
 
 What changed in each version of Smart Session, newest first.
 
+## 3.7.0 (2026-11-12)
+
+Pause at the limit now really holds a session until its account has room again, and under ZeroSub it lets ZeroSub move the session to another account first. Smart Session also shows its usage forecast in Paseo's own usage card and can publish pages from your main account.
+
+### Pause at the limit (Session Guard)
+
+- A held session stays held until the reset. A message you send to it waits and runs after the reset, instead of ending the pause.
+- Idle sessions on an account at the limit are held too, so a message sent to one never starts work on paid Extra usage. Resume now, Release or the pill's switch still let one go early.
+- With ZeroSub, a session whose account reaches its limit is not held while another account has room. ZeroSub moves it, and a turn that was running carries on there right away.
+- A held session is let go for ZeroSub to move as soon as another account gets room. It is held only when no account has room, automatic switching is off, or ZeroSub can't move it within two minutes.
+- When every account is at the limit, a held session shows the closest reset across them and names that account ("moves to Account 3").
+- When that account resets, ZeroSub moves the session there and it continues there, never on the account still at the limit.
+- Resume now moves a held session to an account with room first, when there is one, and continues it there. Otherwise it resumes where it is, as before.
+- A session whose provider process couldn't be confirmed is paused in the foreground instead of being left running at the limit.
+- A held session says Held everywhere: the sidebar count, the amber workspace label and the overview list. Its pill shows when it lets go ("Until 5:58 PM"), and its popover says when your message runs.
+- Dismiss pause is now Release, and the line under the buttons says what each action does to a waiting message.
+- After Resume now or Release, the pill's popover closes, so a second click can't land on the controls that replace the buttons and turn pausing straight back on.
+- Every hold, release, resume and protection change writes one line to the daemon log, naming the control that changed protection, so an unexpected hold can be traced.
+
+### Usage in Paseo's own usage card (Paseo 0.16+)
+
+- Smart Session appears in Paseo's usage card: the context window details, the Usage screen and the sidebar summary. On older Paseo nothing changes.
+- The session's own Claude account comes first, with each window's forecast ("runs out in 50m"), then every other ZeroSub Claude account.
+- The lead card carries the pool line, naming the limit that runs out ("Both accounts · Session runs out in 2h 38m").
+- In the forecast, "Then · X takes over" sits on the account whose work moves and "Takes over · when Y runs out" on the account that receives it.
+- The forecast moves work where ZeroSub moves it: to an account under 80% of its 5 hours before one past it.
+- A stale reading says its age ("57m old") and shows no forecast. The plan tier ("Team 5x") and Extra usage come over from Paseo's card for the same login.
+- On web and desktop, Paseo's own Claude card steps aside before it is drawn whenever Smart Session's card for the same login is at least as fresh. Settings → Display → Replace Paseo's Claude usage card turns that off.
+- Smart Session's card is never older than Paseo's: it takes Paseo's latest reading for the same login, and keeps its own when that is newer.
+- Logins are matched without copying any email address out of ZeroSub's files. Phones and other native apps show both cards.
+
+### Publishing as your main account (ZeroSub)
+
+- A page an agent publishes from a session on another Claude account is published from your main account instead, so you can open and share it.
+- On by default. Settings → Artifacts turns it off or picks the account. Agents get `smart_publish_as` and `smart_publish_as_settings`.
+- Settings flags a ZeroSub account home whose settings file no longer links to your main one, and says how to fix it.
+
+### Restarted sessions
+
+- When a plugin reload or an account move restarts a session and ends a background job the agent started, the agent is told which jobs ended and asked to rerun them or say why not, once per job.
+- After a Smart Session update, a session whose `smart_*` tools went missing is told how to reach them (the bridge command) the first time a hook runs.
+- It is also told that the tools come back when the session reopens for a prompt that arrives while it is idle.
+
+### Smart Compact
+
+- A compaction counts only once it is confirmed. A cancelled or failed `/compact` no longer reads as one, and the popover says "Didn't compact" or "Not confirmed".
+- A compaction a message cancelled mid-run (an agent notification, say) is sent again once the session is idle, at most twice an hour. A cancel by Stop is never retried.
+- The agent is told when an incoming message cancelled its compaction. The popover and the timeline card say when a compaction was interrupted, retried or not retried, and why.
+
+### Hooks
+
+- Claude Code hooks follow the features that need them: Smart Compact's hooks while Smart Compact is on, the end-of-turn hook whenever any Smart Session feature is on, and the Artifact hook while publishing as your main account is on.
+- A symlinked Claude Code settings file is written through to its target, never replaced by a copy.
+
+### Upgrading from 3.6
+
+- Requires Paseo 0.14 or newer. The usage card needs Paseo 0.16; native agent tools need 0.15.
+- Pause at the limit stays off unless you turned it on. If it is on, idle sessions at the limit are now held too, and a message you send to a held session waits for the reset.
+- The ZeroSub behaviour (switch first, hold as the fallback) needs ZeroSub 1.5.1-pace.10 or later. With an older ZeroSub, a session that could move is held after two minutes, as before.
+- Moving to the account with the closest reset needs ZeroSub 1.5.1-pace.11 or later.
+- Betas publish to npm's `beta` tag, so `paseo plugin install paseo-smart-session` keeps installing the latest stable.
+- Saved data keeps its shape. A held session may carry two new optional fields (the account it waits for, and when); the standalone Session Guard plugin drops them, as it drops `idle`.
+
 ## 3.6.2 (2026-11-10)
 
 - Smart Session's own tool calls (saving task state, context and budget checks, compaction requests) stay inside Paseo's grouped tool-call rows in chat instead of splitting each group into loose lines.

@@ -1,2 +1,0 @@
-- When a plugin reload or an account move restarts a session and ends a background job the agent started, the agent is now told which jobs ended and asked to rerun them or say why not, once per job, instead of sitting idle.
-- The end-of-turn hook is now registered whenever any Smart Session feature is on, not only Smart Compact, so restarted sessions are covered either way.

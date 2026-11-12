@@ -1,3 +1,0 @@
-- With ZeroSub, a session held at the limit now shows the closest reset across every account it could use, and names that account, in the pill, the paused list, the chat card and the forecast.
-- When that account resets, ZeroSub moves the session there and it continues there; it never runs a turn on the account that is still out. Needs ZeroSub 1.5.1-pace.11.
-- Resume now on a held session moves it to an account with room first, when there is one, and continues it there; otherwise it resumes where it is, as before.
