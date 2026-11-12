@@ -1,6 +1,0 @@
-- Under ZeroSub, a page an agent publishes from a session on another Claude account is published from your main account instead, so you can open and share it.
-- On by default. Settings → Artifacts turns it off or picks the account. Agents get `smart_publish_as` and `smart_publish_as_settings`.
-- Claude Code hooks follow the features that need them: Smart Compact's hooks while Smart Compact is on, the Artifact hook while publishing as the main account is on.
-- With Smart Compact off, Register the hooks stays available, so the Artifact hook is still installed.
-- A symlinked Claude Code settings file is written through to its target, never replaced by a copy.
-- Settings flags a ZeroSub account home whose settings file no longer links to your main one, and says how to fix it.

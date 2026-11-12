@@ -1,2 +1,0 @@
-- A compaction Smart Session delivered that a message cancelled mid-run (an agent notification, say) is now sent again once the session is idle, at most twice an hour. A cancel by Stop is never retried.
-- The agent is told when its compaction was cancelled by an incoming message rather than by a person. The popover's Last compaction line and the timeline card say when a compaction was interrupted, retried, or not retried, and why.
