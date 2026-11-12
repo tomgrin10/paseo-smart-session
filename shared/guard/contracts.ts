@@ -44,7 +44,9 @@ export const agentStatusRpc = defineRpc({
   }),
 });
 export const setProtectionRpc = defineRpc({
-  name: "smart-session.guard.protection", input: z.object({ agentId: z.string().min(1), enabled: z.boolean().nullable() }),
+  name: "smart-session.guard.protection",
+  // `source`: which control sent it, for the guard's trace (the daemon doesn't say who calls).
+  input: z.object({ agentId: z.string().min(1), enabled: z.boolean().nullable(), source: z.string().regex(/^[a-z-]{1,40}$/).optional() }),
   output: z.object({ ok: z.boolean() }),
 });
 export const cancelResumeRpc = defineRpc({

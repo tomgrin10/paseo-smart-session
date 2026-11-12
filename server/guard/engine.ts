@@ -21,6 +21,11 @@ import {
 } from "../../shared/guard/policy.ts";
 import { continuesAtReset, freezesIdle, heldUntil, holdKind, messageArrived, messageWaiting, ZEROSUB_MOVE_GRACE_MS, zerosubCanMove, ZeroSubMoves } from "../../shared/guard/hold.ts";
 
+/** The first 8 characters of a pause id: enough to find it in state.json. */
+const short = (id: string) => id.slice(0, 8);
+/** A session's protection override, as the trace says it. */
+const protectionWord = (override: boolean | undefined) => (override === undefined ? "default" : override ? "on" : "off");
+
 /** Shown while a session is held in the foreground because its provider process couldn't be confirmed as its own. */
 const FALLBACK_ERROR = process.platform === "linux"
   ? "Native worker protection could not confirm ownership of a provider process, so that session is held in the foreground (its native subagents are not frozen)."
@@ -46,6 +51,15 @@ export class Engine {
    * moved it within the grace, it resumes in place as Resume now always did.
    */
   private resumeOnMove = new Map<string, number>();
+  /**
+   * Where the trace goes: one line per hold, release, resume and protection change, in the
+   * daemon's plugin output. Ids, kinds and times only; never a title, a prompt or an email.
+   * 2026-11-12 (audit B): a session held again 9 s after Resume now left no trail of why.
+   */
+  log: (line: string) => void = (line) => console.log(line);
+  private trace(line: string) {
+    try { this.log(`[smart-session] guard ${line}`); } catch { /* Tracing never breaks a hold. */ }
+  }
   checkedAt: string | null = null;
   error: string | null = null;
   timelineError: string | null = null;
@@ -242,9 +256,10 @@ export class Engine {
       await this.recoverActions(await this.store.read());
     });
   }
-  async setProtection(agentId: string, enabled: boolean | null) {
+  async setProtection(agentId: string, enabled: boolean | null, source = "unknown") {
     return this.exclusive(async () => {
       const state = await this.store.read();
+      this.trace(`protection ${agentId} ${protectionWord(state.overrides[agentId])} -> ${protectionWord(enabled ?? undefined)} (${source})`);
       if (enabled === null) delete state.overrides[agentId];
       else state.overrides[agentId] = enabled;
       const policy = await this.policy();
@@ -261,6 +276,7 @@ export class Engine {
         // Releasing a hold opts out, so the next pass does not hold it again while the
         // account is still at the limit: frozen workers resume, a foreground hold lets go.
         state.overrides[agentId] = false;
+        this.trace(`release ${agentId} pause ${short(pause.id)} protection=off`);
         await this.cancel(pause, pause.suspension ? "Workers resumed immediately and this session was excluded from Session Guard."
           : "Released; this session no longer pauses at the limit. Continue it when ready.");
       }
@@ -276,6 +292,7 @@ export class Engine {
       if (!pause || !(pause.phase === "waiting" || (pause.phase === "attention" && pause.dismissed))) throw new Error("This pause is no longer available to dismiss.");
       state.overrides[agentId] = false;
       pause.dismissed = true;
+      this.trace(`dismiss ${agentId} pause ${short(pause.id)} protection=off`);
       // Journal cancellation intent before SIGCONT: a crash or partial release
       // must never revive its scheduled continuation on the next boot.
       await this.store.write(state);
@@ -324,6 +341,7 @@ export class Engine {
             catch { throw new Error("Could not stop the session to move it. Try again."); }
           }
           pause.note = "Moving to an account with room; it continues there.";
+          this.trace(`resume-now ${agentId} pause ${short(pause.id)} moving`);
           this.moving.set(pause.id, this.now()); this.resumeOnMove.set(pause.id, this.now());
           await this.save(state);
           return;
@@ -335,6 +353,7 @@ export class Engine {
   /** Resume now, where the session is: SIGCONT, and the continuation message a foreground hold needs. */
   private async resumeInPlace(client: GuardClient, state: State, pause: Pause, latest: Agent, running: boolean) {
         const agentId = pause.agentId;
+        this.trace(`resume-now ${agentId} pause ${short(pause.id)} in-place protection=off`);
         state.overrides[agentId] = false; pause.manualResume = true; pause.phase = "resuming";
         await this.save(state);
         const needsMessage = (!pause.suspension && !running && continuesAtReset(pause)) || (pause.wasQuotaFailure && ["idle", "error"].includes(latest.status) && !latest.pendingPermissions?.length);
@@ -388,6 +407,7 @@ export class Engine {
       delete pause.suspension;
     }
     pause.phase = "cancelled"; pause.note = note; pause.settledAt = new Date(this.now()).toISOString();
+    this.trace(`cancel ${pause.agentId} pause ${short(pause.id)}: ${note}`);
   }
   /** A normally completed turn racing cancel must never become a continuation. */
   async turnEnded(agentId: string, turnId: string | null, outcome: string, endedOnLimit = false) {
@@ -626,6 +646,7 @@ export class Engine {
           }
           pause.phase = "resumed"; pause.settledAt = new Date(this.now()).toISOString(); pause.note = null;
           pause.resumedInPlace = true;
+          this.trace(`resumed ${pause.agentId} pause ${short(pause.id)} thawed at the reset`);
           this.nextResumeAt = this.now() + policy.resumeSpacingSeconds * 1000;
           await this.save(state); continue;
         }
@@ -648,6 +669,7 @@ export class Engine {
           if (!ready(pause)) continue;
           pause.phase = "resumed"; pause.settledAt = new Date(this.now()).toISOString(); pause.note = null;
           if (manualMove !== undefined) { state.overrides[pause.agentId] = false; pause.manualResume = true; }
+          this.trace(`resumed ${pause.agentId} pause ${short(pause.id)} idle hold let go${manualMove !== undefined ? " after Resume now" : ""}`);
           await this.save(state); continue;
         }
         const canContinue = (candidate: Agent) => candidate.status === "idle" || (pause.closedOnRestart && candidate.status === "closed") || (pause.wasQuotaFailure && candidate.status === "error");
@@ -664,6 +686,7 @@ export class Engine {
           await client.sendMessage(pause.agentId, policy.continuation, { messageId: pause.id, activeTurnBehavior: "steer" });
           pause.phase = "resumed"; pause.settledAt = new Date(this.now()).toISOString(); pause.note = null;
           this.nextResumeAt = this.now() + policy.resumeSpacingSeconds * 1000;
+          this.trace(`resumed ${pause.agentId} pause ${short(pause.id)} continuation sent${manualMove !== undefined ? " after Resume now" : ""}`);
           if (manualMove !== undefined) {
             // A person chose Resume now: it stops pausing at the limit, as Resume now always does.
             state.overrides[pause.agentId] = false; pause.manualResume = true;
@@ -744,6 +767,7 @@ export class Engine {
         };
         if (accounts && !quotaFailed) showNextRoom(pause, accounts);
         state.pauses.push(pause);
+        this.trace(`hold ${agent.id} pause ${short(pause.id)} kind=${kind} frozen=${suspension ? "yes" : "no"} override=${protectionWord(state.overrides[agent.id])} ${usedPct(window) ?? "?"}% resets ${pause.anchorResetsAt ?? "unknown"}${moving ? " zerosub=moving" : ""}${pause.nextRoomAt ? ` shows ${pause.nextRoomAt} (${pause.resetAccount})` : ""}`);
         if (moving) this.moving.set(pause.id, this.now());
         await this.save(state);
         if (quotaFailed) this.quotaFailures.delete(agent.id);

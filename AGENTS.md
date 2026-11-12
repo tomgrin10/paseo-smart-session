@@ -276,6 +276,10 @@
   processes with one `PASEO_AGENT_ID`, the session ran on Extra usage); and room on another ZeroSub
   account never releases a hold by running a turn on the full account (it releases it to ZeroSub to move). Never wake, open or signal a closed or dormant agent to hold it.
   Every new path that skips a protected session at the limit is a bug against this invariant.
+- Every hold, release, resume and protection change is traced to the daemon log (`Engine.trace`,
+  `docs/session-guard.md` "Trace"), and a protection change names the control that sent it (`source`
+  on `smart-session.guard.protection`): the daemon doesn't tell a plugin who called. Keep new paths
+  that change a hold or an override traced, with ids only.
 - Process signals are identity-checked by PID birth time and limited to direct children of this
   daemon carrying the agent's `PASEO_AGENT_ID`. Never widen that.
 - Usage comes from Paseo's `provider.usage.list`, merged for Claude with the recorder's freshest
