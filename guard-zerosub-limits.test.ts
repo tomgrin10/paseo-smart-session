@@ -18,6 +18,7 @@ import { Store } from "./server/guard/store.ts";
 import { PolicySchema, type Agent, type Pause, type Policy, type Usage } from "./shared/guard/policy.ts";
 import { accountView, parseZeroSub } from "./shared/guard/zerosub.ts";
 import { limitNotice, turnRows } from "./shared/guard/limit-notice.ts";
+import { ZEROSUB_MOVE_GRACE_MS, ZeroSubMoves } from "./shared/guard/hold.ts";
 import type { GuardClient } from "./server/guard/client.ts";
 import type { ProcessControl } from "./server/guard/processes.ts";
 
@@ -36,6 +37,8 @@ interface Reading { at: number; fiveHour: number; fiveResets: number; weekly?: n
 class ZeroSub {
   accounts: Acct[];
   sessions: Record<string, string> = {};
+  /** When each session was opened, if not at T0. */
+  opened: Record<string, number> = {};
   readings: Record<string, Reading> = {};
   autoSwitch = true;
   constructor(accounts: Acct[]) { this.accounts = accounts; }
@@ -45,7 +48,7 @@ class ZeroSub {
       version: 1,
       accounts: this.accounts.map(a => ({ label: `${a.id}@example.com`, autoLabel: true, home: a.kind === "main" ? null : `/nowhere/${a.id}`, email: `${a.id}@example.com`, signedIn: true, disabled: false, limitedUntil: null, createdAt: iso(T0 - 86_400_000), ...a })),
       defaults: { claude: null, codex: null }, bindings: {},
-      sessions: Object.fromEntries(Object.entries(this.sessions).map(([agentId, accountId]) => [agentId, { accountId, family: accountId.split("-")[0], openedAt: iso(T0) }])),
+      sessions: Object.fromEntries(Object.entries(this.sessions).map(([agentId, accountId]) => [agentId, { accountId, family: accountId.split("-")[0], openedAt: iso(this.opened[agentId] ?? T0) }])),
       continuations: {},
     };
   }
@@ -67,6 +70,8 @@ class ZeroSub {
     this.readings[id] = reading;
     if (Math.max(reading.fiveHour, reading.weekly ?? 0) < 90) Object.assign(this.account(id), { limitedUntil: null, limitKind: null });
   }
+  /** ZeroSub reopens the agent's session on another account (`moveIdleAgentsOff`). */
+  move(agentId: string, to: string, at: number) { this.sessions[agentId] = to; this.opened[agentId] = at; }
   /** `mostAvailable`: a signed-in, enabled account with no recorded limit. */
   usable(family: string, except: string, now: number) {
     return this.accounts.find(a => a.family === family && a.id !== except && a.signedIn !== false && !a.disabled && !(a.limitedUntil && Date.parse(a.limitedUntil) > now));
@@ -377,22 +382,23 @@ test("an interrupt racing the CLI's notice keeps its one pause instead of releas
 
 // --------------------------------------------------------------------------- frozen sessions
 
-test("a frozen session stays frozen when B gets room, and is released in place when A resets", async t => {
+test("a frozen session is let go when B gets room, ZeroSub moves it, and it continues there", async t => {
+  // Tom, 2026-11-12: hold only when no account the session could move to has room.
   const f = await fixture(t, { native: true });
   f.zs.sessions.x = "claude-a";
   bothFull(f.zs);
   await f.engine.tick();
-  assert.deepEqual(f.native.calls.frozen, [1234]);
+  assert.deepEqual(f.native.calls.frozen, [1234], "no account has room: held as before");
   f.at(T0 + 3 * HOUR + MIN);
   f.zs.read("claude-b", { at: f.now, fiveHour: 0, fiveResets: T0 + 8 * HOUR });
   await f.engine.tick();
-  assert.deepEqual(f.native.calls.released, [], "no SIGCONT for room elsewhere: the turn would run on A's limit (Extra usage)");
+  assert.deepEqual(f.native.calls.released, [1234], "thawed so ZeroSub can reopen it");
+  assert.deepEqual(f.log, ["guard:interrupt"], "and its turn stopped in the foreground, not run on A's limit (Extra usage)");
   assert.equal((await f.pauses())[0]!.phase, "waiting");
-  f.at(T0 + 5 * HOUR + 2 * MIN);
-  f.zs.read("claude-a", { at: f.now, fiveHour: 0, fiveResets: T0 + 10 * HOUR });
+  f.zs.move("x", "claude-b", f.now + 10_000);
+  f.at(f.now + 15_000);
   await f.engine.tick();
-  assert.deepEqual(f.native.calls.released, [1234]);
-  assert.equal(f.continuations().length, 0, "SIGCONT carries the same turn on; no message");
+  assert.deepEqual(f.continuations().length, 1, "continued on B");
   assert.equal((await f.pauses())[0]!.phase, "resumed");
 });
 test("autoResume off: room on another account leaves the pause for a person", async t => {
@@ -474,4 +480,117 @@ test("the turn-ended hook reads the notice from the agent's timeline and the hos
   events.get("agent.turn_ended")!({ agent: { id: "x", provider: "claude" }, turnId: "t1", outcome: { kind: "completed" }, timeline: [] }, context);
   await until(async () => (await status()).pauses.some(p => p.phase === "waiting" && p.wasQuotaFailure), "the notice becomes a waiting pause");
   assert.equal((await status()).pauses.length, 1);
+});
+
+// --------------------------------------------------------------------------- switch first, hold as the fallback (2026-11-12)
+
+/** A full, B with room; the agent on A. The CLI login is set aside, as in Tom's layout. */
+function aFullBRoomy(zs: ZeroSub, at = T0) {
+  zs.read("claude-a", { at, fiveHour: 100, fiveResets: T0 + 47 * MIN, weekly: 87 });
+  zs.markLimited("claude-a", T0 + 47 * MIN); // ZeroSub's reading marks it (limitSource "reading").
+  zs.read("claude-b", { at, fiveHour: 6, fiveResets: T0 + 5 * HOUR, weekly: 88 });
+}
+
+test("the grace ZeroSub gets to move a session is short, and pinned", () => {
+  assert.equal(ZEROSUB_MOVE_GRACE_MS, 2 * MIN);
+  const moves = new ZeroSubMoves();
+  moves.begin();
+  assert.equal(moves.moves("x", T0), true);
+  moves.end();
+  moves.begin();
+  assert.equal(moves.moves("x", T0 + ZEROSUB_MOVE_GRACE_MS - 1), true);
+  assert.equal(moves.moves("x", T0 + ZEROSUB_MOVE_GRACE_MS), false);
+  moves.end();
+  moves.begin(); moves.end(); // A pass where it isn't movable: its grace is gone.
+  moves.begin();
+  assert.equal(moves.moves("x", T0 + HOUR), true, "a new stretch starts a new grace");
+});
+
+test("invariant: an idle session ZeroSub can move is never held while ZeroSub moves it", async t => {
+  // The live case: the seat at 100% (ZeroSub's reading marked it), the CLI login with room,
+  // idle sessions on the seat. beta.9 froze them all.
+  const f = await fixture(t, { native: true });
+  f.zs.sessions.x = "claude-a";
+  aFullBRoomy(f.zs);
+  f.agent.status = "idle"; f.agent.activeTurn = null;
+  await f.engine.tick();
+  assert.deepEqual(f.native.calls.frozen, [], "not frozen");
+  assert.deepEqual(await f.pauses(), [], "no hold");
+  f.zs.move("x", "claude-b", T0 + 20_000);
+  f.at(T0 + 30_000);
+  await f.engine.tick();
+  f.at(T0 + 10 * MIN);
+  await f.engine.tick();
+  assert.deepEqual(await f.pauses(), [], "on B it has room: nothing to hold");
+  assert.deepEqual(f.log, []);
+});
+
+test("a running session ZeroSub can move is stopped in the foreground, never frozen, and continues where ZeroSub moved it", async t => {
+  const f = await fixture(t, { native: true });
+  f.zs.sessions.x = "claude-a";
+  aFullBRoomy(f.zs);
+  await f.engine.tick();
+  assert.deepEqual(f.native.calls.frozen, [], "a frozen process can't be reopened on B");
+  assert.deepEqual(f.log, ["guard:interrupt"], "the turn doesn't run on A's limit");
+  const [pause] = await f.pauses();
+  assert.equal(pause!.phase, "waiting");
+  assert.equal(pause!.suspension, undefined);
+  // ZeroSub reopens it on B: for a moment Paseo shows it closed. That is not a person closing it.
+  f.agent.status = "closed";
+  f.at(T0 + 20_000);
+  await f.engine.tick();
+  assert.equal((await f.pauses())[0]!.phase, "waiting", "kept through the reopen");
+  f.zs.move("x", "claude-b", T0 + 25_000);
+  f.agent.status = "idle";
+  f.at(T0 + 30_000);
+  await f.engine.tick();
+  assert.deepEqual(f.continuations(), [`guard:continue:${pause!.id}`], "continued on B, well before A's reset");
+  assert.equal((await f.pauses())[0]!.phase, "resumed");
+});
+
+test("a session ZeroSub didn't move within the grace is held as before", async t => {
+  const f = await fixture(t, { native: true });
+  f.zs.sessions.x = "claude-a";
+  aFullBRoomy(f.zs);
+  f.agent.status = "idle"; f.agent.activeTurn = null;
+  await f.engine.tick();
+  f.at(T0 + ZEROSUB_MOVE_GRACE_MS - 1000);
+  f.zs.read("claude-b", { at: f.now, fiveHour: 6, fiveResets: T0 + 5 * HOUR, weekly: 88 });
+  await f.engine.tick();
+  assert.deepEqual(await f.pauses(), [], "still ZeroSub's turn");
+  f.at(T0 + ZEROSUB_MOVE_GRACE_MS);
+  await f.engine.tick();
+  const pauses = await f.pauses();
+  assert.deepEqual(pauses.map(p => [p.phase, p.idle]), [["waiting", true]]);
+  assert.deepEqual(f.native.calls.frozen, [1234], "frozen, as beta.9 holds an idle Claude session");
+  f.at(T0 + ZEROSUB_MOVE_GRACE_MS + 5 * MIN);
+  await f.engine.tick();
+  assert.deepEqual(f.native.calls.released, [], "and not let go again for the same stretch");
+});
+
+for (const [name, setUpCase] of [
+  ["no other account has room", (zs: ZeroSub) => bothFull(zs)],
+  ["automatic switching is off", (zs: ZeroSub) => { aFullBRoomy(zs); zs.autoSwitch = false; }],
+  ["B's reading is too old to trust", (zs: ZeroSub) => { aFullBRoomy(zs); zs.read("claude-b", { at: T0 - 31 * MIN, fiveHour: 6, fiveResets: T0 + 5 * HOUR }); }],
+] as const) {
+  test(`unchanged from beta.9 when ${name}: an idle session is frozen, a running one too`, async t => {
+    for (const status of ["idle", "running"] as const) {
+      const f = await fixture(t, { native: true });
+      f.zs.sessions.x = "claude-a";
+      setUpCase(f.zs);
+      if (status === "idle") { f.agent.status = "idle"; f.agent.activeTurn = null; }
+      await f.engine.tick();
+      assert.deepEqual(f.native.calls.frozen, [1234], status);
+      assert.deepEqual(f.log, [], `${status}: frozen, not interrupted`);
+      assert.deepEqual((await f.pauses()).map(p => p.phase), ["waiting"]);
+    }
+  });
+}
+
+test("unchanged without ZeroSub: the CLI login at the limit freezes an idle session", async t => {
+  const f = await fixture(t, { native: true, zerosub: null, paseoPct: 100 });
+  f.agent.status = "idle"; f.agent.activeTurn = null;
+  await f.engine.tick();
+  assert.deepEqual(f.native.calls.frozen, [1234]);
+  assert.deepEqual((await f.pauses()).map(p => [p.phase, p.idle]), [["waiting", true]]);
 });

@@ -68,6 +68,18 @@ test("pool: the work moves to the account with the most room, in ZeroSub's order
   assert.equal(pool.withRoom, 3);
 });
 
+test("pool: work moves to an account under ZeroSub's 5-hour gate before one past it, as ZeroSub picks", () => {
+  // 2026-11-12 shape: the account in use fills; Seat B is past the gate (85%) with a lower peak than
+  // the CLI login (88% of its week). ZeroSub pace.10 sends the work to the CLI login.
+  const accounts = [
+    account("a", { p5: 95, rate: 20, agents: 2, week: 50 }),
+    account("claude-main", { p5: 7, week: 88 }),
+    account("b", { p5: 85, week: 60 }),
+  ];
+  const pool = poolForecast(accounts, "claude", NOW, { autoSwitch: true });
+  assert.equal(pool.takeovers[0]!.accountId, "claude-main");
+});
+
 test("pool: ties go to the default account, then the CLI login", () => {
   const accounts = [
     account("claude-main", { p5: 100, r5: NOW + 4 * H, rate: 10, agents: 1 }),

@@ -19,7 +19,7 @@ import {
   isPending, protects, resetReady, sessionWindow, timestamp, usedPct,
   type Agent, type Pause, type Policy, type State, type Usage,
 } from "../../shared/guard/policy.ts";
-import { continuesAtReset, freezesIdle, holdKind, messageArrived, messageWaiting } from "../../shared/guard/hold.ts";
+import { continuesAtReset, freezesIdle, holdKind, messageArrived, messageWaiting, zerosubCanMove, ZeroSubMoves } from "../../shared/guard/hold.ts";
 
 /** Shown while a session is held in the foreground because its provider process couldn't be confirmed as its own. */
 const FALLBACK_ERROR = process.platform === "linux"
@@ -33,6 +33,13 @@ export class Engine {
   private quotaFailures = new Map<string, { at: string; turnId: string | null }>();
   /** Pauses held in the foreground because native ownership couldn't be confirmed; their error stays up while they wait. */
   private fallbacks = new Set<string>();
+  /** Sessions ZeroSub can move to an account with room, and since when (`shared/guard/hold.ts`). */
+  private zerosubMoves = new ZeroSubMoves();
+  /**
+   * Foreground pauses of running turns ZeroSub is moving, and since when: ZeroSub reopens the
+   * session to move it, so a session that shows closed meanwhile is not a person closing it.
+   */
+  private moving = new Map<string, number>();
   checkedAt: string | null = null;
   error: string | null = null;
   timelineError: string | null = null;
@@ -448,7 +455,17 @@ export class Engine {
       // never reports that limit, so ZeroSub never moves it and the turn runs on paid
       // credits (the 2026-11-11 case).
       const ready = (pause: Pause) => resetReady(pause, usageOf(pause.agentId, pause.provider), policy, this.now()) ||
-        (!!accounts && accounts.roomSince(pause.agentId, pause.provider, timestamp(pause.pausedAt)!) === "own");
+        (!!accounts && accounts.roomSince(pause.agentId, pause.provider, timestamp(pause.pausedAt)!) === "own") ||
+        // ZeroSub reopened it on an account with room since the pause: it was moved there.
+        (!!accounts && accounts.movedSince(pause.agentId, pause.provider, timestamp(pause.pausedAt)!));
+      // Switch first, hold as the fallback: while ZeroSub can move a Claude session to an
+      // account with room, it gets a short grace to do so before the session is held.
+      this.zerosubMoves.begin();
+      const zerosubMoves = (agentId: string, provider: string) =>
+        !!accounts && zerosubCanMove(provider) && accounts.failsOver(agentId, provider) && this.zerosubMoves.moves(agentId, this.now());
+      const MOVING_CLOSED_MS = 5 * 60_000;
+      const movingClosed = (pause: Pause, agent: Agent) => agent.status === "closed" && !agent.archivedAt &&
+        this.now() - (this.moving.get(pause.id) ?? -Infinity) < MOVING_CLOSED_MS;
       const byId = new Map(agents.map(a => [a.id, a]));
       this.providers = new Map(agents.map(a => [a.id, a.provider]));
       const currentDaemon = await this.processes?.daemonIdentity?.();
@@ -484,6 +501,7 @@ export class Engine {
         if (currentDaemon && pause.daemonIdentity !== currentDaemon) { pause.daemonIdentity = currentDaemon; changed = true; }
         // A person's message joins a waiting hold rather than ending it (below). Anything
         // not yet confirmed as waiting still gives way to it, and the next pass holds anew.
+        if (agent && movingClosed(pause, agent)) continue;
         if (!agent || (agent.status === "closed" && !pause.closedOnRestart) || agent.archivedAt || agent.provider !== pause.provider ||
           (pause.phase !== "waiting" && messageArrived(pause, agent)) ||
           !protects(policy, state.overrides, pause.agentId) ||
@@ -505,6 +523,23 @@ export class Engine {
           if (pause.wasQuotaFailure && !pause.suspension && accounts.continuedElsewhere(pause.agentId)) {
             // ZeroSub carried this Codex task on in another tab; continuing here too would run it twice.
             await this.cancel(pause, "ZeroSub continued this task on another account, so Session Guard will not continue it here."); changed = true; continue;
+          }
+          if (!pause.wasQuotaFailure && !pause.stoppedByUser && zerosubMoves(pause.agentId, pause.provider)) {
+            // Another account has room now: let ZeroSub move the session instead of holding it.
+            if (pause.idle) {
+              await this.cancel(pause, "ZeroSub is moving this session to an account with room, so it isn't held."); changed = true; continue;
+            }
+            if (pause.suspension) {
+              // A frozen turn: thaw it and stop it in the foreground, so ZeroSub can reopen the
+              // session on the other account; it continues there (`ready`, moved).
+              await this.processes!.resume(pause.suspension);
+              delete pause.suspension;
+              try { await client.cancelAgent(pause.agentId); }
+              catch { this.error = "Session Guard could not stop a turn in a held session. It will retry automatically."; }
+              pause.note = "ZeroSub is moving this session to an account with room; it continues there.";
+              await this.save(state);
+            }
+            if (!this.moving.has(pause.id)) this.moving.set(pause.id, this.now());
           }
         }
         if (pause.suspension) {
@@ -618,6 +653,11 @@ export class Engine {
         const kind = holdKind(agent, quotaFailed, hasBackground);
         if (kind === null) continue;
         const idle = kind === "idle";
+        // ZeroSub can move it to an account with room: an idle session is left for ZeroSub to
+        // move; a running turn is stopped in the foreground (a frozen process can't be reopened)
+        // and continues on the new account. Native background work stays held as before.
+        const moving = (kind === "idle" || kind === "interrupt") && zerosubMoves(agent.id, agent.provider);
+        if (moving && idle) continue;
         // Do not stop a new turn based on a snapshot from before the upstream read.
         const latest = (await client.fetchAgent(agent.id))?.agent;
         if (!latest || latest.status !== agent.status || latest.provider !== agent.provider || latest.archivedAt ||
@@ -625,7 +665,7 @@ export class Engine {
           latest.activeTurn?.turnId !== agent.activeTurn?.turnId) continue;
         if (this.stopped) return;
         let suspension: Pause["suspension"];
-        if (nativeEnabled && (!quotaFailed || hasBackground) && (!idle || freezesIdle(agent.provider))) {
+        if (!moving && nativeEnabled && (!quotaFailed || hasBackground) && (!idle || freezesIdle(agent.provider))) {
           if (!client.getDaemonStatus) throw new Error("Daemon process identity is unavailable.");
           daemonPid ??= (await client.getDaemonStatus()).pid;
           suspension = await this.processes!.discover(latest, daemonPid) ?? undefined;
@@ -641,11 +681,13 @@ export class Engine {
           id: randomUUID(), agentId: agent.id, workspaceId: agent.workspaceId, provider: agent.provider, title: agent.title ?? null,
           windowId: window.id, anchorResetsAt: reset === null ? null : new Date(reset).toISOString(),
           pausedAt: new Date(this.now()).toISOString(), lastUserMessageAt: agent.lastUserMessageAt ?? null,
-          turnId: agent.activeTurn?.turnId ?? null, phase: (quotaFailed || idle) && !suspension ? "waiting" : "pausing", note: null, settledAt: null,
+          turnId: agent.activeTurn?.turnId ?? null, phase: (quotaFailed || idle) && !suspension ? "waiting" : "pausing",
+          note: moving ? "ZeroSub is moving this session to an account with room; it continues there." : null, settledAt: null,
           wasQuotaFailure: quotaFailed, daemonIdentity: currentDaemon, ...(idle ? { idle: true } : {}),
           ...(suspension ? { suspension } : {}),
         };
         state.pauses.push(pause);
+        if (moving) this.moving.set(pause.id, this.now());
         await this.save(state);
         if (quotaFailed) this.quotaFailures.delete(agent.id);
         if ((quotaFailed || idle) && !suspension) continue;
@@ -664,6 +706,8 @@ export class Engine {
         }
         await this.save(state);
       }
+      this.zerosubMoves.end();
+      for (const id of [...this.moving.keys()]) if (!state.pauses.some(p => p.id === id && isPending(p))) this.moving.delete(id);
     });
   }
 }
