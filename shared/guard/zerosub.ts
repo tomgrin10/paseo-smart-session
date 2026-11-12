@@ -53,6 +53,8 @@ export interface ZeroSubSnapshot {
   readonly accounts: readonly ZeroSubAccount[];
   /** Which account each agent's live session was opened on. */
   readonly sessions: Readonly<Record<string, string>>;
+  /** When each agent's live session was opened (ZeroSub reopens a session to move it). */
+  readonly openedAt: Readonly<Record<string, string>>;
   /** Agents whose Codex task carries on in another tab (ZeroSub continuation chains). */
   readonly continuedElsewhere: ReadonlySet<string>;
   readonly readings: Readonly<Record<string, ZeroSubReading>>;
@@ -132,9 +134,12 @@ export function parseZeroSub(state: unknown, usage: unknown, preferences: unknow
   if (accounts.length === 0) return null;
 
   const sessions: Record<string, string> = {};
+  const openedAt: Record<string, string> = {};
   for (const [agentId, entry] of Object.entries(record(raw.sessions) ?? {})) {
     const accountId = text(record(entry)?.accountId);
     if (accountId) sessions[agentId] = accountId;
+    const opened = text(record(entry)?.openedAt);
+    if (accountId && opened && time(opened) !== null) openedAt[agentId] = opened;
   }
 
   // A Codex task that moved on to another tab: every member but the active one.
@@ -156,7 +161,7 @@ export function parseZeroSub(state: unknown, usage: unknown, preferences: unknow
   const values = record(record(preferences)?.values);
   const chosen = record(raw.defaults);
   const defaults = { claude: text(chosen?.claude), codex: text(chosen?.codex) };
-  return { accounts, sessions, continuedElsewhere, readings, autoSwitch: values?.autoSwitch !== false, defaults };
+  return { accounts, sessions, openedAt, continuedElsewhere, readings, autoSwitch: values?.autoSwitch !== false, defaults };
 }
 
 /** The ZeroSub family a Paseo provider belongs to, if ZeroSub manages it. */
@@ -286,8 +291,16 @@ export function switchesAtLimit(snapshot: ZeroSubSnapshot, current: ZeroSubAccou
 export interface AccountView {
   /** Usage as the agent's own account sees it, with an out account's session windows shown full. */
   usageFor(agentId: string, provider: string): Usage;
-  /** ZeroSub will move this agent to another account with room when its account hits the limit. */
+  /**
+   * ZeroSub can move this agent to another account with room: automatic switching on, and
+   * another account of its provider usable with a fresh reading that shows room.
+   */
   failsOver(agentId: string, provider: string): boolean;
+  /**
+   * ZeroSub reopened this agent's session after `since` (a pause) on an account that has
+   * room now, by a fresh reading: it was moved, and can carry on there.
+   */
+  movedSince(agentId: string, provider: string, since: number): boolean;
   /** After the CLI reported the limit: ZeroSub is moving this agent to another account itself. */
   switchesAtLimit(agentId: string, provider: string): boolean;
   /**
@@ -328,6 +341,11 @@ export function accountView(
       if (!snapshot.autoSwitch) return false;
       const account = accountOf(snapshot, agentId, provider);
       return account !== null && accountsWithRoom(snapshot, account, policy.thresholdPct, policy.windowIds, now) > 0;
+    },
+    movedSince(agentId, provider, since) {
+      const account = accountOf(snapshot, agentId, provider);
+      const opened = time(snapshot.openedAt[agentId]);
+      return account !== null && opened !== null && opened > since && hasRoom(snapshot, account, policy.thresholdPct, policy.windowIds, now);
     },
     switchesAtLimit(agentId, provider) {
       const account = accountOf(snapshot, agentId, provider);

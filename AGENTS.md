@@ -282,10 +282,15 @@
   accepted reading (`server/guard/usage.ts`). Only a reading with a provider `fetchedAt` may be
   merged: `resetReady` relies on it to prove a report is newer than the pause.
 - Both of those measure only the CLI's own login. When ZeroSub is enabled, `shared/guard/zerosub.ts`
-  measures each agent on its ZeroSub account (`docs/session-guard.md`, "With ZeroSub"). ZeroSub only
-  switches on the CLI's limit notice, which never comes while Extra usage is on, so the guard holds
-  an agent at its own account's limit even when another account has room, and continues it only when
-  its own (current) account has room again. ZeroSub's files are read-only
+  measures each agent on its ZeroSub account (`docs/session-guard.md`, "With ZeroSub"). **Switch
+  first, hold as the fallback: the guard never holds a Claude session ZeroSub can move to an account
+  with room** (`failsOver`) until `ZEROSUB_MOVE_GRACE_MS` (`shared/guard/hold.ts`) has passed with it
+  still on the full account; then it holds as usual. Within the grace an idle session is left alone and
+  a running turn is interrupted in the foreground (a SIGSTOPped process can't be reopened elsewhere),
+  then continued once ZeroSub has reopened it on an account with room (`movedSince`). With no room
+  anywhere, autoSwitch off, Codex, native background work or without ZeroSub the hold is unchanged.
+  ZeroSub (pace.10+) moves agents off an account its own reading finds full, not only on the CLI's
+  limit notice, which never comes while Extra usage is on. ZeroSub's files are read-only
   and parsed defensively. Never copy an email or a generated (`autoLabel`) label out of them, and
   never open an account home.
 - The pill shows protection only while this process is the active governor; a pending pause keeps

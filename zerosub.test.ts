@@ -214,16 +214,18 @@ test("an agent ZeroSub moved off a full account is not paused again", async t =>
   assert.deepEqual(f.calls.stopped, []);
 });
 
-test("a frozen session stays frozen when another account gets room", async t => {
+test("a frozen session is thawed and stopped in the foreground when another account gets room, so ZeroSub can move it", async t => {
   const f = await fixture(t, { native: true });
   f.zerosub(snapshotOf(stateFixture(), usageFixture(100)));
   await f.engine.tick();
   assert.deepEqual(f.native.calls.frozen, [1234]);
-  f.zerosub(snapshotOf(stateFixture(), usageFixture(0)));
+  f.zerosub(snapshotOf(stateFixture(), usageFixture(0, 100, base + 60_000)));
   f.time(base + 60_000);
   await f.engine.tick();
-  assert.deepEqual(f.native.calls.released, []);
+  assert.deepEqual(f.native.calls.released, [1234]);
+  assert.deepEqual(f.calls.stopped, ["a"], "its turn doesn't run on the full account");
   assert.equal((await f.store.read()).pauses[0]!.phase, "waiting");
+  assert.deepEqual(f.calls.sent, [], "it continues once ZeroSub has moved it, not before");
 });
 test("an interrupted session moved to an account with room continues without waiting for the old reset", async t => {
   const f = await fixture(t);
@@ -251,4 +253,17 @@ test("a Codex task ZeroSub continued in another tab is not continued here too", 
   assert.equal(pause.phase, "cancelled");
   assert.match(pause.note!, /ZeroSub continued this task/);
   assert.deepEqual(f.calls.sent, []);
+});
+
+test("a session ZeroSub reopened after a pause on an account with room reads as moved", () => {
+  const policy = PolicySchema.parse({ enabled: true });
+  const state = stateFixture({ sessions: { a: "claude-work" } });
+  (state.sessions as Record<string, { openedAt: string }>).a!.openedAt = iso(base + 60_000);
+  const paseo: Usage = { fetchedAt: iso(base), providers: [] };
+  const view = (usage = usageFixture(), now = base + 120_000) => accountView(parseZeroSub(state, usage, undefined)!, paseo, policy, now);
+  assert.equal(view().movedSince("a", "claude", base), true);
+  assert.equal(view().movedSince("a", "claude", base + 90_000), false, "opened before the pause");
+  assert.equal(view(usageFixture(100)).movedSince("a", "claude", base), false, "the account it opened on is full too");
+  assert.equal(view(usageFixture(), base + 31 * 60_000).movedSince("a", "claude", base), false, "no fresh reading of it");
+  assert.equal(view().movedSince("unrouted", "claude", base), false, "the CLI login here is full");
 });
