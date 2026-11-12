@@ -31,7 +31,7 @@ import {
   type Governor,
 } from "../../shared/guard/contracts.ts";
 import { isPending, PolicySchema, sessionWindow, usedPct, type Policy, type State, type Usage } from "../../shared/guard/policy.ts";
-import { agentGuardSummary, callerProtection } from "../../shared/guard/presentation.ts";
+import { agentGuardSummary, callerProtection, heldUntil } from "../../shared/guard/presentation.ts";
 import { withDaemon } from "../daemon.ts";
 import { freshestUsage } from "../store.ts";
 import type { Connect, GuardClient } from "./client.ts";
@@ -325,7 +325,7 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     const protection = callerProtection(governor === "active" && policy.enabled, policy.protectByDefault, state.overrides[agentId]);
     const pauses = state.pauses
       .filter((pause) => pause.agentId === agentId)
-      .map((pause) => ({ id: pause.id, phase: pause.phase, provider: pause.provider, resetsAt: pause.anchorResetsAt }));
+      .map((pause) => ({ id: pause.id, phase: pause.phase, provider: pause.provider, resetsAt: heldUntil(pause), ...(pause.nextRoomAt && pause.resetAccount ? { movesTo: pause.resetAccount } : {}) }));
     return {
       governor,
       ...protection,

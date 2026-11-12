@@ -18,7 +18,7 @@ import { Store } from "./server/guard/store.ts";
 import { PolicySchema, type Agent, type Pause, type Policy, type Usage } from "./shared/guard/policy.ts";
 import { accountView, parseZeroSub } from "./shared/guard/zerosub.ts";
 import { limitNotice, turnRows } from "./shared/guard/limit-notice.ts";
-import { ZEROSUB_MOVE_GRACE_MS, ZeroSubMoves } from "./shared/guard/hold.ts";
+import { heldUntil, ZEROSUB_MOVE_GRACE_MS, ZeroSubMoves } from "./shared/guard/hold.ts";
 import type { GuardClient } from "./server/guard/client.ts";
 import type { ProcessControl } from "./server/guard/processes.ts";
 
@@ -612,7 +612,8 @@ test("invariant: a hold shows the earliest reset across the accounts it could us
   await f.engine.tick();
   assert.deepEqual(f.native.calls.frozen, [1234], "no account has room: held");
   const [pause] = await f.pauses();
-  assert.equal(pause!.anchorResetsAt, iso(T0 + 3 * HOUR), "B's reset, not A's: the earliest");
+  assert.equal(heldUntil(pause!), iso(T0 + 3 * HOUR), "B's reset, not A's: the earliest");
+  assert.equal(pause!.anchorResetsAt, iso(T0 + 5 * HOUR), "A's own reset still decides when A has room (\`resetReady\`)");
   assert.equal(pause!.resetAccount, "Account 3", "and it says whose (a neutral name, never the email)");
 
   // ZeroSub last read B ten minutes before its reset (it reads an idle account every 20 minutes).
@@ -643,7 +644,7 @@ test("the hold names the session's own account when it resets first, and moves e
   f.zs.markLimited("claude-b", T0 + 6 * HOUR); // Out, by the CLI's notice; no reading yet.
   await f.engine.tick();
   let [pause] = await f.pauses();
-  assert.equal(pause!.anchorResetsAt, iso(T0 + 4 * HOUR));
+  assert.equal(heldUntil(pause!), iso(T0 + 4 * HOUR));
   assert.equal(pause!.resetAccount, "Account 2", "A itself");
   // A reading shows B's limit lifts sooner than its recorded one.
   f.zs.account("claude-b").limitedUntil = iso(T0 + 2 * HOUR);
@@ -651,7 +652,7 @@ test("the hold names the session's own account when it resets first, and moves e
   f.at(T0 + 2 * MIN);
   await f.engine.tick();
   [pause] = await f.pauses();
-  assert.equal(pause!.anchorResetsAt, iso(T0 + 2 * HOUR), "the earlier reset, now that it is known");
+  assert.equal(heldUntil(pause!), iso(T0 + 2 * HOUR), "the earlier reset, now that it is known");
   assert.equal(pause!.resetAccount, "Account 3");
 });
 
@@ -665,7 +666,7 @@ for (const [name, setUp] of [
     setUp(f.zs);
     await f.engine.tick();
     const [pause] = await f.pauses();
-    assert.equal(pause!.anchorResetsAt, iso(T0 + 5 * HOUR));
+    assert.equal(heldUntil(pause!), iso(T0 + 5 * HOUR));
     assert.equal(pause!.resetAccount, undefined);
   });
 }
@@ -679,7 +680,7 @@ test("unchanged for Codex: a thread can't change accounts, so its hold shows its
   f.paseoReads(100, T0 + 5 * HOUR);
   await f.engine.tick();
   const [pause] = await f.pauses();
-  assert.equal(pause!.anchorResetsAt, iso(T0 + 5 * HOUR));
+  assert.equal(heldUntil(pause!), iso(T0 + 5 * HOUR));
   assert.equal(pause!.resetAccount, undefined);
 });
 

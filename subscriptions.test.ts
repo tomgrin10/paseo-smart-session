@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { formatMoment } from "./shared/forecast.ts";
 import assert from "node:assert/strict";
 
 import {
@@ -202,6 +203,11 @@ test("at the limit: when this session runs out and where the work goes, from the
   // Runs out with nowhere to go: the pause waits for this account's own reset.
   const none = [account("claude-main", { p5: 90, rate: 20, agents: 1, r5: NOW + 2 * H }), account("full", { p5: 100, r5: NOW + 3 * H })];
   assert.match(atTheLimit(none, "claude-main", NOW, { autoSwitch: true, protectedHere: true }).text, /^Runs out ~.+ · no other account has room, so Smart Session pauses it until its .* reset$/);
+  // Every account out, another back before this one: held until then, and moved there (Tom, 2026-11-12).
+  const sooner = [account("claude-main", { p5: 100, r5: NOW + 4 * H }), account("work", { p5: 100, r5: NOW + 2 * H, name: "Personal" })];
+  assert.equal(atTheLimit(sooner, "claude-main", NOW, { autoSwitch: true, protectedHere: true }).text,
+    `No other account has room · Smart Session holds it until ${formatMoment(iso(NOW + 2 * H), NOW)}, then ZeroSub moves it to Personal`);
+  assert.match(atTheLimit(sooner, "claude-main", NOW, { autoSwitch: false, protectedHere: true }).text, /pauses it until its .* reset$/, "automatic switching off: its own reset");
   // Already full: ZeroSub's move now, or a wait naming whichever account is back first.
   assert.match(atTheLimit([account("claude-main", { p5: 100 }), account("work", { p5: 36, name: "Personal" })], "claude-main", NOW, opts).text, /^At the limit · ZeroSub moves it to Personal/);
   const both = [account("claude-main", { p5: 100, r5: NOW + 2 * H }), account("work", { p5: 100, r5: NOW + H, name: "Personal" })];

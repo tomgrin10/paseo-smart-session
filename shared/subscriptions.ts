@@ -512,7 +512,17 @@ function limitSentence(
     const reset = time(sessionWindow(own)?.resetsAt);
     return reset !== null && reset > now ? reset : null;
   })();
-  const pause = `Smart Session pauses it until ${ownReset === null ? "its reset" : `its ${at(ownReset)} reset`}`;
+  // The guard holds it until the soonest any account it could use is back (`nextRoom` in
+  // shared/guard/zerosub.ts): another account's reset when that is sooner, and ZeroSub moves
+  // it there then. Only a Claude session moves; a Codex thread stays on its account.
+  const sooner = options.autoSwitch && own.family === "claude"
+    ? others.filter((a) => a.signedIn && !a.disabled)
+      .map((a) => ({ a, back: limitEnd(a, now) }))
+      .filter((x): x is { a: Subscription; back: number } => x.back !== null && (ownReset === null || x.back < ownReset))
+      .sort((x, y) => x.back - y.back)[0] ?? null
+    : null;
+  const pause = sooner ? `Smart Session holds it until ${at(sooner.back)}, then ZeroSub moves it to ${sooner.a.name}`
+    : `Smart Session pauses it until ${ownReset === null ? "its reset" : `its ${at(ownReset)} reset`}`;
   const lead = others.length === 0 ? "No other account" : !options.autoSwitch ? "Automatic switching is off" : "No other account has room";
   // Where the work goes, and how long that account then lasts.
   const lasting = (id: string) => {

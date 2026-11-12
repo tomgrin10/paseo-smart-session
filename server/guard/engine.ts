@@ -19,7 +19,7 @@ import {
   isPending, protects, resetReady, sessionWindow, timestamp, usedPct,
   type Agent, type Pause, type Policy, type State, type Usage,
 } from "../../shared/guard/policy.ts";
-import { continuesAtReset, freezesIdle, holdKind, messageArrived, messageWaiting, zerosubCanMove, ZeroSubMoves } from "../../shared/guard/hold.ts";
+import { continuesAtReset, freezesIdle, heldUntil, holdKind, messageArrived, messageWaiting, ZEROSUB_MOVE_GRACE_MS, zerosubCanMove, ZeroSubMoves } from "../../shared/guard/hold.ts";
 
 /** Shown while a session is held in the foreground because its provider process couldn't be confirmed as its own. */
 const FALLBACK_ERROR = process.platform === "linux"
@@ -40,6 +40,12 @@ export class Engine {
    * session to move it, so a session that shows closed meanwhile is not a person closing it.
    */
   private moving = new Map<string, number>();
+  /**
+   * Pauses a person chose Resume now on while ZeroSub could move the session to an account
+   * with room, and since when: it moves there first and continues there; if ZeroSub hasn't
+   * moved it within the grace, it resumes in place as Resume now always did.
+   */
+  private resumeOnMove = new Map<string, number>();
   checkedAt: string | null = null;
   error: string | null = null;
   timelineError: string | null = null;
@@ -90,7 +96,7 @@ export class Engine {
           // A card for a message held in an idle hold is written when the message arrives, and says so.
           pauseId: pause.id, event, at: event === "paused" ? (messageWaiting(pause) ? pause.lastUserMessageAt! : pause.pausedAt) : pause.settledAt ?? new Date(this.now()).toISOString(),
           provider: pause.provider, native, autoResume: !pause.demo && policy.autoResume && policy.enabled,
-          resetAt: pause.anchorResetsAt, usedPct: window ? usedPct(window) : null, note: pause.note,
+          resetAt: heldUntil(pause), ...(pause.resetAccount ? { resetAccount: pause.resetAccount, ...(pause.nextRoomAt ? { moves: true } : {}) } : {}), usedPct: window ? usedPct(window) : null, note: pause.note,
           ...(pause.manualResume ? { manualResume: true } : {}), ...(pause.demo ? { demo: true } : {}), ...(pause.dismissed ? { dismissed: true } : {}),
         } });
       }
@@ -308,6 +314,27 @@ export class Engine {
           throw new Error("The session changed. Check it before continuing.");
         }
         if (pause.suspension && !this.processes) throw new Error("Native worker protection is unavailable.");
+        // Prefer an account with room: stop the session in the foreground so ZeroSub can move it
+        // there, and continue it there (`flush`). Running it here would run it on the full account.
+        const accounts = this.accounts;
+        if (accounts && zerosubCanMove(pause.provider) && !pause.wasQuotaFailure && accounts.failsOver(agentId, pause.provider)) {
+          if (pause.suspension) { await this.processes!.resume(pause.suspension); delete pause.suspension; }
+          if (latest.status === "running") {
+            try { await client.cancelAgent(agentId); }
+            catch { throw new Error("Could not stop the session to move it. Try again."); }
+          }
+          pause.note = "Moving to an account with room; it continues there.";
+          this.moving.set(pause.id, this.now()); this.resumeOnMove.set(pause.id, this.now());
+          await this.save(state);
+          return;
+        }
+        await this.resumeInPlace(client, state, pause, latest, running);
+      });
+    });
+  }
+  /** Resume now, where the session is: SIGCONT, and the continuation message a foreground hold needs. */
+  private async resumeInPlace(client: GuardClient, state: State, pause: Pause, latest: Agent, running: boolean) {
+        const agentId = pause.agentId;
         state.overrides[agentId] = false; pause.manualResume = true; pause.phase = "resuming";
         await this.save(state);
         const needsMessage = (!pause.suspension && !running && continuesAtReset(pause)) || (pause.wasQuotaFailure && ["idle", "error"].includes(latest.status) && !latest.pendingPermissions?.length);
@@ -329,8 +356,6 @@ export class Engine {
         pause.phase = "resumed"; pause.settledAt = new Date(this.now()).toISOString();
         pause.note = "Resumed manually; protection is off for this session.";
         await this.save(state);
-      });
-    });
   }
   /** Only an explicitly labelled, empty disposable demo session may use this. */
   async pauseDemo(agentId: string) {
@@ -463,6 +488,19 @@ export class Engine {
       this.zerosubMoves.begin();
       const zerosubMoves = (agentId: string, provider: string) =>
         !!accounts && zerosubCanMove(provider) && accounts.failsOver(agentId, provider) && this.zerosubMoves.moves(agentId, this.now());
+      // What a hold shows: when the session has room again soonest and where — its own account's
+      // reset (the anchor, which only `resetReady` reads) or, when ZeroSub can move it, another
+      // account's sooner one, which is where it then moves (`zerosubMoves`). Display only.
+      const showNextRoom = (pause: Pause, view: AccountView) => {
+        const next = zerosubCanMove(pause.provider) ? view.nextRoom(pause.agentId, pause.provider, timestamp(pause.anchorResetsAt)) : null;
+        const own = timestamp(pause.anchorResetsAt);
+        const at = next && next.at !== null && next.at !== own ? new Date(next.at).toISOString() : undefined;
+        const name = next?.name;
+        if (pause.nextRoomAt === at && pause.resetAccount === name) return false;
+        if (at === undefined) delete pause.nextRoomAt; else pause.nextRoomAt = at;
+        if (name === undefined) delete pause.resetAccount; else pause.resetAccount = name;
+        return true;
+      };
       const MOVING_CLOSED_MS = 5 * 60_000;
       const movingClosed = (pause: Pause, agent: Agent) => agent.status === "closed" && !agent.archivedAt &&
         this.now() - (this.moving.get(pause.id) ?? -Infinity) < MOVING_CLOSED_MS;
@@ -519,7 +557,19 @@ export class Engine {
           delete pause.idle; pause.note = null;
           await this.save(state);
         }
-        if (!pause.demo && !pause.manualResume && accounts) {
+        const manualMove = this.resumeOnMove.get(pause.id);
+        if (manualMove !== undefined && !ready(pause) && this.now() - manualMove >= ZEROSUB_MOVE_GRACE_MS) {
+          // ZeroSub didn't move it: Resume now, where it is, as it always did.
+          this.resumeOnMove.delete(pause.id);
+          const latest = (await client.fetchAgent(pause.agentId))?.agent;
+          if (!latest || latest.status === "closed" || latest.archivedAt) continue;
+          const running = latest.status === "running" && !!latest.activeTurn && latest.activeTurn.turnId !== pause.turnId;
+          try { await this.resumeInPlace(client, state, pause, latest, running); } catch { /* Recorded on the pause as needing attention. */ }
+          continue;
+        }
+        // Readings change which account is back soonest: the hold says so as they come in.
+        if (!pause.demo && !pause.manualResume && !pause.wasQuotaFailure && accounts && showNextRoom(pause, accounts)) changed = true;
+        if (!pause.demo && !pause.manualResume && manualMove === undefined && accounts) {
           if (pause.wasQuotaFailure && !pause.suspension && accounts.continuedElsewhere(pause.agentId)) {
             // ZeroSub carried this Codex task on in another tab; continuing here too would run it twice.
             await this.cancel(pause, "ZeroSub continued this task on another account, so Session Guard will not continue it here."); changed = true; continue;
@@ -597,10 +647,11 @@ export class Engine {
           // automatic continuation says.
           if (!ready(pause)) continue;
           pause.phase = "resumed"; pause.settledAt = new Date(this.now()).toISOString(); pause.note = null;
+          if (manualMove !== undefined) { state.overrides[pause.agentId] = false; pause.manualResume = true; }
           await this.save(state); continue;
         }
         const canContinue = (candidate: Agent) => candidate.status === "idle" || (pause.closedOnRestart && candidate.status === "closed") || (pause.wasQuotaFailure && candidate.status === "error");
-        if (!canContinue(agent) || agent.pendingPermissions?.length || !policy.autoResume ||
+        if (!canContinue(agent) || agent.pendingPermissions?.length || (!policy.autoResume && manualMove === undefined) ||
           this.now() < this.nextResumeAt || !ready(pause)) continue;
         // Re-read just before sending: a person may have continued while usage was fetched.
         const latest = (await client.fetchAgent(pause.agentId))?.agent;
@@ -613,6 +664,11 @@ export class Engine {
           await client.sendMessage(pause.agentId, policy.continuation, { messageId: pause.id, activeTurnBehavior: "steer" });
           pause.phase = "resumed"; pause.settledAt = new Date(this.now()).toISOString(); pause.note = null;
           this.nextResumeAt = this.now() + policy.resumeSpacingSeconds * 1000;
+          if (manualMove !== undefined) {
+            // A person chose Resume now: it stops pausing at the limit, as Resume now always does.
+            state.overrides[pause.agentId] = false; pause.manualResume = true;
+            pause.note = "Resumed manually; protection is off for this session.";
+          }
         } catch {
           // Acceptance may have happened even if the socket dropped. No blind retry.
           pause.phase = "attention";
@@ -686,6 +742,7 @@ export class Engine {
           wasQuotaFailure: quotaFailed, daemonIdentity: currentDaemon, ...(idle ? { idle: true } : {}),
           ...(suspension ? { suspension } : {}),
         };
+        if (accounts && !quotaFailed) showNextRoom(pause, accounts);
         state.pauses.push(pause);
         if (moving) this.moving.set(pause.id, this.now());
         await this.save(state);
@@ -708,6 +765,7 @@ export class Engine {
       }
       this.zerosubMoves.end();
       for (const id of [...this.moving.keys()]) if (!state.pauses.some(p => p.id === id && isPending(p))) this.moving.delete(id);
+      for (const id of [...this.resumeOnMove.keys()]) if (!state.pauses.some(p => p.id === id && isPending(p))) this.resumeOnMove.delete(id);
     });
   }
 }

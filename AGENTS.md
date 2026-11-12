@@ -274,7 +274,7 @@
   stopped CLI, RESEARCH.md "Messages to a stopped provider"); a session whose native ownership can't
   be confirmed falls back to the foreground, never to no pause (the 2026-11-11 bug: two provider
   processes with one `PASEO_AGENT_ID`, the session ran on Extra usage); and room on another ZeroSub
-  account never releases a hold. Never wake, open or signal a closed or dormant agent to hold it.
+  account never releases a hold by running a turn on the full account (it releases it to ZeroSub to move). Never wake, open or signal a closed or dormant agent to hold it.
   Every new path that skips a protected session at the limit is a bug against this invariant.
 - Process signals are identity-checked by PID birth time and limited to direct children of this
   daemon carrying the agent's `PASEO_AGENT_ID`. Never widen that.
@@ -290,7 +290,15 @@
   then continued once ZeroSub has reopened it on an account with room (`movedSince`). With no room
   anywhere, autoSwitch off, Codex, native background work or without ZeroSub the hold is unchanged.
   ZeroSub (pace.10+) moves agents off an account its own reading finds full, not only on the CLI's
-  limit notice, which never comes while Extra usage is on. ZeroSub's files are read-only
+  limit notice, which never comes while Extra usage is on. **A hold shows the closest reset and lands
+  there** (Tom, 2026-11-12): a hold's displayed reset (`heldUntil`) is the earliest moment any account
+  the session could move to has room again (`nextRoom`/`roomAt`), named (`resetAccount`); at that reset
+  the account has room (a rolled-over window counts as empty in `hasRoom`), so the switch-first path
+  above releases it to ZeroSub, which moves it there (pace.11 ranks the just-reset account first), and
+  it continues there, never on the account still out. `nextRoomAt` and `resetAccount` are display only:
+  `anchorResetsAt` stays the session's own account's reset, because `resetReady` reads it to tell its
+  own window rolled over; pointing it at another account let a stale low reading release a hold.
+  Resume now moves first too while an account has room (`resumeOnMove`), else resumes in place. ZeroSub's files are read-only
   and parsed defensively. Never copy an email or a generated (`autoLabel`) label out of them, and
   never open an account home.
 - The pill shows protection only while this process is the active governor; a pending pause keeps

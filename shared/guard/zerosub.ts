@@ -17,6 +17,7 @@
  * never emails, and never anything from a credential file (none is opened).
  */
 import type { ProviderUsage, Usage, UsageWindow } from "./policy.ts";
+import { subscriptionName } from "../subscriptions.ts";
 
 export type ZeroSubFamily = "claude" | "codex";
 
@@ -264,9 +265,40 @@ export function hasRoom(snapshot: ZeroSubSnapshot, account: ZeroSubAccount, thre
   const fetched = time(reading?.fetchedAt);
   if (!reading || fetched === null || now - fetched > FRESH_READING_MS || reading.windows.length === 0) return false;
   return reading.windows.every((window) => {
+    if (rolledOver(window, now)) return true;
     const limit = sessionWindowIds.includes(paseoWindowId(account.family, window)) ? thresholdPct : 100;
     return window.usedPct < limit;
   });
+}
+
+/** A window whose reset has passed since the reading: it starts again empty, whatever the reading said. */
+const rolledOver = (window: ZeroSubWindow, now: number) => {
+  const resets = time(window.resetsAt);
+  return resets !== null && resets <= now;
+};
+
+/**
+ * When an account has room again by the guard's rule (`hasRoom`): the latest of its
+ * recorded limit and the resets of the windows over their limit. `now` while it has room;
+ * null when that can't be known (no usable reading, or a full window with no reset time).
+ */
+export function roomAt(snapshot: ZeroSubSnapshot, account: ZeroSubAccount, thresholdPct: number, sessionWindowIds: readonly string[], now: number): number | null {
+  if (!account.signedIn || account.disabled) return null;
+  if (hasRoom(snapshot, account, thresholdPct, sessionWindowIds, now)) return now;
+  const reading = snapshot.readings[account.id];
+  const ends: number[] = [];
+  const until = time(account.limitedUntil);
+  if (until !== null && until > now) ends.push(until);
+  for (const window of reading?.windows ?? []) {
+    if (rolledOver(window, now)) continue;
+    const limit = sessionWindowIds.includes(paseoWindowId(account.family, window)) ? thresholdPct : 100;
+    if (window.usedPct < limit) continue;
+    const resets = time(window.resetsAt);
+    if (resets === null) return null;
+    ends.push(resets);
+  }
+  // No reading and no recorded limit, or a reading too old to say: unknown.
+  return ends.length ? Math.max(...ends) : null;
 }
 
 /** Other accounts of the agent's provider that ZeroSub could move it to now. */
@@ -311,6 +343,14 @@ export interface AccountView {
   roomSince(agentId: string, provider: string, since: number): "own" | "elsewhere" | null;
   /** ZeroSub already carries this agent's Codex task on in another tab. */
   continuedElsewhere(agentId: string): boolean;
+  /**
+   * Where a held session gets room soonest, when ZeroSub could move it (automatic switching
+   * on, and another account of its provider signed in and not set aside): the earliest of
+   * `ownAt` (its own account's reset, as the guard anchors it) and each other account's
+   * `roomAt`, with that account's name (`subscriptionName`: never the email). Null otherwise,
+   * which leaves the hold as it was: its own reset, unnamed.
+   */
+  nextRoom(agentId: string, provider: string, ownAt: number | null): { at: number | null; accountId: string; name: string } | null;
 }
 
 export function accountView(
@@ -359,6 +399,21 @@ export function accountView(
       return snapshot.accounts.some((other) => other.family === account.family && other.id !== account.id && roomAfter(other, since)) ? "elsewhere" : null;
     },
     continuedElsewhere: (agentId) => snapshot.continuedElsewhere.has(agentId),
+    nextRoom(agentId, provider, ownAt) {
+      const account = accountOf(snapshot, agentId, provider);
+      if (!account || !snapshot.autoSwitch) return null;
+      const others = snapshot.accounts.filter((other) => other.family === account.family && other.id !== account.id && other.signedIn && !other.disabled);
+      if (others.length === 0) return null;
+      const named = (chosen: ZeroSubAccount) => subscriptionName(chosen, snapshot.accounts).name;
+      let best: { at: number | null; account: ZeroSubAccount } = { at: ownAt, account };
+      for (const other of others) {
+        const at = roomAt(snapshot, other, policy.thresholdPct, policy.windowIds, now);
+        // Unknown never wins; a known time beats an unknown own reset. One with room now is
+        // ZeroSub's to move it to (`failsOver`), not a reset to wait for.
+        if (at !== null && at > now && (best.at === null || at < best.at)) best = { at, account: other };
+      }
+      return { at: best.at, accountId: best.account.id, name: named(best.account) };
+    },
   };
 }
 
