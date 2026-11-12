@@ -337,9 +337,9 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     };
   });
 
-  server.handle(setProtectionRpc, async ({ agentId, enabled }) => {
+  server.handle(setProtectionRpc, async ({ agentId, enabled, source }) => {
     await requireOwner();
-    await engine.setProtection(agentId, enabled);
+    await engine.setProtection(agentId, enabled, source ?? "rpc");
     afterAction();
     void refresh();
     return { ok: true };

@@ -732,3 +732,39 @@ test("Resume now with no account that has room resumes in place, as before", asy
   assert.deepEqual(f.native.calls.released, [1234], "thawed in place at once");
   assert.equal((await f.pauses())[0]!.phase, "resumed");
 });
+
+// --------------------------------------------------------------------------- audit B: the re-hold after Resume now
+
+/**
+ * 2026-11-12, 18dfa78f: Resume now at 11:43:57 thawed a frozen hold and turned pausing off
+ * for the session; at 11:44:06 the guard held the same turn again, which it does only once
+ * protection is back on. Nothing in the engine turns it back on; only a person's protection
+ * change does (the popover's switch or "Use default", the overview's "Use default"), and the
+ * daemon log can't say which, if any. This is that sequence, and the trail it now leaves.
+ */
+test("audit B: a Resume now undone by a protection change is re-held, and the log says who did what", async t => {
+  const f = await fixture(t, { native: true });
+  const lines: string[] = [];
+  f.engine.log = line => lines.push(line);
+  f.zs.sessions.x = "claude-a";
+  bothFull(f.zs);
+  await f.engine.tick();
+  const [first] = await f.pauses();
+  await f.engine.resumeNow("x", first!.id);
+  assert.equal((await f.store.read()).overrides.x, false);
+  f.at(T0 + 9_000);
+  await f.engine.tick();
+  assert.equal((await f.pauses()).filter(p => p.phase === "waiting").length, 0, "nothing re-holds it on its own");
+
+  await f.engine.setProtection("x", null, "popover-use-default"); // Back to the default: pausing on.
+  f.at(T0 + 18_000);
+  await f.engine.tick();
+  assert.equal((await f.pauses()).filter(p => p.phase === "waiting").length, 1, "held again: protection is on and the account is at the limit");
+
+  const trail = lines.map(line => line.replace(/^\[smart-session\] guard /, ""));
+  assert.deepEqual(trail.map(line => line.split(" ")[0]), ["hold", "resume-now", "protection", "hold"]);
+  assert.match(trail[0]!, /^hold x pause \S+ kind=interrupt frozen=yes override=default 100% resets \S+ shows \S+ \(Account 3\)$/);
+  assert.match(trail[1]!, /^resume-now x pause \S+ in-place protection=off$/);
+  assert.equal(trail[2], "protection x off -> default (popover-use-default)");
+  assert.match(trail[3]!, /override=default/);
+});

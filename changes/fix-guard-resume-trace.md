@@ -1,0 +1,2 @@
+- After Resume now or Release, the pill's popover closes. Left open, the pause-at-the-limit controls took the buttons' place, so a second click could turn pausing straight back on and hold the session again.
+- Pause at the limit writes one line to the daemon log for every hold, release, resume and protection change, and says which control changed protection, so an unexpected hold can be traced.

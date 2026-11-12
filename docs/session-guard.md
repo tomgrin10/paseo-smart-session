@@ -100,6 +100,16 @@ If a reload or connection loss interrupts an unconfirmed stop/send, the pill rea
 
 The guard only reads account ids, flags, timestamps and percentages. It never writes ZeroSub's files and never opens an account's credential home. Without ZeroSub, or when its files can't be read, nothing changes.
 
+## Trace
+
+Every hold, release, resume and protection change writes one line to the daemon log (Paseo's plugin output), starting `[smart-session] guard`:
+
+- `hold <agent> pause <id> kind=interrupt|idle|quota|background frozen=yes|no override=default|on|off <pct>% resets <time>`, plus `zerosub=moving` and `shows <time> (<account>)` when they apply.
+- `resume-now <agent> pause <id> in-place|moving`, `release …`, `dismiss …`, `resumed … thawed at the reset|continuation sent|idle hold let go`, `cancel … : <reason>`.
+- `protection <agent> <before> -> <after> (<source>)`, where the source is the control that sent it: `popover-switch`, `popover-use-default`, `overview-use-default`, or `rpc` for a caller that didn't say.
+
+Lines carry ids, kinds and times only, never a session title, a prompt or an email. To see why a session was held, search the log for its agent id.
+
 ## Daemon authentication
 
 For password-protected daemons, Smart Session reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`. It never logs or stores the password. Provider usage comes through Paseo; provider credentials are not read directly.

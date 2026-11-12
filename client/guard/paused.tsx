@@ -121,7 +121,7 @@ export function Exceptions({ theme, layout, status, titleOf }: { theme: Theme; l
   if (entries.length === 0) return null;
   const canAct = status.governor === "active";
   const reset = async (agentId: string) => {
-    try { await write({ agentId, enabled: null }); publishGuard(await read({})); toast.show("Back to your default"); }
+    try { await write({ agentId, enabled: null, source: "overview-use-default" }); publishGuard(await read({})); toast.show("Back to your default"); }
     catch { toast.error("Couldn't change that session. Try again."); }
   };
   return <View style={{ gap: 2, paddingLeft: 25 }}>

@@ -71,18 +71,23 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       noteEnrolment(saved.agentId, saved.enrolled);
     });
     // Back to the default is the same as no override, so the switch never leaves a redundant one.
-    const setProtected = (next: boolean | null) => run("protect", async () => {
+    const setProtected = (next: boolean | null, source: "popover-switch" | "popover-use-default") => run("protect", async () => {
       const enabled = protection.kind === "on" && next === protection.byDefault ? null : next;
-      await writeProtection({ agentId, enabled });
+      await writeProtection({ agentId, enabled, source });
       publishGuard(await readGuard({}));
     });
     // A stuck pause can only be released; a waiting one gets the same two actions as its chat card.
+    // Done acting on the pause: close. Left open, the protection row ("Use default", the switch)
+    // takes the buttons' place in the same spot, so a second click on a slow Resume now turned
+    // pausing straight back on (the likely cause of 18dfa78f's re-hold, 2026-11-12).
     const release = () => run("release", async () => {
       await cancelResume({ agentId });
+      close();
       publishGuard(await readGuard({}));
     });
     const settle = (kind: "resume" | "dismiss", pauseId: string) => run(kind, async () => {
       await (kind === "resume" ? resumeNow : dismissPause)({ agentId, pauseId });
+      close();
       publishGuard(await readGuard({}));
     });
     const openOverview = (focus?: string) => { close(); client.openScreen({ screenId: "overview", params: focus ? { focus } : undefined }); };
@@ -178,10 +183,10 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
             <Text style={t.meta}>{meta}</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <Text style={t.small}>{source}</Text>
-              {protection.override !== null ? <TextLink theme={theme} compact={compact} icon="RotateCcw" label="Use default" onPress={() => void setProtected(null)} /> : null}
+              {protection.override !== null ? <TextLink theme={theme} compact={compact} icon="RotateCcw" label="Use default" onPress={() => void setProtected(null, "popover-use-default")} /> : null}
             </View>
           </View>
-          <Switch theme={theme} label="Pause this session at the limit" hideLabel value={protection.protected} disabled={saving !== null} compact={compact} onChange={(next) => void setProtected(next)} />
+          <Switch theme={theme} label="Pause this session at the limit" hideLabel value={protection.protected} disabled={saving !== null} compact={compact} onChange={(next) => void setProtected(next, "popover-switch")} />
         </View>;
       }
       // Not running here: one calm line, and where to change it.
