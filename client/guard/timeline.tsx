@@ -116,7 +116,8 @@ export function GuardTimelineItem({ theme, agentId, item, layout, openOverview }
   // What the hold is holding: the live pause knows about a message sent since the card was written.
   const work = pause ? heldWork(pause) : item.data.native ? "frozen" : "interrupted";
   const countdown = item.data.demo ? "waits for you" : reset === null ? "waiting for the provider to report it" : reset <= now ? "reset passed · waiting for a fresh reading"
-    : `${!auto ? "resets" : work === "message" ? "your message runs" : "continues"} in ${formatDuration(reset - now)}`;
+    : item.data.resetAccount && !auto ? `${item.data.resetAccount} resets in ${formatDuration(reset - now)}`
+      : `${!auto ? "resets" : work === "message" ? "your message runs" : work === "frozen" && !item.data.moves ? "carries on" : "continues"}${item.data.resetAccount ? ` on ${item.data.resetAccount}` : ""} in ${formatDuration(reset - now)}`;
   const facts = [providerName(item.data.provider),
     item.data.usedPct === null ? null : `${Math.round(item.data.usedPct)}% used`,
     work === "message" ? (auto ? null : "your message waits") : work === "frozen" ? "native subagents frozen" : work === "idle" ? null : "turn interrupted",

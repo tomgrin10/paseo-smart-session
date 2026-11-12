@@ -60,6 +60,15 @@ export const PauseSchema = z.object({
    * strips it on a write; it can only write while this plugin is not governing.
    */
   idle: z.boolean().optional(),
+  /**
+   * With ZeroSub, when the session could move to another account: the account it has room on
+   * again soonest, as a name for people (`subscriptionName`), never an email; and, when that
+   * is another account, when (`nextRoomAt`), which is what the hold shows (`heldUntil`).
+   * Display only: `anchorResetsAt` stays its own account's, which `resetReady` reads. Unknown
+   * to the standalone plugin, as `idle` is.
+   */
+  resetAccount: z.string().optional(),
+  nextRoomAt: z.string().optional(),
   notifications: z.array(NotificationSchema).optional(),
   suspension: z.object({
     rootPid: z.number().int().positive(),

@@ -81,3 +81,23 @@ test("views say why nothing is paused from here, and whose pauses the shared lis
   // The feature has one name in the UI; the standalone plugin keeps its own.
   for (const status of [view("off"), view("error"), view("deferred", false)]) assert.doesNotMatch(governorNotice(status)!.title, /Session Guard/);
 });
+
+test("a hold that waits for another account shows that account's reset and says it moves there", async () => {
+  const { pausePill, heldUntil, heldWhere } = await import("./shared/guard/presentation.ts");
+  const policy = PolicySchema.parse({ enabled: true });
+  const now = Date.parse("2026-10-06T15:30:00Z");
+  const clock = (iso: string) => iso.slice(11, 16);
+  const elsewhere = { ...pause, nextRoomAt: "2026-10-06T16:00:00Z", resetAccount: "Account 3" };
+  assert.equal(heldUntil(elsewhere), "2026-10-06T16:00:00Z", "the sooner reset, not its own account's");
+  assert.deepEqual(pausePill(elsewhere, policy, now, clock), { label: "Until 16:00", title: "Held at the session limit · moves to Account 3 then", tone: "warning" });
+  assert.equal(heldWhere(elsewhere), "moves to Account 3");
+  const own = { ...pause, resetAccount: "Account 2" };
+  assert.deepEqual(pausePill(own, policy, now, clock), { label: "Until 18:00", title: "Held at the session limit · Account 2 resets then", tone: "warning" });
+  assert.equal(heldWhere(own), "on Account 2");
+  assert.deepEqual(pausePill(pause, policy, now, clock).title, "Held at the session limit", "one account: unchanged");
+  assert.equal(heldWhere(pause), null);
+  assert.match(agentGuardSummary({ governor: "active", protected: true, thresholdPct: 90, autoResume: true, pauses: [{ phase: "waiting", resetsAt: "2026-10-06T16:00:00Z", movesTo: "Account 3" }] })[0]!,
+    /at 2026-10-06T16:00:00Z ZeroSub moves it to another account \(Account 3\) that has room again then, and it runs again there/);
+  assert.match(timelinePresentation({ ...data, resetAt: "2026-10-06T16:00:00Z", resetAccount: "Account 3", moves: true }).detail, /Account 3 has room again .*; ZeroSub moves it there\./);
+  assert.match(timelinePresentation({ ...data, resetAccount: "Account 2" }).detail, /Expected reset .* \(Account 2\)\./);
+});

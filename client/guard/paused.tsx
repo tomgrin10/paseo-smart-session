@@ -3,7 +3,7 @@ import { Text, TextInput, View } from "react-native";
 import { type PluginScreenProps, useRpc } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/ui";
 import { cancelResumeRpc, dismissPauseRpc, resumeNowRpc, setProtectionRpc, statusRpc } from "../../shared/guard/contracts.ts";
-import { PAUSE_ACTIONS, governorNotice, pauseOwnerNote, pausedLead, pausedSessions, pausePresentation } from "../../shared/guard/presentation.ts";
+import { PAUSE_ACTIONS, governorNotice, heldUntil, heldWhere, pauseOwnerNote, pausedLead, pausedSessions, pausePresentation } from "../../shared/guard/presentation.ts";
 import { timestamp, type Pause } from "../../shared/guard/policy.ts";
 import { formatDuration } from "../../shared/format.ts";
 import { formatMoment } from "../../shared/forecast.ts";
@@ -57,17 +57,17 @@ export function PausedSection({ theme, layout, host, navigation, status, shared:
 
   const row = (pause: Pause, i: number) => {
     const presentation = pausePresentation(pause, status!.policy, now);
-    const reset = timestamp(pause.anchorResetsAt);
+    const reset = timestamp(heldUntil(pause));
     const stuck = pause.phase === "attention";
     // A row leads with what differs between rows, the session; its time only when it differs from the lead's.
-    const ownTime = !stuck && !pause.demo && reset !== null && reset > now && (shared === null || Math.abs(reset - shared) >= 60_000) ? formatMoment(pause.anchorResetsAt!, now) : null;
+    const ownTime = !stuck && !pause.demo && reset !== null && reset > now && (shared === null || Math.abs(reset - shared) >= 60_000) ? formatMoment(heldUntil(pause)!, now) : null;
     const after = stuck ? (pause.note ?? "It stopped before the pause was confirmed. Check it before continuing by hand.")
       : pause.demo ? "Test pause, waits for you"
         : reset === null ? "Waiting for the provider to report the reset"
           : reset > now ? (ownTime === null && shared !== null ? null : `${autoResume ? "Held" : "Resets"} for ${formatDuration(reset - now)}`)
-            : `Reset was ${formatMoment(pause.anchorResetsAt!, now)} · waiting for a fresh reading`;
+            : `Reset was ${formatMoment(heldUntil(pause)!, now)} · waiting for a fresh reading`;
     // The lead says when a shared reset lands and what happens then; a row adds only what differs.
-    const facts = [after, providerName(pause.provider), presentation.coverage.toLowerCase()].filter(Boolean).join(" · ");
+    const facts = [after, stuck ? null : heldWhere(pause), providerName(pause.provider), presentation.coverage.toLowerCase()].filter(Boolean).join(" · ");
     const actions = owner !== null ? null : pause.phase === "waiting" ? <>
       <Button theme={theme} small compact={compact} icon={PAUSE_ACTIONS.resume.icon} title={busy === `${pause.agentId}:resume` ? PAUSE_ACTIONS.resume.busy : PAUSE_ACTIONS.resume.label} disabled={busy !== null}
         accessibilityHint={PAUSE_ACTIONS.resume.hint} onPress={() => void act(pause, "resume")} />

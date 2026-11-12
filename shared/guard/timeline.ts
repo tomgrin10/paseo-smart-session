@@ -5,6 +5,8 @@ export const TimelineDataSchema = z.object({
   at: z.string(), provider: z.string(), native: z.boolean(), autoResume: z.boolean(),
   resetAt: z.string().nullable(), usedPct: z.number().nullable(), note: z.string().nullable(),
   manualResume: z.boolean().optional(), demo: z.boolean().optional(), dismissed: z.boolean().optional(),
+  /** The account the hold waits for, with ZeroSub (`Pause.resetAccount`); `moves` when it's another one. */
+  resetAccount: z.string().optional(), moves: z.boolean().optional(),
 });
 export type TimelineData = z.infer<typeof TimelineDataSchema>;
 export const NotificationSchema = z.object({
@@ -28,7 +30,10 @@ export function timelinePresentation(data: TimelineData) {
   if (data.demo) return { title: "Test pause", icon: "Pause", tone: "warning" as const,
     detail: "This empty test session is suspended so you can try Resume now. No provider quota was changed, and no task was sent. It will wait for you to resume it." };
   const reset = data.resetAt ? Date.parse(data.resetAt) : NaN;
-  const resetLabel = Number.isFinite(reset) ? `Expected reset ${new Date(reset).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}.` : "The provider has not reported a reset time yet.";
+  const when = Number.isFinite(reset) ? new Date(reset).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : null;
+  const resetLabel = when === null ? "The provider has not reported a reset time yet."
+    : data.resetAccount && data.moves ? `${data.resetAccount} has room again ${when}; ZeroSub moves it there.`
+      : data.resetAccount ? `Expected reset ${when} (${data.resetAccount}).` : `Expected reset ${when}.`;
   return { title: "Held at the session limit", icon: "Pause", tone: "warning" as const,
     detail: `${provider}${data.usedPct === null ? "" : ` · ${data.usedPct}% used`}. ${data.native ? "This session and its native subagents are frozen." : "Its turn was interrupted."} ${resetLabel} ${data.autoResume ? "No turn runs before the reset; then it continues." : "Automatic resume was off; continue manually when ready."}` };
 }

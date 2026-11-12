@@ -105,3 +105,12 @@ export class ZeroSubMoves {
     for (const id of [...this.since.keys()]) if (!this.touched.has(id)) this.since.delete(id);
   }
 }
+
+/**
+ * When a hold ends, as every view shows it: the soonest any account the session could use
+ * has room again (`nextRoomAt`, another account ZeroSub then moves it to), else its own
+ * account's reset.
+ */
+export function heldUntil(pause: Pick<Pause, "anchorResetsAt" | "nextRoomAt">): string | null {
+  return pause.nextRoomAt ?? pause.anchorResetsAt;
+}

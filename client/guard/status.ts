@@ -11,6 +11,7 @@ import type { z } from "zod";
 
 import { statusRpc } from "../../shared/guard/contracts.ts";
 import { isPending, protects, timestamp, type Pause } from "../../shared/guard/policy.ts";
+import { heldUntil } from "../../shared/guard/hold.ts";
 import type { Live } from "../live.ts";
 
 export type GuardStatus = z.infer<(typeof statusRpc)["output"]>;
@@ -72,7 +73,7 @@ export function sessionProtection(status: GuardStatus | null, agentId: string) {
 
 /** The moment a pause comes back, or null when the provider has not said. */
 export function resumeMoment(pause: Pause): number | null {
-  return timestamp(pause.anchorResetsAt);
+  return timestamp(heldUntil(pause));
 }
 
 /** Starts the one poll for this bundle and feeds the sidebar row's paused count. */

@@ -18,7 +18,7 @@ import { Store } from "./server/guard/store.ts";
 import { PolicySchema, type Agent, type Pause, type Policy, type Usage } from "./shared/guard/policy.ts";
 import { accountView, parseZeroSub } from "./shared/guard/zerosub.ts";
 import { limitNotice, turnRows } from "./shared/guard/limit-notice.ts";
-import { ZEROSUB_MOVE_GRACE_MS, ZeroSubMoves } from "./shared/guard/hold.ts";
+import { heldUntil, ZEROSUB_MOVE_GRACE_MS, ZeroSubMoves } from "./shared/guard/hold.ts";
 import type { GuardClient } from "./server/guard/client.ts";
 import type { ProcessControl } from "./server/guard/processes.ts";
 
@@ -593,4 +593,142 @@ test("unchanged without ZeroSub: the CLI login at the limit freezes an idle sess
   await f.engine.tick();
   assert.deepEqual(f.native.calls.frozen, [1234]);
   assert.deepEqual((await f.pauses()).map(p => [p.phase, p.idle]), [["waiting", true]]);
+});
+
+// --------------------------------------------------------------------------- the closest reset (Tom, 2026-11-12)
+
+/**
+ * Tom: "When a session is paused, it displays the time to the closest reset out of the
+ * accounts, and when unpaused the session also moves to that account."
+ *
+ * The invariant: a hold's displayed reset is the earliest moment any account the session
+ * could use has room again, and names that account; the hold ends by moving the session
+ * there, never by running a turn on the account that is still out.
+ */
+test("invariant: a hold shows the earliest reset across the accounts it could use, names it, and is released onto that account", async t => {
+  const f = await fixture(t, { native: true });
+  f.zs.sessions.x = "claude-a";
+  bothFull(f.zs); // A is out until T0+5h, B until T0+3h.
+  await f.engine.tick();
+  assert.deepEqual(f.native.calls.frozen, [1234], "no account has room: held");
+  const [pause] = await f.pauses();
+  assert.equal(heldUntil(pause!), iso(T0 + 3 * HOUR), "B's reset, not A's: the earliest");
+  assert.equal(pause!.anchorResetsAt, iso(T0 + 5 * HOUR), "A's own reset still decides when A has room (\`resetReady\`)");
+  assert.equal(pause!.resetAccount, "Account 3", "and it says whose (a neutral name, never the email)");
+
+  // ZeroSub last read B ten minutes before its reset (it reads an idle account every 20 minutes).
+  f.zs.read("claude-b", { at: T0 + 3 * HOUR - 10 * MIN, fiveHour: 100, fiveResets: T0 + 3 * HOUR });
+  f.at(T0 + 3 * HOUR - MIN);
+  await f.engine.tick();
+  assert.deepEqual(f.native.calls.released, [], "held until B resets");
+
+  f.at(T0 + 3 * HOUR + MIN);
+  await f.engine.tick();
+  assert.deepEqual(f.native.calls.released, [1234], "B's window rolled over: thawed so ZeroSub can move it there");
+  assert.deepEqual(f.log, ["guard:interrupt"], "its turn stopped in the foreground");
+  assert.equal(f.continuations().length, 0, "never continued on A, which is still out");
+
+  f.zs.move("x", "claude-b", f.now + 10_000); // ZeroSub's next move-off pass.
+  f.at(f.now + 15_000);
+  await f.engine.tick();
+  assert.deepEqual(f.continuations(), [`guard:continue:${pause!.id}`], "continued once");
+  assert.equal(f.zs.sessions.x, "claude-b", "on the account the hold named");
+  assert.equal((await f.pauses())[0]!.phase, "resumed");
+});
+
+test("the hold names the session's own account when it resets first, and moves earlier when a reading shows an earlier one", async t => {
+  const f = await fixture(t);
+  f.zs.sessions.x = "claude-a";
+  f.zs.read("claude-a", { at: T0, fiveHour: 100, fiveResets: T0 + 4 * HOUR });
+  f.zs.markLimited("claude-a", T0 + 4 * HOUR);
+  f.zs.markLimited("claude-b", T0 + 6 * HOUR); // Out, by the CLI's notice; no reading yet.
+  await f.engine.tick();
+  let [pause] = await f.pauses();
+  assert.equal(heldUntil(pause!), iso(T0 + 4 * HOUR));
+  assert.equal(pause!.resetAccount, "Account 2", "A itself");
+  // A reading shows B's limit lifts sooner than its recorded one.
+  f.zs.account("claude-b").limitedUntil = iso(T0 + 2 * HOUR);
+  f.zs.read("claude-b", { at: T0 + MIN, fiveHour: 100, fiveResets: T0 + 2 * HOUR });
+  f.at(T0 + 2 * MIN);
+  await f.engine.tick();
+  [pause] = await f.pauses();
+  assert.equal(heldUntil(pause!), iso(T0 + 2 * HOUR), "the earlier reset, now that it is known");
+  assert.equal(pause!.resetAccount, "Account 3");
+});
+
+for (const [name, setUp] of [
+  ["automatic switching is off", (zs: ZeroSub) => { bothFull(zs); zs.autoSwitch = false; }],
+  ["the other account is set aside", (zs: ZeroSub) => { bothFull(zs); zs.account("claude-b").disabled = true; }],
+] as const) {
+  test(`unchanged when ${name}: the hold shows its own account's reset, unnamed`, async t => {
+    const f = await fixture(t);
+    f.zs.sessions.x = "claude-a";
+    setUp(f.zs);
+    await f.engine.tick();
+    const [pause] = await f.pauses();
+    assert.equal(heldUntil(pause!), iso(T0 + 5 * HOUR));
+    assert.equal(pause!.resetAccount, undefined);
+  });
+}
+
+test("unchanged for Codex: a thread can't change accounts, so its hold shows its own reset", async t => {
+  const zs = new ZeroSub([...claudeAccounts(), { id: "codex-b", family: "codex", kind: "managed" }]);
+  const f = await fixture(t, { provider: "codex", zerosub: zs });
+  f.zs.read("codex-main", { at: T0, fiveHour: 100, fiveResets: T0 + 5 * HOUR });
+  f.zs.read("codex-b", { at: T0, fiveHour: 100, fiveResets: T0 + 2 * HOUR });
+  f.zs.markLimited("codex-b", T0 + 2 * HOUR);
+  f.paseoReads(100, T0 + 5 * HOUR);
+  await f.engine.tick();
+  const [pause] = await f.pauses();
+  assert.equal(heldUntil(pause!), iso(T0 + 5 * HOUR));
+  assert.equal(pause!.resetAccount, undefined);
+});
+
+test("Resume now prefers an account with room: the session moves there first, then continues", async t => {
+  const f = await fixture(t, { native: true });
+  f.zs.sessions.x = "claude-a";
+  aFullBRoomy(f.zs);
+  await f.engine.tick(); // Stopped in the foreground for ZeroSub to move…
+  f.at(T0 + ZEROSUB_MOVE_GRACE_MS + MIN);
+  f.zs.read("claude-b", { at: f.now, fiveHour: 6, fiveResets: T0 + 5 * HOUR, weekly: 88 });
+  await f.engine.tick(); // …which it didn't, within the grace: held.
+  const [pause] = await f.pauses();
+  assert.equal(pause!.phase, "waiting");
+  await f.engine.resumeNow("x", pause!.id);
+  assert.equal(f.continuations().length, 0, "not sent on A, which is out");
+  f.zs.move("x", "claude-b", f.now + 10_000);
+  f.at(f.now + 15_000);
+  await f.engine.tick();
+  assert.equal(f.continuations().length, 1, "continued once, on B");
+  const after = (await f.pauses())[0]!;
+  assert.equal(after.phase, "resumed");
+  assert.equal(after.manualResume, true);
+  assert.equal((await f.store.read()).overrides.x, false, "Resume now still turns pausing off for the session");
+});
+
+test("Resume now that ZeroSub doesn't act on within the grace resumes in place, as before", async t => {
+  const f = await fixture(t, { native: true });
+  f.zs.sessions.x = "claude-a";
+  aFullBRoomy(f.zs);
+  await f.engine.tick();
+  f.at(T0 + ZEROSUB_MOVE_GRACE_MS + MIN);
+  f.zs.read("claude-b", { at: f.now, fiveHour: 6, fiveResets: T0 + 5 * HOUR, weekly: 88 });
+  await f.engine.tick();
+  const [pause] = await f.pauses();
+  await f.engine.resumeNow("x", pause!.id);
+  f.at(f.now + ZEROSUB_MOVE_GRACE_MS + 1000);
+  await f.engine.tick();
+  assert.equal(f.continuations().length, 1, "continued where it is");
+  assert.equal((await f.pauses())[0]!.phase, "resumed");
+});
+
+test("Resume now with no account that has room resumes in place, as before", async t => {
+  const f = await fixture(t, { native: true });
+  f.zs.sessions.x = "claude-a";
+  bothFull(f.zs);
+  await f.engine.tick();
+  const [pause] = await f.pauses();
+  await f.engine.resumeNow("x", pause!.id);
+  assert.deepEqual(f.native.calls.released, [1234], "thawed in place at once");
+  assert.equal((await f.pauses())[0]!.phase, "resumed");
 });
