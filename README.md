@@ -98,6 +98,8 @@ An artifact belongs to the Claude account of the session that publishes it. Unde
 - **What stays with the helper.** Comments on such a page go to your main account, not to the agent that asked for it: the helper that published it, and its comment watch, are gone once it answers.
 - **For agents too.** `publish_as` publishes a file as the main account (or another account) explicitly, and `publish_as_settings` reads or changes the setting.
 
+- **When the main account is out of usage.** By default nothing is published and the agent is told why, with the fix, before any helper starts. Turn on **Use the main account's Extra usage when it's out** to publish on its Extra usage instead (billed to that account; needs ZeroSub 1.5.1-pace.12 or later). It stops when Extra usage is off or used up, again with the reason.
+
 Without ZeroSub, with one Claude account, or for a session already on the main account, nothing changes. If ZeroSub's registry can't be read, the publish goes out on the session's own account and the agent is told so. Each run is logged (who asked, the helper, how long, the outcome) to `publish-as/runs-YYYY-MM.jsonl`.
 
 ## Pause at the limit (Session Guard)
@@ -133,6 +135,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | | Label held workspaces | On | An amber Held label in the sidebar |
 | Artifacts | Publish artifacts as the main account | On | With ZeroSub: pages from sessions on other Claude accounts are published on the main one |
 | | Publish as | Main account | Shown with more than one Claude account |
+| | Use the main account's Extra usage when it's out | Off | While the account pages are published as is out of usage, publish on its Extra usage (billed). Off, publishing stops with the reason |
 | Display | Sidebar row | On | |
 | | Pill on every session | On | A paused session keeps its pill either way |
 | | Replace Paseo's Claude usage card | On | Paseo 0.16+, web and desktop |

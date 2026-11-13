@@ -131,11 +131,11 @@ test("a refused publish names the reason and the fix (pinned)", () => {
     (decide(base({ file_path: "/p.html" }, { zerosub: parseZeroSub(limitedState(kind), reading(extra), {})!, now: NOW_13, settings: { enabled: true, accountId: null, useExtraUsage } }) as HookInput) as any).note as string;
   const off = note(ON, false);
   assert.match(off, /^Not published: the main Claude account \(CLI login\) is out of usage until Sun 15 Nov, 04:00 UTC/);
-  assert.match(off, /Nothing was published and no helper was started\./);
-  assert.match(off, /turn on "Use the main account's Extra usage when it's out" in Smart Session's settings/);
-  assert.match(note({ ...ON, enabled: false }, true), /Extra usage is off for that account.*turn on Extra usage for that account at claude\.ai/);
+  assert.match(off, /No helper was started; tell the user\./);
+  assert.match(off, /turn on "Use the main account's Extra usage when it's out" in Smart Session's settings \(billed to that account\)\. Otherwise, publishing works again after Sun 15 Nov, 04:00 UTC\.$/);
+  assert.match(note({ ...ON, enabled: false }, true), /Extra usage is off for that account.*turn on Extra usage in that account's claude\.ai settings/);
   assert.match(note({ ...ON, spend: 22_000 }, true), /Extra usage is used up \(\$220\.00 of its \$220\.00 monthly limit\).*raise that account's Extra usage limit/);
-  assert.match(note(undefined, true), /hasn't reported whether it has Extra usage left.*Try again in a few minutes/);
+  assert.match(note(undefined, true), /hasn't reported yet whether that account has Extra usage left.*Try again after ZeroSub's next usage reading/);
   for (const text of [off, note(ON, true, "budget")]) assert.doesNotMatch(text, /@/, "never an email");
 });
 
@@ -416,7 +416,7 @@ test("limited main, setting off → deny with the reason, no helper, a refused r
   const server = (await import("./server/publish-as.ts")) as typeof import("./server/publish-as.ts");
   const started = await server.startPublish({ callerAgentId: SEAT, cwd: work, input: { file_path: join(work, "page.html") }, via: "tool" });
   assert.equal(started.decision, "refused");
-  assert.match((started as { note: string }).note, /Nothing was published and no helper was started/);
+  assert.match((started as { note: string }).note, /No helper was started; tell the user\./);
   assert.equal(helpers.length, 0);
 });
 

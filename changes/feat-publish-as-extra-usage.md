@@ -1,0 +1,3 @@
+- Publishing as the main account while that account is out of usage now stops right away and tells the agent why and how to fix it, instead of failing after a helper started.
+- New setting, off by default: Settings → Smart Session → Artifacts → Use the main account's Extra usage when it's out. On, those pages are published on the main account's Extra usage (billed) while it lasts. Needs ZeroSub 1.5.1-pace.12.
+- publish_as_settings can read and change the Extra usage setting (extra_usage).

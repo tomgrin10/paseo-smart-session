@@ -66,8 +66,11 @@ export interface PublishResult {
 /** Everything the helper run needs from the outside world, so tests can stand in for the daemon. */
 export interface HelperOps {
   create(agentId: string, cwd: string): Promise<void>;
-  /** ZeroSub's binding for the agent; ZeroSub's own reopen is not relied on. */
-  pin(agentId: string, accountId: string): Promise<void>;
+  /**
+   * ZeroSub's binding for the agent; ZeroSub's own reopen is not relied on. `allowLimited` keeps it
+   * on a limited account (ZeroSub 1.5.1-pace.12+), for a publish on that account's Extra usage.
+   */
+  pin(agentId: string, accountId: string, allowLimited: boolean): Promise<void>;
   reload(agentId: string): Promise<void>;
   /** The account ZeroSub's session record says the agent's live session runs on. */
   sessionAccount(agentId: string): Promise<string | null>;
@@ -82,7 +85,7 @@ export interface HelperOps {
  */
 export async function runHelper(
   ops: HelperOps,
-  job: { target: ZeroSubAccount; input: ArtifactInput; cwd: string },
+  job: { target: ZeroSubAccount; input: ArtifactInput; cwd: string; extraUsage?: boolean },
   options: { turnMs?: number; newId?: () => string; now?: () => number } = {},
 ): Promise<PublishResult> {
   const now = options.now ?? Date.now;
@@ -97,14 +100,21 @@ export async function runHelper(
   try {
     await ops.create(helperId, job.cwd);
     created = true;
-    await ops.pin(helperId, job.target.id);
+    const extraUsage = job.extraUsage === true;
+    await ops.pin(helperId, job.target.id, extraUsage);
     if ((await ops.sessionAccount(helperId)) !== job.target.id) await ops.reload(helperId);
     const on = await ops.sessionAccount(helperId);
     // Never let the helper publish anywhere but the target: that would only make another seat page.
-    if (on !== job.target.id) return done("wrong-account", { error: `the helper opened on another account (${on ?? "unknown"}), so nothing was published` });
+    if (on !== job.target.id) {
+      const why = extraUsage ? ". Publishing on a limited account's Extra usage needs ZeroSub 1.5.1-pace.12 or later" : "";
+      return done("wrong-account", { error: `the helper opened on another account (${on ?? "unknown"}), so nothing was published${why}` });
+    }
     await ops.send(helperId, helperPrompt(job.input));
     const finished = await ops.wait(helperId, options.turnMs ?? HELPER_TURN_MS);
     if (finished.status === "timeout") return done("timeout", { error: `the helper didn't finish within ${Math.round((options.turnMs ?? HELPER_TURN_MS) / 1000)} s` });
+    // Moved off the owner mid-turn (ZeroSub failing it over): whatever it made isn't the owner's page.
+    const after = await ops.sessionAccount(helperId);
+    if (after !== job.target.id) return done("wrong-account", { error: `the helper was moved to another account (${after ?? "unknown"}) during the publish, so it isn't published as the owner` });
     const reply = parseHelperReply(finished.lastMessage);
     if (finished.status !== "idle" || !reply.url) {
       return done("failed", { error: reply.error ?? finished.error ?? (finished.status === "permission" ? "the helper was asked for a permission" : "the helper reported no url") });
@@ -197,13 +207,17 @@ async function logRun(entry: Record<string, unknown>): Promise<void> {
 
 type ZeroSubView = ZeroSubSnapshot | "absent" | "unreadable";
 
-/** ZeroSub's registry, telling "not enabled" apart from "enabled but unreadable". */
+/**
+ * ZeroSub's registry, telling "not enabled" apart from "enabled but unreadable", with its usage
+ * readings (Extra usage lives there). A missing or broken `usage.json` only means "no readings".
+ */
 export async function zerosubView(home = paseoHome()): Promise<{ view: ZeroSubView; pluginId: string | null }> {
   const pluginId = await zerosubInstallId(home).catch(() => null);
   if (pluginId === null) return { view: "absent", pluginId };
   try {
     const state = JSON.parse(await readFile(join(home, "zerosub", "state.json"), "utf8")) as unknown;
-    return { view: parseZeroSub(state, {}, {}) ?? "unreadable", pluginId };
+    const usage = await readFile(join(home, "zerosub", "usage.json"), "utf8").then((raw) => JSON.parse(raw) as unknown, () => ({}));
+    return { view: parseZeroSub(state, usage, {}) ?? "unreadable", pluginId };
   } catch {
     return { view: "unreadable", pluginId };
   }
@@ -229,9 +243,9 @@ export function daemonOps(client: DaemonClient, zerosubId: string): HelperOps {
         env: { [HELPER_ENV]: "1" }, labels: { [HELPER_LABEL.key]: HELPER_LABEL.value },
       });
     },
-    async pin(agentId, accountId) {
+    async pin(agentId, accountId, allowLimited) {
       // ZeroSub's own reopen fails for a new background agent; its binding is what counts here.
-      await client.invokePluginRpc(zerosubId, "zerosub.agents.account", { agentId, accountId });
+      await client.invokePluginRpc(zerosubId, "zerosub.agents.account", { agentId, accountId, ...(allowLimited ? { allowLimited: true } : {}) });
     },
     async reload(agentId) { await client.refreshAgent(agentId); },
     sessionAccount: (agentId) => sessionAccountOf(agentId),
@@ -256,7 +270,9 @@ export interface PublishRequest {
 
 export type StartResult =
   | { decision: "pass"; note: string | null; why: string }
-  | { decision: "queued"; jobId: string; owner: string };
+  | { decision: "queued"; jobId: string; owner: string }
+  /** The target is out of usage and may not be used; no helper started. The hook denies with `note`. */
+  | { decision: "refused"; why: string; note: string };
 
 interface Job { readonly promise: Promise<PublishResult>; result: PublishResult | null; readonly at: number }
 const jobs = new Map<string, Job>();
@@ -284,8 +300,16 @@ export async function startPublish(request: PublishRequest): Promise<StartResult
   const plan = decide({
     callerAgentId: request.callerAgentId, provider: "claude", input, isHelper, pages, zerosub: view,
     // The tool publishes whatever the setting says; it is the explicit path.
-    settings: { enabled: tool || settings.publishAsMain, accountId: (tool ? request.account : null) ?? settings.publishAsAccount },
+    settings: {
+      enabled: tool || settings.publishAsMain,
+      accountId: (tool ? request.account : null) ?? settings.publishAsAccount,
+      useExtraUsage: settings.publishAsExtraUsage,
+    },
   });
+  if (plan.decision === "refuse") {
+    await logRun({ caller: request.callerAgentId, via: request.via, helperId: null, ms: 0, outcome: "refused", why: plan.why, account: plan.target.id });
+    return { decision: "refused", why: plan.why, note: plan.note };
+  }
   if (plan.decision === "pass" && tool) return { decision: "pass", why: plan.why, note: toolNote(plan, view, request.account ?? null) };
   if (plan.decision === "pass") return { decision: "pass", why: plan.why, note: plan.note };
 
@@ -302,7 +326,7 @@ export async function startPublish(request: PublishRequest): Promise<StartResult
     await mkdir(stageRoot, { recursive: true });
     try {
       const staged = await stage(plan.input, request.cwd, stageRoot, jobId);
-      const go = (ops: HelperOps) => runHelper(ops, { target, input: staged, cwd: stageRoot }, {
+      const go = (ops: HelperOps) => runHelper(ops, { target, input: staged, cwd: stageRoot, extraUsage: plan.extraUsage }, {
         newId: () => { const id = randomUUID(); helpers.add(id); return id; },
       });
       return opsFactory ? await opsFactory(pluginId ?? "zerosub", go) : await withDaemon((client) => go(daemonOps(client, pluginId ?? "zerosub")));
@@ -374,7 +398,7 @@ export async function waitPublish(jobId: string, waitMs: number): Promise<{ done
 /** Start and wait until done, for callers in this process (the native tool). */
 export async function publishNow(request: PublishRequest): Promise<StartResult | { decision: "done"; result: PublishResult }> {
   const started = await startPublish(request);
-  if (started.decision === "pass") return started;
+  if (started.decision !== "queued") return started;
   for (;;) {
     const waited = await waitPublish(started.jobId, MAX_WAIT_MS);
     if (waited.done) return { decision: "done", result: waited.result };
