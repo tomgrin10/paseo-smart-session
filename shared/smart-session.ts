@@ -203,6 +203,8 @@ export const SettingsSchema = z.object({
   publishAsMain: z.boolean(),
   /** A ZeroSub account id, or null for the main Claude account. */
   publishAsAccount: z.string().nullable(),
+  /** "Use the main account's Extra usage when it's out". Off by default: it spends paid credits. */
+  publishAsExtraUsage: z.boolean(),
 });
 
 /**
@@ -318,6 +320,8 @@ export const publishAsStart = defineRpc({
   output: z.discriminatedUnion("decision", [
     z.object({ decision: z.literal("pass"), why: z.string(), note: z.string().nullable() }),
     z.object({ decision: z.literal("queued"), jobId: z.string(), owner: z.string() }),
+    /** The target is out of usage and may not be used: nothing started, `note` says why and the fix. */
+    z.object({ decision: z.literal("refused"), why: z.string(), note: z.string() }),
   ]),
 });
 

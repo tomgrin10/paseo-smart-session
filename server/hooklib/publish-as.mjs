@@ -54,6 +54,10 @@ export async function publishAsHook(event, context) {
   } catch {
     return output({ additionalContext: UNREACHABLE });
   }
+  // Out of usage and not allowed to spend Extra usage: nothing was published, and the model is told why.
+  if (started?.decision === "refused" && typeof started.note === "string") {
+    return output({ permissionDecision: "deny", permissionDecisionReason: started.note });
+  }
   if (started?.decision !== "queued") {
     return typeof started?.note === "string" && started.note !== "" ? output({ additionalContext: started.note }) : null;
   }

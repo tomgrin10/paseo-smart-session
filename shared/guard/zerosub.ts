@@ -48,6 +48,11 @@ export interface ZeroSubReading {
   readonly windows: readonly ZeroSubWindow[];
   /** Prepaid credits past full windows (ChatGPT credits for Codex), when reported. */
   readonly credits: { readonly balance: number | null; readonly unlimited: boolean } | null;
+  /**
+   * Claude Extra usage (pay-as-you-go past the plan's limits), when the reading reports it. `spend`
+   * and `limit` are in minor units of `currency` (cents for USD); null when not reported.
+   */
+  readonly extraUsage?: { readonly enabled: boolean; readonly spend: number | null; readonly limit: number | null; readonly currency: string | null } | null;
 }
 
 export interface ZeroSubSnapshot {
@@ -115,11 +120,15 @@ function parseReading(value: unknown): ZeroSubReading | null {
     windows.push({ id, usedPct, resetsAt: text(window.resetsAt), minutes: finite(window.minutes) });
   }
   const credits = record(raw.credits);
+  const extra = record(raw.extraUsage);
   return {
     fetchedAt,
     cached: raw.cached === true,
     windows,
     credits: credits ? { balance: finite(credits.balance), unlimited: credits.unlimited === true } : null,
+    extraUsage: extra && typeof extra.enabled === "boolean"
+      ? { enabled: extra.enabled, spend: finite(extra.spend), limit: finite(extra.limit), currency: text(extra.currency) }
+      : null,
   };
 }
 

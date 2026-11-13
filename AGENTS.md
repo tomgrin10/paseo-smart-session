@@ -497,6 +497,16 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
   `refreshAgent` (ZeroSub's CLI reload doesn't find a new background agent), confirm ZeroSub's session record says the
   target, then prompt, wait (capped), and archive in a `finally`. One at a time; each run is logged. Never prompt a
   helper that isn't confirmed on the target, and never read a credential file.
+- **Invariant: the helper never runs on an account other than the publish owner, and it only runs on a limited owner
+  when "Use the main account's Extra usage when it's out" (`publishAsExtraUsage`, off by default) is on and credits
+  remain** (`publish-as.test.ts`). `limitedTarget` decides from ZeroSub's `limitedUntil`/`limitKind` and the reading's
+  `extraUsage`. Refused (setting off, Extra usage off, used up, or not reported) means no helper starts: the hook denies
+  with `refuseReason` (reason and fix, pinned), the run log records `refused`. Allowed means the pin carries
+  `allowLimited`, which ZeroSub 1.5.1-pace.12+ honours for one-shot helpers only (no routing swap, no failover move or
+  continue); an older ZeroSub ignores it and the account check fails with `wrong-account`. The account is checked again
+  after the turn, so a helper moved mid-turn is never a success. Root cause it fixes (2026-11-13): with the owner
+  limited, ZeroSub's routing swapped the pin for the seat and every publish failed with `wrong-account` after a spent
+  helper.
 - Hooks follow features (`managedFor` in `server/install.ts`): the compaction hooks are registered while Smart Compact is
   on (except `Stop`, which also names killed background jobs and rides any feature), `PreToolUse(Artifact)` while publishing as the main account is on, and each is removed when its feature is turned
   off. So "Register the hooks" stays usable with Smart Compact off, and a fresh install with Smart Compact off still gets

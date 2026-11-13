@@ -70,6 +70,12 @@ export interface Settings {
   readonly publishAsMain: boolean;
   /** The account to publish as: a ZeroSub account id, or null for the main Claude account. */
   readonly publishAsAccount: string | null;
+  /**
+   * "Use the main account's Extra usage when it's out": while the account to publish as is limited,
+   * its helper runs on that account's Extra usage, if it is on and has credits left. Off by default,
+   * since it spends paid credits; off, such a publish is refused with the reason.
+   */
+  readonly publishAsExtraUsage: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -81,6 +87,7 @@ export const DEFAULT_SETTINGS: Settings = {
   installHooks: true,
   publishAsMain: true,
   publishAsAccount: null,
+  publishAsExtraUsage: false,
 };
 
 const filePath = () => join(dataDir(), "settings.json");
@@ -103,6 +110,7 @@ export async function readSettings(): Promise<Settings> {
       installHooks: raw.installHooks !== false,
       publishAsMain: raw.publishAsMain !== false,
       publishAsAccount: accountId(raw.publishAsAccount),
+      publishAsExtraUsage: raw.publishAsExtraUsage === true,
     };
   } catch {
     cached = DEFAULT_SETTINGS;
@@ -121,6 +129,7 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
     installHooks: next.installHooks !== false,
     publishAsMain: next.publishAsMain !== false,
     publishAsAccount: accountId(next.publishAsAccount),
+    publishAsExtraUsage: next.publishAsExtraUsage === true,
   };
   await mkdir(dataDir(), { recursive: true });
   const target = filePath();

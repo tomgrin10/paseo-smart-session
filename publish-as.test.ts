@@ -80,6 +80,65 @@ test("decision table: account × action", () => {
   }
 });
 
+// ------------------------------------------------------------------ a limited owner (Extra usage)
+//
+// The invariant: the helper never runs on an account other than the publish owner, and it only runs
+// on a limited owner when "Use the main account's Extra usage when it's out" is on and credits remain.
+// Otherwise nothing starts: no helper is spent learning that ZeroSub put it on another account.
+
+const LIMITED_UNTIL = "2026-11-15T04:00:00.120Z";
+const NOW_13 = Date.parse("2026-11-13T09:00:00Z");
+const limitedState = (limitKind: "window" | "budget" = "window") => ({
+  ...STATE,
+  accounts: STATE.accounts.map((account) => account.id === "claude-main" ? { ...account, limitedUntil: LIMITED_UNTIL, limitKind } : account),
+});
+const reading = (extraUsage: unknown) => ({
+  "claude-main": { fetchedAt: "2026-11-13T08:59:00Z", windows: [{ id: "seven_day", usedPercent: 100, resetsAt: LIMITED_UNTIL }], ...(extraUsage === undefined ? {} : { extraUsage }) },
+});
+const ON = { enabled: true, spend: 13_752, limit: 22_000, currency: "USD" };
+
+test("invariant: a limited owner takes a publish only with the setting on and credits left", () => {
+  const cases: [string, unknown, boolean, "window" | "budget", string][] = [
+    ["setting off", ON, false, "window", "refuse:extra-usage-setting-off"],
+    ["setting on, credits left", ON, true, "window", "redirect:extra"],
+    ["setting on, no spend limit reported", { ...ON, limit: null }, true, "window", "redirect:extra"],
+    ["setting on, Extra usage off", { ...ON, enabled: false }, true, "window", "refuse:extra-usage-off"],
+    ["setting on, monthly limit reached", { ...ON, spend: 22_000 }, true, "window", "refuse:extra-usage-spent"],
+    ["setting on, Claude said out of extra usage", ON, true, "budget", "refuse:extra-usage-spent"],
+    ["setting on, no reading of Extra usage", undefined, true, "window", "refuse:extra-usage-unknown"],
+  ];
+  for (const [name, extra, useExtraUsage, kind, expected] of cases) {
+    const zerosub = parseZeroSub(limitedState(kind), reading(extra), {})!;
+    const result = decide(base({ file_path: "/p.html" }, { zerosub, now: NOW_13, settings: { enabled: true, accountId: null, useExtraUsage } }) as HookInput) as any;
+    const got = result.decision === "redirect" ? `redirect:${result.extraUsage ? "extra" : "room"}` : result.decision === "refuse" ? `refuse:${result.why}` : `pass:${result.why}`;
+    assert.equal(got, expected, name);
+    if (result.decision !== "pass") assert.equal(result.target.id, "claude-main", name);
+  }
+  // Not limited: as before, and never on Extra usage.
+  const fine = decide(base({ file_path: "/p.html" }, { now: NOW_13, settings: { enabled: true, accountId: null, useExtraUsage: true } }) as HookInput) as any;
+  assert.equal(fine.decision, "redirect");
+  assert.equal(fine.extraUsage, false);
+  // A limit that has passed is room again.
+  const passed = decide(base({ file_path: "/p.html" }, { zerosub: parseZeroSub(limitedState(), reading(ON), {})!, now: Date.parse(LIMITED_UNTIL) + 1, settings: { enabled: true, accountId: null } }) as HookInput) as any;
+  assert.equal(passed.decision, "redirect");
+  // An unknown url still passes through first: only its owner can update it.
+  const unknown = decide(base({ file_path: "/p.html", url: "https://claude.ai/artifact/Old" }, { zerosub: parseZeroSub(limitedState(), reading(ON), {})!, now: NOW_13 }) as HookInput);
+  assert.equal(unknown.decision, "pass");
+});
+
+test("a refused publish names the reason and the fix (pinned)", () => {
+  const note = (extra: unknown, useExtraUsage: boolean, kind: "window" | "budget" = "window") =>
+    (decide(base({ file_path: "/p.html" }, { zerosub: parseZeroSub(limitedState(kind), reading(extra), {})!, now: NOW_13, settings: { enabled: true, accountId: null, useExtraUsage } }) as HookInput) as any).note as string;
+  const off = note(ON, false);
+  assert.match(off, /^Not published: the main Claude account \(CLI login\) is out of usage until Sun 15 Nov, 04:00 UTC/);
+  assert.match(off, /No helper was started; tell the user\./);
+  assert.match(off, /turn on "Use the main account's Extra usage when it's out" in Smart Session's settings \(billed to that account\)\. Otherwise, publishing works again after Sun 15 Nov, 04:00 UTC\.$/);
+  assert.match(note({ ...ON, enabled: false }, true), /Extra usage is off for that account.*turn on Extra usage in that account's claude\.ai settings/);
+  assert.match(note({ ...ON, spend: 22_000 }, true), /Extra usage is used up \(\$220\.00 of its \$220\.00 monthly limit\).*raise that account's Extra usage limit/);
+  assert.match(note(undefined, true), /hasn't reported yet whether that account has Extra usage left.*Try again after ZeroSub's next usage reading/);
+  for (const text of [off, note(ON, true, "budget")]) assert.doesNotMatch(text, /@/, "never an email");
+});
+
 test("zerosub unreadable passes through with a note that says so", () => {
   const result = decide(base({ file_path: "/p.html" }, { zerosub: "unreadable" }));
   assert.equal(result.decision, "pass");
@@ -132,16 +191,17 @@ test("the helper's reply is read defensively", () => {
 
 // ------------------------------------------------------------------ the helper's lifecycle
 
-function fakeOps(options: { onTarget?: "at-once" | "after-reload" | "never"; reply?: string | null; status?: string; failOn?: keyof HelperOps } = {}) {
+function fakeOps(options: { onTarget?: "at-once" | "after-reload" | "never" | "moved-during-turn"; reply?: string | null; status?: string; failOn?: keyof HelperOps } = {}) {
   const calls: string[] = [];
   let reloaded = false;
   const fail = (step: keyof HelperOps) => { if (options.failOn === step) throw new Error(`${step} failed`); };
   const ops: HelperOps = {
     async create(id) { calls.push(`create:${id}`); fail("create"); },
-    async pin(_id, account) { calls.push(`pin:${account}`); fail("pin"); },
+    async pin(_id, account, allowLimited) { calls.push(`pin:${account}${allowLimited ? "+limited" : ""}`); fail("pin"); },
     async reload() { calls.push("reload"); reloaded = true; fail("reload"); },
     async sessionAccount() {
       const mode = options.onTarget ?? "after-reload";
+      if (mode === "moved-during-turn") return calls.includes("wait") ? "claude-seat" : "claude-main";
       return mode === "at-once" || (mode === "after-reload" && reloaded) ? "claude-main" : "claude-seat";
     },
     async send() { calls.push("send"); fail("send"); },
@@ -167,6 +227,31 @@ test("helper: never prompted while it runs on another account, and still archive
   assert.equal(result.outcome, "wrong-account");
   assert.ok(!calls.includes("send"), "the prompt must not reach a helper on the wrong account");
   assert.equal(calls.at(-1), "archive:h2");
+});
+
+test("helper: on Extra usage the pin allows the limited owner; without it, it doesn't", async () => {
+  const extra = fakeOps();
+  await runHelper(extra.ops, { ...job(), extraUsage: true }, { newId: () => "h7" });
+  assert.equal(extra.calls[1], "pin:claude-main+limited");
+  const plain = fakeOps();
+  await runHelper(plain.ops, job(), { newId: () => "h8" });
+  assert.equal(plain.calls[1], "pin:claude-main");
+});
+
+test("helper: moved off the owner during its turn is not a publish", async () => {
+  const { ops, calls } = fakeOps({ onTarget: "moved-during-turn" });
+  const result = await runHelper(ops, job(), { newId: () => "h9" });
+  assert.equal(result.ok, false);
+  assert.equal(result.outcome, "wrong-account");
+  assert.equal(result.url, null);
+  assert.equal(calls.at(-1), "archive:h9");
+});
+
+test("helper: an old ZeroSub that ignores the limited pin says what to update", async () => {
+  const { ops } = fakeOps({ onTarget: "never" });
+  const result = await runHelper(ops, { ...job(), extraUsage: true }, { newId: () => "h10" });
+  assert.equal(result.outcome, "wrong-account");
+  assert.match(result.error ?? "", /ZeroSub 1\.5\.1-pace\.12 or later/);
 });
 
 test("helper: archived on failure and on timeout", async () => {
@@ -209,12 +294,13 @@ test("stage copies the page and its files and keeps published paths", async () =
 
 // ------------------------------------------------------------------ through the hook, end to end
 
-async function setupHost(state: unknown | "corrupt" | "none") {
+async function setupHost(state: unknown | "corrupt" | "none", usage?: unknown) {
   const home = mkdtempSync(join(tmpdir(), "ss-publish-"));
   process.env.PASEO_HOME = home;
   writeFileSync(join(home, "config.json"), JSON.stringify({ plugins: state === "none" ? {} : { zerosub: { enabled: true } } }));
   mkdirSync(join(home, "zerosub"), { recursive: true });
   if (state !== "none") writeFileSync(join(home, "zerosub", "state.json"), state === "corrupt" ? "{not json" : JSON.stringify(state));
+  if (usage !== undefined) writeFileSync(join(home, "zerosub", "usage.json"), JSON.stringify(usage));
   const work = join(home, "work");
   mkdirSync(work);
   writeFileSync(join(work, "page.html"), "<!doctype html><title>t</title>");
@@ -312,4 +398,45 @@ test("the tool says plainly when there is nothing to switch to", async () => {
   await setupHost("none");
   const absent = await server.startPublish({ callerAgentId: SEAT, cwd: "/", input: { file_path: "/x.html" }, via: "tool" });
   assert.match((absent as { note: string }).note, /ZeroSub isn't enabled/);
+});
+
+test("limited main, setting off → deny with the reason, no helper, a refused run logged", async () => {
+  const { home, work, call, helpers } = await setupHost(limitedState(), reading(ON));
+  const out = await publishAsHook(event(work, { file_path: "page.html" }), { env: { PASEO_AGENT_ID: SEAT }, call, native: true }) as any;
+  assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /^Not published: .* is out of usage until .*Use the main account's Extra usage when it's out/s);
+  assert.equal(helpers.length, 0, "no helper is spent on a publish that can't land");
+  const dir = join(home, "plugin-data", "smart-session", "publish-as");
+  const log = readdirSync(dir).find((name) => name.startsWith("runs-"))!;
+  const run = JSON.parse(readFileSync(join(dir, log), "utf8").trim());
+  assert.equal(run.outcome, "refused");
+  assert.equal(run.why, "extra-usage-setting-off");
+  assert.equal(run.helperId, null);
+  // The tool says the same, and starts nothing either.
+  const server = (await import("./server/publish-as.ts")) as typeof import("./server/publish-as.ts");
+  const started = await server.startPublish({ callerAgentId: SEAT, cwd: work, input: { file_path: join(work, "page.html") }, via: "tool" });
+  assert.equal(started.decision, "refused");
+  assert.match((started as { note: string }).note, /No helper was started; tell the user\./);
+  assert.equal(helpers.length, 0);
+});
+
+test("limited main, setting on with credits left → the helper runs on main's Extra usage", async () => {
+  const { work, call, helpers } = await setupHost(limitedState(), reading(ON));
+  const settings = (await import("./server/settings.ts")) as typeof import("./server/settings.ts");
+  await settings.writeSettings({ publishAsExtraUsage: true });
+  const out = await publishAsHook(event(work, { file_path: "page.html" }), { env: { PASEO_AGENT_ID: SEAT }, call, native: true }) as any;
+  assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /^Published as /);
+  assert.equal(helpers.length, 1);
+  assert.equal(helpers[0]![1], "pin:claude-main+limited");
+});
+
+test("the Extra usage setting is off by default and survives a round trip", async () => {
+  await setupHost(STATE);
+  const settings = (await import("./server/settings.ts")) as typeof import("./server/settings.ts");
+  assert.equal(settings.DEFAULT_SETTINGS.publishAsExtraUsage, false);
+  assert.equal((await settings.readSettings()).publishAsExtraUsage, false);
+  assert.equal((await settings.writeSettings({ publishAsExtraUsage: true })).publishAsExtraUsage, true);
+  settings.clearSettingsCache();
+  assert.equal((await settings.readSettings()).publishAsExtraUsage, true);
 });

@@ -154,6 +154,10 @@ export function makeSettings(client: PluginClientContext) {
     const nameAs = (account: typeof publishTarget) => (!account || account.kind === "main" ? "your main account" : account.name);
     const publishTargetName = nameAs(publishTarget);
     const publishMatters = claudeAccounts.length > 1;
+    // Extra usage is billed, so it is opt-in; off, a publish to an account that is out stops with the reason.
+    const extraHint = settings.publishAsExtraUsage
+      ? `On. While ${publishTargetName} is out of usage, pages are published on its Extra usage, which is billed. Stops when Extra usage is off or used up.`
+      : `Off. While ${publishTargetName} is out of usage, publishing stops and the agent is told why. No paid credits are spent.`;
     const publishHint = !publishMatters
       ? "Only matters with ZeroSub and more than one Claude account."
       : settings.publishAsMain
@@ -227,6 +231,9 @@ export function makeSettings(client: PluginClientContext) {
             value={publishTarget?.id ?? "main"} options={claudeAccounts.map((account) => ({ label: account.kind === "main" ? `${account.name} (main)` : account.name, value: account.id }))}
             disabled={saving || !settings.publishAsMain}
             onValueChange={(id) => { const account = claudeAccounts.find((candidate) => candidate.id === id); void save({ publishAsAccount: account?.kind === "main" ? null : id }, `Artifacts are published as ${nameAs(account)}`); }} /> : null}
+          {publishMatters ? <SettingsSwitch label="Use the main account's Extra usage when it's out" hint={extraHint} value={settings.publishAsExtraUsage}
+            disabled={saving || !settings.publishAsMain}
+            onValueChange={(publishAsExtraUsage) => void save({ publishAsExtraUsage }, publishAsExtraUsage ? `Pages can use Extra usage when ${publishTargetName} is out` : `Publishing stops when ${publishTargetName} is out`)} /> : null}
         </SettingsCard>
       </SettingsSection>
 

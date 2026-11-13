@@ -499,18 +499,20 @@ export function agentTools(context) {
 
     publish_as_settings: {
       description:
-        "Read or change Smart Session's \"Publish artifacts as the main account\" setting: whether an artifact published from a session on another Claude account (under ZeroSub) is published on the main account instead, and which account that is. Call with no arguments to read it. Change it only when the user asks.",
+        "Read or change Smart Session's \"Publish artifacts as the main account\" setting: whether an artifact published from a session on another Claude account (under ZeroSub) is published on the main account instead, which account that is, and whether a publish may spend that account's Extra usage (billed) while it is out of usage. Call with no arguments to read it. Change it only when the user asks.",
       inputSchema: {
         type: "object",
         properties: {
           enabled: { type: "boolean", description: "Turn publishing as the main account on or off." },
           account: { type: "string", description: 'Which Claude account to publish as: "main", or an account id or name from Smart Session\'s subscriptions.' },
+          extra_usage: { type: "boolean", description: "Use the account's Extra usage (paid credits) to publish while it is out of usage. Off by default. Turn on only when the user asks." },
         },
         additionalProperties: false,
       },
       async run(args) {
         const patch = {};
         if (typeof args.enabled === "boolean") patch.publishAsMain = args.enabled;
+        if (typeof args.extra_usage === "boolean") patch.publishAsExtraUsage = args.extra_usage;
         const subscriptions = await callPlugin("smart-session.subscriptions", {}).catch(() => null);
         const claude = (subscriptions?.accounts ?? []).filter((account) => account.family === "claude");
         if (typeof args.account === "string" && args.account.trim() !== "") {
@@ -529,6 +531,9 @@ export function agentTools(context) {
           : (claude.find((account) => account.id === settings.publishAsAccount)?.name ?? settings.publishAsAccount);
         const lines = [
           `${changed ? "Saved. " : ""}Publish artifacts as the main account: ${settings.publishAsMain ? "on" : "off"}. Target: ${target}.`,
+          settings.publishAsExtraUsage
+            ? "Use the main account's Extra usage when it's out: on. While the target is out of usage, a publish runs on its Extra usage (billed) if that is on and has credits left."
+            : "Use the main account's Extra usage when it's out: off. While the target is out of usage, a publish is refused with the reason.",
           claude.length < 2 ? "ZeroSub has fewer than two Claude accounts here, so this changes nothing yet." : `Claude accounts: ${claude.map((account) => account.name).join(", ")}.`,
         ];
         // The publishing hook only reaches a seat session whose ZeroSub home links the main settings.

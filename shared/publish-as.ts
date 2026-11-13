@@ -66,6 +66,39 @@ export interface PublishAsSettings {
   readonly enabled: boolean;
   /** The account to publish as; null is the main Claude account (the CLI's own login). */
   readonly accountId: string | null;
+  /**
+   * "Use the main account's Extra usage when it's out": a publish to a limited target runs on its
+   * Extra usage (billed) instead of stopping. Off when absent: it spends paid credits.
+   */
+  readonly useExtraUsage?: boolean;
+}
+
+/** Why a publish to a limited target is refused before any helper starts. */
+export type RefuseReason = "extra-usage-setting-off" | "extra-usage-off" | "extra-usage-spent" | "extra-usage-unknown";
+
+/**
+ * Whether the target is out of usage, and if so whether the helper may run on its Extra usage.
+ * Limited is ZeroSub's own `limitedUntil`, since that is what its routing goes by. A budget limit is
+ * Claude's "out of extra usage" notice, so the credits are gone whatever the last reading says.
+ *
+ * The invariant this serves: the helper never runs on an account other than the publish owner, and
+ * it only runs on a limited owner when the setting is on and credits remain.
+ */
+export function limitedTarget(
+  snapshot: ZeroSubSnapshot,
+  target: ZeroSubAccount,
+  useExtraUsage: boolean,
+  now: number,
+): { kind: "room" } | { kind: "extra-usage" } | { kind: "refuse"; why: RefuseReason } {
+  const until = target.limitedUntil ? Date.parse(target.limitedUntil) : Number.NaN;
+  if (!(until > now)) return { kind: "room" };
+  if (!useExtraUsage) return { kind: "refuse", why: "extra-usage-setting-off" };
+  const extra = snapshot.readings[target.id]?.extraUsage ?? null;
+  if (target.limitKind === "budget") return { kind: "refuse", why: "extra-usage-spent" };
+  if (!extra) return { kind: "refuse", why: "extra-usage-unknown" };
+  if (!extra.enabled) return { kind: "refuse", why: "extra-usage-off" };
+  if (extra.spend !== null && extra.limit !== null && extra.spend >= extra.limit) return { kind: "refuse", why: "extra-usage-spent" };
+  return { kind: "extra-usage" };
 }
 
 /**
@@ -99,6 +132,8 @@ export interface HookInput {
   readonly pages: readonly OwnedPage[];
   /** The caller is itself a helper (by its environment or label). */
   readonly isHelper: boolean;
+  /** Epoch ms; now by default. */
+  readonly now?: number;
 }
 
 export type HookDecision =
@@ -110,7 +145,11 @@ export type HookDecision =
       input: ArtifactInput;
       /** The caller's own file, for the record of which page it made. */
       filePath: string | null;
-    };
+      /** The target is out of usage and the helper runs on its Extra usage (the setting allows it). */
+      extraUsage: boolean;
+    }
+  /** The target is out of usage and the helper may not run there: nothing starts, and `note` says why. */
+  | { decision: "refuse"; target: ZeroSubAccount; why: RefuseReason; note: string };
 
 export type PassReason =
   | "helper" | "not-a-publish" | "setting-off" | "no-agent" | "not-claude" | "no-zerosub" | "zerosub-unreadable"
@@ -139,12 +178,18 @@ export function decide(hook: HookInput): HookDecision {
   const problem = unusable(target);
   if (problem) return pass("target-unusable", `Smart Session didn't publish this as ${ownerName(target)} because ${problem}, so it goes out on this session's own account. The user may not be able to open it.`);
 
+  let page: OwnedPage | undefined;
   if (action.kind === "update") {
-    const page = hook.pages.find((candidate) => normalizeUrl(candidate.url) === action.url);
+    page = hook.pages.find((candidate) => normalizeUrl(candidate.url) === action.url);
     // A page we didn't make belongs to whoever did; only that account can update it.
     if (!page) return pass("unknown-url");
-    return { decision: "redirect", target, input: hook.input, filePath: page.filePath };
   }
+  // Out of usage: run on its Extra usage only when allowed and credits remain; else stop here, before
+  // a helper is spent learning it (ZeroSub would put the helper on another account).
+  const limit = limitedTarget(snapshot, target, hook.settings.useExtraUsage === true, hook.now ?? Date.now());
+  if (limit.kind === "refuse") return { decision: "refuse", target, why: limit.why, note: refuseReason(limit.why, target, snapshot) };
+  const extraUsage = limit.kind === "extra-usage";
+  if (action.kind === "update") return { decision: "redirect", target, input: hook.input, filePath: page?.filePath ?? null, extraUsage };
   // Republishing a file this caller published through us before updates that page, as it would have
   // in the caller's own session.
   const previous = action.filePath === null ? undefined : [...hook.pages].reverse()
@@ -154,6 +199,7 @@ export function decide(hook: HookInput): HookDecision {
     target,
     input: previous ? { ...hook.input, url: previous.url } : hook.input,
     filePath: action.filePath,
+    extraUsage,
   };
 }
 
@@ -192,6 +238,48 @@ export function failureReason(error: string, owner: string, native: boolean): st
     `Not published: Smart Session tried to publish this as ${owner} through a helper and it failed (${error}).`,
     `Nothing was published. To try again, call ${toolName(native)} with the same file_path. If the user is fine with the page living on this session's own account, ask them to turn off "Publish artifacts as the main account" in Smart Session's settings first.`,
   ].join("\n");
+}
+
+/** A reset time the model can repeat to the person: "Sun 15 Nov, 04:00 UTC". */
+export function resetWhen(iso: string | null): string {
+  const at = iso ? Date.parse(iso) : Number.NaN;
+  if (!Number.isFinite(at)) return "its limit resets";
+  const date = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short" }).format(at);
+  const time = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(at);
+  return `${date}, ${time} UTC`;
+}
+
+function money(minor: number, currency: string | null): string {
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: currency ?? "USD" }).format(minor / 100);
+  } catch {
+    return `${(minor / 100).toFixed(2)}${currency ? ` ${currency}` : ""}`;
+  }
+}
+
+/**
+ * What the model reads when a publish to a limited target is refused. It names the reason and the
+ * fix, and says nothing was published. Pinned by tests.
+ */
+export function refuseReason(why: RefuseReason, target: ZeroSubAccount, snapshot: ZeroSubSnapshot): string {
+  const owner = ownerName(target);
+  const when = target.limitedUntil && target.limitKind !== "budget" ? resetWhen(target.limitedUntil) : null;
+  const extra = snapshot.readings[target.id]?.extraUsage ?? null;
+  const head = `Not published: ${owner} is out of usage${when ? ` until ${when}` : ""}`;
+  const told = "No helper was started; tell the user.";
+  const later = when ? ` Otherwise, publishing works again after ${when}.` : "";
+  switch (why) {
+    case "extra-usage-setting-off":
+      return `${head}, and Smart Session is set not to spend its Extra usage. ${told} To publish while it's out, the user can turn on "Use the main account's Extra usage when it's out" in Smart Session's settings (billed to that account).${later}`;
+    case "extra-usage-off":
+      return `${head}, and Extra usage is off for that account. ${told} To publish while it's out, the user can turn on Extra usage in that account's claude.ai settings.${later}`;
+    case "extra-usage-spent": {
+      const spent = extra && extra.limit !== null ? ` (${money(extra.spend ?? extra.limit, extra.currency)} of its ${money(extra.limit, extra.currency)} monthly limit)` : "";
+      return `${head}, and its Extra usage is used up${spent}. ${told} To publish while it's out, the user can raise that account's Extra usage limit in its claude.ai settings.${later}`;
+    }
+    case "extra-usage-unknown":
+      return `${head}, and ZeroSub hasn't reported yet whether that account has Extra usage left. ${told} Try again after ZeroSub's next usage reading, in a few minutes.${later}`;
+  }
 }
 
 /** The first claude.ai artifact link in a helper's reply. */
