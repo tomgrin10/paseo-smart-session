@@ -100,7 +100,7 @@ function nativeControl() {
   return { calls, controller };
 }
 
-async function fixture(t: { after(fn: () => Promise<void>): void }, options: { zerosub?: ZeroSub | null; provider?: string; native?: boolean; policy?: Partial<Policy>; paseoPct?: number } = {}) {
+async function fixture(t: { after(fn: () => Promise<void>): void }, options: { zerosub?: ZeroSub | null; provider?: string; native?: boolean; policy?: Partial<Policy>; paseoPct?: number; rpc?: (method: string, input: any) => Promise<unknown> } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "guard-zerosub-limits-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = new Store(dir);
@@ -123,6 +123,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, options: { z
     sendMessage: async (_id, _text, opts) => { log.push(`guard:continue:${opts?.messageId}`); userTurn("c"); },
     getDaemonStatus: async () => ({ pid: 9001 }),
     listProviderSubagents: async () => ({ subagents: [] }),
+    ...(options.rpc ? { invokePluginRpc: async (plugin: string, method: string, input: unknown) => { log.push(`rpc:${plugin}:${method}:${JSON.stringify(input)}`); return options.rpc!(method, input); } } : {}),
   };
   let turns = 0;
   const userTurn = (prefix: string) => { turns++; agent.status = "running"; agent.lastUserMessageAt = iso(now + turns); agent.activeTurn = { turnId: `${prefix}${turns}` }; };
@@ -767,4 +768,89 @@ test("audit B: a Resume now undone by a protection change is re-held, and the lo
   assert.match(trail[1]!, /^resume-now x pause \S+ in-place protection=off$/);
   assert.equal(trail[2], "protection x off -> default (popover-use-default)");
   assert.match(trail[3]!, /override=default/);
+});
+
+// --------------------------------------------------------------------------- seam C
+
+// Seam C (2026-11-12): the guard holds at its own threshold (90% here), below ZeroSub's 100%. There
+// ZeroSub sees no limit and moves nothing, so the switch-first grace ran out and the session was held
+// while another account had room. Invariant: the guard never holds a session at its threshold while
+// ZeroSub could move it; it asks ZeroSub (`zerosub.agents.move_before_limit`) to move it first.
+const MOVE_RPC = "zerosub.agents.move_before_limit";
+function aNearlyBRoomy(zs: ZeroSub, at = T0) {
+  zs.read("claude-a", { at, fiveHour: 92, fiveResets: T0 + 47 * MIN, weekly: 60 }); // Not out to ZeroSub.
+  zs.read("claude-b", { at, fiveHour: 6, fiveResets: T0 + 5 * HOUR, weekly: 40 });
+}
+/** ZeroSub 1.5.1-pace.13: moves the agent between turns and says so. */
+const zerosubMoves = (f: () => { zs: ZeroSub; now: number }) => async (method: string, input: { agentId: string; accountId: string }) => {
+  assert.equal(method, MOVE_RPC);
+  f().zs.move(input.agentId, input.accountId, f().now + 1_000); // The reopen lands a moment later.
+  return { outcome: "moved", detail: null };
+};
+
+test("seam C invariant: a running session at the guard's threshold is moved to an account with room, not held", async t => {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(t, { native: true, policy: { thresholdPct: 90 }, rpc: (m, i) => zerosubMoves(() => f)(m, i) });
+  f.engine.zerosubPluginId = async () => "zerosub";
+  f.zs.sessions.x = "claude-a";
+  aNearlyBRoomy(f.zs);
+  await f.engine.tick();
+  assert.deepEqual(f.log, ["guard:interrupt", `rpc:zerosub:${MOVE_RPC}:{"agentId":"x","accountId":"claude-b"}`], "stopped, then ZeroSub is asked to move it to B");
+  assert.deepEqual(f.native.calls.frozen, [], "never frozen: a frozen process can't be reopened");
+  const [pause] = await f.pauses();
+  f.at(T0 + 30_000);
+  await f.engine.tick();
+  assert.deepEqual(f.continuations(), [`guard:continue:${pause!.id}`], "continued on B");
+  assert.equal(f.zs.sessions.x, "claude-b");
+});
+
+test("seam C: an idle session at the guard's threshold is moved, never held", async t => {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(t, { native: true, policy: { thresholdPct: 90 }, rpc: (m, i) => zerosubMoves(() => f)(m, i) });
+  f.engine.zerosubPluginId = async () => "zerosub";
+  f.zs.sessions.x = "claude-a";
+  aNearlyBRoomy(f.zs);
+  f.agent.status = "idle"; f.agent.activeTurn = null;
+  await f.engine.tick();
+  assert.deepEqual(f.log, [`rpc:zerosub:${MOVE_RPC}:{"agentId":"x","accountId":"claude-b"}`]);
+  f.at(T0 + ZEROSUB_MOVE_GRACE_MS + MIN);
+  await f.engine.tick();
+  assert.deepEqual(await f.pauses(), [], "on B it has room: nothing to hold");
+  assert.deepEqual(f.native.calls.frozen, []);
+});
+
+test("seam C: ZeroSub is asked once per stretch, and not at all when the account is out to ZeroSub too", async t => {
+  let asked = 0;
+  const f = await fixture(t, { native: true, policy: { thresholdPct: 90 }, rpc: async () => { asked++; return { outcome: "waiting", detail: null }; } });
+  f.engine.zerosubPluginId = async () => "zerosub";
+  f.zs.sessions.x = "claude-a";
+  aNearlyBRoomy(f.zs);
+  f.agent.status = "idle"; f.agent.activeTurn = null;
+  await f.engine.tick();
+  f.at(T0 + 30_000);
+  await f.engine.tick();
+  assert.equal(asked, 1, "one request while ZeroSub works on it");
+
+  // At 100% ZeroSub has recorded the limit and moves the session itself: asking too would move it twice.
+  let askedFull = 0;
+  const full = await fixture(t, { native: true, rpc: async () => { askedFull++; return { outcome: "moved", detail: null }; } });
+  full.engine.zerosubPluginId = async () => "zerosub";
+  full.zs.sessions.x = "claude-a";
+  aFullBRoomy(full.zs);
+  await full.engine.tick();
+  assert.equal(askedFull, 0);
+});
+
+test("seam C: with a ZeroSub that can't be asked, the session is held after the grace, as before", async t => {
+  const f = await fixture(t, { native: true, policy: { thresholdPct: 90 }, rpc: async () => { throw new Error("Unknown plugin RPC method"); } });
+  f.engine.zerosubPluginId = async () => "zerosub";
+  f.zs.sessions.x = "claude-a";
+  aNearlyBRoomy(f.zs);
+  f.agent.status = "idle"; f.agent.activeTurn = null;
+  await f.engine.tick();
+  f.at(T0 + ZEROSUB_MOVE_GRACE_MS);
+  f.zs.read("claude-a", { at: f.now, fiveHour: 92, fiveResets: T0 + 47 * MIN, weekly: 60 });
+  f.zs.read("claude-b", { at: f.now, fiveHour: 6, fiveResets: T0 + 5 * HOUR, weekly: 40 });
+  await f.engine.tick();
+  assert.deepEqual((await f.pauses()).map(p => [p.phase, p.idle]), [["waiting", true]]);
 });

@@ -57,6 +57,37 @@ export class Engine {
    * 2026-11-12 (audit B): a session held again 9 s after Resume now left no trail of why.
    */
   log: (line: string) => void = (line) => console.log(line);
+  /**
+   * ZeroSub's install id, so the guard can ask it to move a session (`askMove`). Null without
+   * ZeroSub; the host sets it.
+   */
+  zerosubPluginId: () => Promise<string | null> = async () => null;
+  /** When the guard last asked ZeroSub to move each agent: once per grace, never twice in a row. */
+  private readonly askedMove = new Map<string, number>();
+  /**
+   * Seam C. The guard stops a session at its own threshold, below ZeroSub's 100%, where ZeroSub sees
+   * no limit and would never move it: so it asks ZeroSub to (`zerosub.agents.move_before_limit`),
+   * to the account `moveTarget` names. Invariant: the guard never holds a session at its threshold
+   * while ZeroSub could move it. A ZeroSub that can't be asked (older than 1.5.1-pace.13) leaves the
+   * grace and the hold as they were.
+   */
+  private async askMove(client: GuardClient, agentId: string, provider: string) {
+    const accounts = this.accounts;
+    if (!accounts || !client.invokePluginRpc || !zerosubCanMove(provider)) return;
+    const last = this.askedMove.get(agentId);
+    if (last !== undefined && this.now() - last < ZEROSUB_MOVE_GRACE_MS) return;
+    const target = accounts.moveTarget(agentId, provider);
+    if (!target) return;
+    const pluginId = await this.zerosubPluginId().catch(() => null);
+    if (!pluginId) return;
+    this.askedMove.set(agentId, this.now());
+    try {
+      const reply = await client.invokePluginRpc(pluginId, "zerosub.agents.move_before_limit", { agentId, accountId: target }) as { outcome?: string } | null;
+      this.trace(`ask-move ${agentId} -> ${target}: ${reply?.outcome ?? "?"}`);
+    } catch (error) {
+      this.trace(`ask-move ${agentId} -> ${target}: failed (${error instanceof Error ? error.message : String(error)})`);
+    }
+  }
   private trace(line: string) {
     try { this.log(`[smart-session] guard ${line}`); } catch { /* Tracing never breaks a hold. */ }
   }
@@ -344,6 +375,7 @@ export class Engine {
           this.trace(`resume-now ${agentId} pause ${short(pause.id)} moving`);
           this.moving.set(pause.id, this.now()); this.resumeOnMove.set(pause.id, this.now());
           await this.save(state);
+          await this.askMove(client, agentId, pause.provider);
           return;
         }
         await this.resumeInPlace(client, state, pause, latest, running);
@@ -597,6 +629,7 @@ export class Engine {
           if (!pause.wasQuotaFailure && !pause.stoppedByUser && zerosubMoves(pause.agentId, pause.provider)) {
             // Another account has room now: let ZeroSub move the session instead of holding it.
             if (pause.idle) {
+              await this.askMove(client, pause.agentId, pause.provider);
               await this.cancel(pause, "ZeroSub is moving this session to an account with room, so it isn't held."); changed = true; continue;
             }
             if (pause.suspension) {
@@ -610,6 +643,7 @@ export class Engine {
               await this.save(state);
             }
             if (!this.moving.has(pause.id)) this.moving.set(pause.id, this.now());
+            await this.askMove(client, pause.agentId, pause.provider);
           }
         }
         if (pause.suspension) {
@@ -736,7 +770,7 @@ export class Engine {
         // move; a running turn is stopped in the foreground (a frozen process can't be reopened)
         // and continues on the new account. Native background work stays held as before.
         const moving = (kind === "idle" || kind === "interrupt") && zerosubMoves(agent.id, agent.provider);
-        if (moving && idle) continue;
+        if (moving && idle) { await this.askMove(client, agent.id, agent.provider); continue; }
         // Do not stop a new turn based on a snapshot from before the upstream read.
         const latest = (await client.fetchAgent(agent.id))?.agent;
         if (!latest || latest.status !== agent.status || latest.provider !== agent.provider || latest.archivedAt ||
@@ -776,6 +810,7 @@ export class Engine {
           if (pause.suspension) await this.processes!.freeze(pause.suspension, () => this.store.write(state));
           else await client.cancelAgent(agent.id);
           pause.phase = "waiting";
+          if (moving) await this.askMove(client, agent.id, agent.provider);
         } catch {
           if (pause.suspension) {
             // Release partial suspensions before asking for manual inspection.

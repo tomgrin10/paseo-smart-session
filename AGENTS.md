@@ -293,6 +293,12 @@
   a running turn is interrupted in the foreground (a SIGSTOPped process can't be reopened elsewhere),
   then continued once ZeroSub has reopened it on an account with room (`movedSince`). With no room
   anywhere, autoSwitch off, Codex, native background work or without ZeroSub the hold is unchanged.
+  **Invariant (seam C): the guard never holds a session at its threshold while ZeroSub could move it.** Below
+  100% ZeroSub sees no limit and moves nothing, so the guard asks: `Engine.askMove` calls
+  `zerosub.agents.move_before_limit` (ZeroSub 1.5.1-pace.13+) with `moveTarget` (another account with room by the
+  guard's rule, lowest usage), once per grace, after the turn is stopped. Never when ZeroSub has recorded a limit on
+  the agent's account: ZeroSub moves it itself, and asking too would move it twice. An older ZeroSub fails the call
+  and the grace and hold stay as they were (`guard-zerosub-limits.test.ts`, "seam C").
   ZeroSub (pace.10+) moves agents off an account its own reading finds full, not only on the CLI's
   limit notice, which never comes while Extra usage is on. **A hold shows the closest reset and lands
   there** (Tom, 2026-11-12): a hold's displayed reset (`heldUntil`) is the earliest moment any account

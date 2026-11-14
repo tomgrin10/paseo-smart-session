@@ -1,0 +1,1 @@
+- With ZeroSub and a pause threshold below 100%, a session at the threshold now moves to an account with room instead of being held. Smart Session asks ZeroSub to move it. Needs ZeroSub 1.5.1-pace.13.
