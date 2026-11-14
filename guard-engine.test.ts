@@ -757,7 +757,7 @@ test("the card's usage is the agent's own account, not the CLI login's", async t
   const f = await fixture(t);
   f.usage({ fetchedAt: iso(base), providers: [{ providerId: "claude", status: "available", windows: [{ id: "five_hour", usedPct: 47, resetsAt: iso(end) }] }] });
   const own: Usage = { fetchedAt: iso(base), providers: [{ providerId: "claude", status: "available", windows: [{ id: "five_hour", usedPct: 100, resetsAt: iso(end) }] }] };
-  const view = { usageFor: () => own, failsOver: () => false, switchesAtLimit: () => false, roomSince: () => null, movedSince: () => false, continuedElsewhere: () => false, nextRoom: () => null, moveTarget: () => null };
+  const view = { usageFor: () => own, failsOver: () => false, switchesAtLimit: () => false, roomSince: () => null, movedSince: () => false, continuedElsewhere: () => false, nextRoom: () => null, moveTarget: () => null, accountId: () => null };
   const events: { usedPct: number | null }[] = [];
   const engine = new Engine(f.store, async () => policyOf(), async work => work(f.client), () => base, undefined,
     async (_a, n) => { events.push(n.data); }, client => client.listProviderUsage(), async () => view);

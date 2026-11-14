@@ -18,7 +18,9 @@ import { Store } from "./server/guard/store.ts";
 import { PolicySchema, type Agent, type Pause, type Policy, type Usage } from "./shared/guard/policy.ts";
 import { accountView, parseZeroSub } from "./shared/guard/zerosub.ts";
 import { limitNotice, turnRows } from "./shared/guard/limit-notice.ts";
+import * as hold from "./shared/guard/hold.ts";
 import { heldUntil, ZEROSUB_MOVE_GRACE_MS, ZeroSubMoves } from "./shared/guard/hold.ts";
+import { promptCard } from "./shared/chat.ts";
 import type { GuardClient } from "./server/guard/client.ts";
 import type { ProcessControl } from "./server/guard/processes.ts";
 
@@ -115,12 +117,13 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, options: { z
   const paseo = (): Usage => ({ fetchedAt: iso(now), providers: [{ providerId: provider, status: "available", fetchedAt: iso(now),
     windows: [{ id: provider === "codex" ? "session" : "five_hour", usedPct: paseoPct, resetsAt: iso(paseoResets) }] }] });
   const log: string[] = [];
+  const sent: string[] = [];
   const client: GuardClient = {
     fetchAgents: async () => ({ entries: [{ agent: structuredClone(agent) }] }),
     fetchAgent: async id => (id === agent.id ? { agent: structuredClone(agent) } : null),
     listProviderUsage: async () => paseo(),
     cancelAgent: async () => { log.push("guard:interrupt"); agent.status = "idle"; agent.activeTurn = null; },
-    sendMessage: async (_id, _text, opts) => { log.push(`guard:continue:${opts?.messageId}`); userTurn("c"); },
+    sendMessage: async (_id, text, opts) => { log.push(`guard:continue:${opts?.messageId}`); sent.push(text); userTurn("c"); },
     getDaemonStatus: async () => ({ pid: 9001 }),
     listProviderSubagents: async () => ({ subagents: [] }),
     ...(options.rpc ? { invokePluginRpc: async (plugin: string, method: string, input: unknown) => { log.push(`rpc:${plugin}:${method}:${JSON.stringify(input)}`); return options.rpc!(method, input); } } : {}),
@@ -152,7 +155,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, options: { z
     else log.push("zerosub:stayed");
   };
   return {
-    store, engine, agent, zs: zs!, log, native,
+    store, engine, agent, zs: zs!, log, native, sent,
     at: (ms: number) => { now = ms; },
     get now() { return now; },
     paseoReads: (pct: number, resets = paseoResets) => { paseoPct = pct; paseoResets = resets; },
@@ -853,4 +856,47 @@ test("seam C: with a ZeroSub that can't be asked, the session is held after the 
   f.zs.read("claude-b", { at: f.now, fiveHour: 6, fiveResets: T0 + 5 * HOUR, weekly: 40 });
   await f.engine.tick();
   assert.deepEqual((await f.pauses()).map(p => [p.phase, p.idle]), [["waiting", true]]);
+});
+
+// --------------------------------------------------------------------------- seam D
+
+// Seam D (2026-11-12): after ZeroSub moved a held session to another account, the continuation said
+// "The usage window has now reset", which wasn't what happened. Invariant: the continuation says what
+// ended the hold: a move to another account, or the reset.
+const { MOVED_LEAD, continuationText } = hold as unknown as { MOVED_LEAD: string; continuationText: (policy: Policy, moved: boolean) => string };
+test("seam D invariant: a session continued after a move is told it moved, not that the window reset", async t => {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(t, { native: true, policy: { thresholdPct: 90 }, rpc: (m, i) => zerosubMoves(() => f)(m, i) });
+  f.engine.zerosubPluginId = async () => "zerosub";
+  f.zs.sessions.x = "claude-a";
+  aNearlyBRoomy(f.zs);
+  await f.engine.tick();
+  f.at(T0 + 30_000);
+  await f.engine.tick();
+  assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0]!, new RegExp(`^${MOVED_LEAD.replace(/[.]/g, "\\.")}`));
+  assert.doesNotMatch(f.sent[0]!, /reset/i);
+  assert.match(f.sent[0]!, /Continue the unfinished task from where you left off/);
+});
+
+test("seam D: a session continued at its own account's reset still says the window reset", async t => {
+  const f = await fixture(t);
+  f.zs.sessions.x = "claude-a";
+  bothFull(f.zs);
+  await f.engine.tick();
+  const [pause] = await f.pauses();
+  assert.ok(pause, "held");
+  f.at(T0 + 5 * HOUR + MIN);
+  f.zs.read("claude-a", { at: f.now, fiveHour: 2, fiveResets: T0 + 10 * HOUR });
+  await f.engine.tick();
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0], PolicySchema.parse({}).continuation);
+});
+
+test("seam D: the chat card for a move continuation says it moved", () => {
+  const text = continuationText(PolicySchema.parse({}), true);
+  assert.equal(promptCard(text)?.kind, "guard-moved");
+  assert.equal(promptCard(PolicySchema.parse({}).continuation)?.kind, "guard-continue");
+  // A custom continuation keeps its own words after the move's lead.
+  assert.equal(continuationText(PolicySchema.parse({ continuation: "Carry on." }), true), `${MOVED_LEAD} Carry on.`);
 });

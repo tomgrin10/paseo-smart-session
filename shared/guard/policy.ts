@@ -11,6 +11,16 @@
 import { z } from "zod";
 import { NotificationSchema } from "./timeline.ts";
 
+/** What the default continuation asks of the agent, after the line that says why it stopped. */
+export const CONTINUATION_TAIL =
+  "Continue the unfinished task from where you left off, " +
+  "using this conversation and the current workspace state. Check any interrupted operation " +
+  "before retrying it. If the task is already complete, do not repeat it.";
+/** The continuation after the reset. Its first sentence is how the chat card recognises it. */
+export const DEFAULT_CONTINUATION =
+  "Your previous turn was paused because the provider's session usage limit was reached. " +
+  "The usage window has now reset. " + CONTINUATION_TAIL;
+
 export const PolicySchema = z.object({
   /**
    * Off by default, unlike the standalone plugin. Pausing a running agent is a much
@@ -28,16 +38,16 @@ export const PolicySchema = z.object({
   workspaceLabels: z.boolean().default(true),
   providerIds: z.array(z.string().min(1)).default([]),
   windowIds: z.array(z.string().min(1)).min(1).default(["five_hour", "session"]),
-  continuation: z.string().trim().min(1).max(8000).default(
-    "Your previous turn was paused because the provider's session usage limit was reached. " +
-    "The usage window has now reset. Continue the unfinished task from where you left off, " +
-    "using this conversation and the current workspace state. Check any interrupted operation " +
-    "before retrying it. If the task is already complete, do not repeat it.",
-  ),
+  continuation: z.string().trim().min(1).max(8000).default(DEFAULT_CONTINUATION),
 });
 export type Policy = z.infer<typeof PolicySchema>;
 
 export const PauseSchema = z.object({
+  /**
+   * The ZeroSub account the session ran on when it was held. Display and wording only: a
+   * continuation on another account says it moved (`continuationText`). Optional, like `idle`.
+   */
+  accountId: z.string().optional(),
   id: z.string(), agentId: z.string(), workspaceId: z.string().optional(), provider: z.string(), title: z.string().nullable(),
   windowId: z.string(), anchorResetsAt: z.string().nullable(),
   pausedAt: z.string(), lastUserMessageAt: z.string().nullable(), turnId: z.string().nullable(),

@@ -359,6 +359,8 @@ export interface AccountView {
    * own account: ZeroSub then moves it by itself, and asking as well would move it twice.
    */
   moveTarget(agentId: string, provider: string): string | null;
+  /** The account ZeroSub's session record names for this agent, or null. */
+  accountId(agentId: string, provider: string): string | null;
   /**
    * Where a held session gets room soonest, when ZeroSub could move it (automatic switching
    * on, and another account of its provider signed in and not set aside): the earliest of
@@ -415,6 +417,7 @@ export function accountView(
       return snapshot.accounts.some((other) => other.family === account.family && other.id !== account.id && roomAfter(other, since)) ? "elsewhere" : null;
     },
     continuedElsewhere: (agentId) => snapshot.continuedElsewhere.has(agentId),
+    accountId: (agentId, provider) => accountOf(snapshot, agentId, provider)?.id ?? null,
     moveTarget(agentId, provider) {
       const account = accountOf(snapshot, agentId, provider);
       if (!account || !snapshot.autoSwitch || limited(account, now)) return null;

@@ -1,0 +1,1 @@
+- After ZeroSub moves a held session to another account, its continuation now says the session moved to an account with room, not that the usage window reset. The chat card reads "Continue on another account".

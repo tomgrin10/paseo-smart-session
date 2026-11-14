@@ -13,7 +13,7 @@
  * the full account after `ZEROSUB_MOVE_GRACE_MS` is it held as usual. Without room on any
  * other account, with automatic switching off or without ZeroSub, nothing changes.
  */
-import type { Agent, Pause } from "./policy.ts";
+import { CONTINUATION_TAIL, DEFAULT_CONTINUATION, type Agent, type Pause, type Policy } from "./policy.ts";
 
 /**
  * Whether the guard may hold this session: the daemon has it open now. A closed
@@ -113,4 +113,20 @@ export class ZeroSubMoves {
  */
 export function heldUntil(pause: Pick<Pause, "anchorResetsAt" | "nextRoomAt">): string | null {
   return pause.nextRoomAt ?? pause.anchorResetsAt;
+}
+
+/**
+ * The first line of a continuation after ZeroSub moved a held session to another account: the
+ * window didn't reset, the session moved. The chat card recognises it (`shared/chat.ts`).
+ */
+export const MOVED_LEAD = "Your previous turn was paused at the usage limit, and this session has since moved to another account with room.";
+
+/**
+ * Invariant (seam D): a continuation says what ended the hold. After a move it leads with
+ * `MOVED_LEAD`, never "the usage window has now reset"; a custom continuation keeps its own words
+ * after that line. After a reset it is the configured continuation, unchanged.
+ */
+export function continuationText(policy: Pick<Policy, "continuation">, moved: boolean): string {
+  if (!moved) return policy.continuation;
+  return `${MOVED_LEAD} ${policy.continuation === DEFAULT_CONTINUATION ? CONTINUATION_TAIL : policy.continuation}`;
 }
