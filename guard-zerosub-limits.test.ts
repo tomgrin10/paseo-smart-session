@@ -784,7 +784,7 @@ function aNearlyBRoomy(zs: ZeroSub, at = T0) {
 /** ZeroSub 1.5.1-pace.13: moves the agent between turns and says so. */
 const zerosubMoves = (f: () => { zs: ZeroSub; now: number }) => async (method: string, input: { agentId: string; accountId: string }) => {
   assert.equal(method, MOVE_RPC);
-  f().zs.move(input.agentId, input.accountId, f().now);
+  f().zs.move(input.agentId, input.accountId, f().now + 1_000); // The reopen lands a moment later.
   return { outcome: "moved", detail: null };
 };
 

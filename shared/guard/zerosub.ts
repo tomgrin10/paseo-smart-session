@@ -353,6 +353,13 @@ export interface AccountView {
   /** ZeroSub already carries this agent's Codex task on in another tab. */
   continuedElsewhere(agentId: string): boolean;
   /**
+   * The account to ask ZeroSub to move this agent to before its own is out (`moveBeforeLimit`):
+   * the other account of its provider with room by the guard's rule and the lowest usage. Null when
+   * automatic switching is off, nothing has room, or ZeroSub has recorded a limit on the agent's
+   * own account: ZeroSub then moves it by itself, and asking as well would move it twice.
+   */
+  moveTarget(agentId: string, provider: string): string | null;
+  /**
    * Where a held session gets room soonest, when ZeroSub could move it (automatic switching
    * on, and another account of its provider signed in and not set aside): the earliest of
    * `ownAt` (its own account's reset, as the guard anchors it) and each other account's
@@ -408,6 +415,15 @@ export function accountView(
       return snapshot.accounts.some((other) => other.family === account.family && other.id !== account.id && roomAfter(other, since)) ? "elsewhere" : null;
     },
     continuedElsewhere: (agentId) => snapshot.continuedElsewhere.has(agentId),
+    moveTarget(agentId, provider) {
+      const account = accountOf(snapshot, agentId, provider);
+      if (!account || !snapshot.autoSwitch || limited(account, now)) return null;
+      const peak = (id: string) => Math.max(0, ...(snapshot.readings[id]?.windows.filter((window) => !rolledOver(window, now)).map((window) => window.usedPct) ?? []));
+      const open = snapshot.accounts.filter((other) =>
+        other.family === account.family && other.id !== account.id && hasRoom(snapshot, other, policy.thresholdPct, policy.windowIds, now));
+      open.sort((a, b) => peak(a.id) - peak(b.id) || (time(a.createdAt) ?? 0) - (time(b.createdAt) ?? 0));
+      return open[0]?.id ?? null;
+    },
     nextRoom(agentId, provider, ownAt) {
       const account = accountOf(snapshot, agentId, provider);
       if (!account || !snapshot.autoSwitch) return null;

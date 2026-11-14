@@ -42,7 +42,7 @@ import { standaloneEnabled } from "./standalone.ts";
 import { guardDataDir, LockHeldError, Store } from "./store.ts";
 import { timelinePublisher } from "./timeline.ts";
 import { withRecordedUsage } from "./usage.ts";
-import { readZeroSub } from "./zerosub.ts";
+import { readZeroSub, zerosubInstallId } from "./zerosub.ts";
 import { accountView } from "../../shared/guard/zerosub.ts";
 import { limitNotice, turnRows, type TurnRow } from "../../shared/guard/limit-notice.ts";
 
@@ -135,6 +135,8 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     return snapshot ? accountView(snapshot, usage, policy, Date.now()) : null;
   });
   const engine = new Engine(store, readPolicy, connect, Date.now, options.processes ?? new LinuxProcessControl(), publish, readUsage, readAccounts);
+  // Seam C: the guard asks ZeroSub to move a session at its threshold (`Engine.askMove`).
+  engine.zerosubPluginId = () => zerosubInstallId();
   const labels = new WorkspaceLabels(store, (work) => engine.exclusive(work), connect, readPolicy);
 
   let governor: Governor = "off";
