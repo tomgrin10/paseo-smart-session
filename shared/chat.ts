@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MOVED_LEAD } from "./guard/hold.ts";
 
 /**
  * Smart Session's agent tools and plugin-sent messages as they appear in a chat,
@@ -22,7 +23,7 @@ export const ToolRowSchema = z.object({
 export type ToolRow = z.infer<typeof ToolRowSchema>;
 
 export const PromptCardSchema = z.object({
-  kind: z.enum(["compact", "continue", "guard-continue", "guard-resume"]),
+  kind: z.enum(["compact", "continue", "guard-continue", "guard-moved", "guard-resume"]),
   /** compact: the reason the agent gave. */
   reason: z.string(),
   /** compact / continue: the state file it re-reads, when named. */
@@ -197,6 +198,7 @@ export function promptCard(text: string): PromptCard | null {
     return { kind: "continue", reason: "", statePath, text: body };
   }
   if (body.startsWith(GUARD_DEFAULT_PREFIX)) return { kind: "guard-continue", reason: "", statePath: "", text: body };
+  if (body.startsWith(MOVED_LEAD)) return { kind: "guard-moved", reason: "", statePath: "", text: body };
   if (body.startsWith(GUARD_RESUME_PREFIX)) return { kind: "guard-resume", reason: "", statePath: "", text: body };
   return null;
 }

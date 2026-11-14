@@ -19,7 +19,7 @@ import {
   isPending, protects, resetReady, sessionWindow, timestamp, usedPct,
   type Agent, type Pause, type Policy, type State, type Usage,
 } from "../../shared/guard/policy.ts";
-import { continuesAtReset, freezesIdle, heldUntil, holdKind, messageArrived, messageWaiting, ZEROSUB_MOVE_GRACE_MS, zerosubCanMove, ZeroSubMoves } from "../../shared/guard/hold.ts";
+import { continuationText, continuesAtReset, freezesIdle, heldUntil, holdKind, messageArrived, messageWaiting, ZEROSUB_MOVE_GRACE_MS, zerosubCanMove, ZeroSubMoves } from "../../shared/guard/hold.ts";
 
 /** The first 8 characters of a pause id: enough to find it in state.json. */
 const short = (id: string) => id.slice(0, 8);
@@ -717,10 +717,13 @@ export class Engine {
         pause.phase = "resuming";
         await this.save(state);
         try {
-          await client.sendMessage(pause.agentId, policy.continuation, { messageId: pause.id, activeTurnBehavior: "steer" });
+          // Say what ended the hold: a move to another account, or the reset (seam D).
+          const now = accounts?.accountId(pause.agentId, pause.provider) ?? null;
+          const moved = !!pause.accountId && now !== null && now !== pause.accountId;
+          await client.sendMessage(pause.agentId, continuationText(policy, moved), { messageId: pause.id, activeTurnBehavior: "steer" });
           pause.phase = "resumed"; pause.settledAt = new Date(this.now()).toISOString(); pause.note = null;
           this.nextResumeAt = this.now() + policy.resumeSpacingSeconds * 1000;
-          this.trace(`resumed ${pause.agentId} pause ${short(pause.id)} continuation sent${manualMove !== undefined ? " after Resume now" : ""}`);
+          this.trace(`resumed ${pause.agentId} pause ${short(pause.id)} continuation sent${moved ? " (moved)" : ""}${manualMove !== undefined ? " after Resume now" : ""}`);
           if (manualMove !== undefined) {
             // A person chose Resume now: it stops pausing at the limit, as Resume now always does.
             state.overrides[pause.agentId] = false; pause.manualResume = true;
@@ -797,6 +800,7 @@ export class Engine {
           turnId: agent.activeTurn?.turnId ?? null, phase: (quotaFailed || idle) && !suspension ? "waiting" : "pausing",
           note: moving ? "ZeroSub is moving this session to an account with room; it continues there." : null, settledAt: null,
           wasQuotaFailure: quotaFailed, daemonIdentity: currentDaemon, ...(idle ? { idle: true } : {}),
+          ...(accounts?.accountId(agent.id, agent.provider) ? { accountId: accounts.accountId(agent.id, agent.provider)! } : {}),
           ...(suspension ? { suspension } : {}),
         };
         if (accounts && !quotaFailed) showNextRoom(pause, accounts);

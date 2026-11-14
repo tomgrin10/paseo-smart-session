@@ -299,6 +299,10 @@
   guard's rule, lowest usage), once per grace, after the turn is stopped. Never when ZeroSub has recorded a limit on
   the agent's account: ZeroSub moves it itself, and asking too would move it twice. An older ZeroSub fails the call
   and the grace and hold stay as they were (`guard-zerosub-limits.test.ts`, "seam C").
+  **Invariant (seam D): a continuation says what ended the hold.** A pause records the ZeroSub account it was held
+  on (`accountId`, optional); a continuation sent on another account leads with `MOVED_LEAD` ("…moved to another
+  account with room"), never "the usage window has now reset" (`continuationText`, `shared/guard/hold.ts`), and the
+  chat shows it as "Continue on another account". After a reset it is the configured continuation, unchanged.
   ZeroSub (pace.10+) moves agents off an account its own reading finds full, not only on the CLI's
   limit notice, which never comes while Extra usage is on. **A hold shows the closest reset and lands
   there** (Tom, 2026-11-12): a hold's displayed reset (`heldUntil`) is the earliest moment any account

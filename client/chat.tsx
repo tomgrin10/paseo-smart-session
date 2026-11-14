@@ -55,6 +55,7 @@ const CARD: Record<PromptCard["kind"], { icon: string; title: string }> = {
   compact: { icon: "FoldVertical", title: "Compaction the agent asked for" },
   continue: { icon: "CornerDownRight", title: "Continue after compaction" },
   "guard-continue": { icon: "Play", title: "Continue after the reset" },
+  "guard-moved": { icon: "Play", title: "Continue on another account" },
   "guard-resume": { icon: "Play", title: "Resume now" },
 };
 
@@ -63,6 +64,7 @@ function cardBody(card: PromptCard): string {
     case "compact": return card.reason ? card.reason : "No reason given.";
     case "continue": return card.statePath ? `Re-read ${fileName(card.statePath)} and carry on from its current step.` : "Pick the task up from the summary and carry on.";
     case "guard-continue": return "The session window reset. Pick up the unfinished task where it stopped.";
+    case "guard-moved": return "It moved to an account with room. Pick up the unfinished task where it stopped.";
     case "guard-resume": return "You resumed this session before the reset. The provider may still refuse work until then.";
   }
 }
