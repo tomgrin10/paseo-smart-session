@@ -88,13 +88,16 @@ test("decision table: account × action", () => {
 
 const LIMITED_UNTIL = "2026-11-15T04:00:00.120Z";
 const NOW_13 = Date.parse("2026-11-13T09:00:00Z");
-const limitedState = (limitKind: "window" | "budget" = "window") => ({
+const limitedState = (limitKind: "window" | "budget" = "window", until = LIMITED_UNTIL) => ({
   ...STATE,
-  accounts: STATE.accounts.map((account) => account.id === "claude-main" ? { ...account, limitedUntil: LIMITED_UNTIL, limitKind } : account),
+  accounts: STATE.accounts.map((account) => account.id === "claude-main" ? { ...account, limitedUntil: until, limitKind } : account),
 });
-const reading = (extraUsage: unknown) => ({
-  "claude-main": { fetchedAt: "2026-11-13T08:59:00Z", windows: [{ id: "seven_day", usedPercent: 100, resetsAt: LIMITED_UNTIL }], ...(extraUsage === undefined ? {} : { extraUsage }) },
+const reading = (extraUsage: unknown, until = LIMITED_UNTIL) => ({
+  "claude-main": { fetchedAt: "2026-11-13T08:59:00Z", windows: [{ id: "seven_day", usedPercent: 100, resetsAt: until }], ...(extraUsage === undefined ? {} : { extraUsage }) },
 });
+// The host tests below run on the real clock, so their limit must still be ahead of it: a fixed date
+// passes and turns main back into an account with room, and the tests stop testing a limited owner.
+const LIVE_UNTIL = new Date(Date.now() + 2 * 24 * 60 * 60_000).toISOString();
 const ON = { enabled: true, spend: 13_752, limit: 22_000, currency: "USD" };
 
 test("invariant: a limited owner takes a publish only with the setting on and credits left", () => {
@@ -401,7 +404,7 @@ test("the tool says plainly when there is nothing to switch to", async () => {
 });
 
 test("limited main, setting off → deny with the reason, no helper, a refused run logged", async () => {
-  const { home, work, call, helpers } = await setupHost(limitedState(), reading(ON));
+  const { home, work, call, helpers } = await setupHost(limitedState("window", LIVE_UNTIL), reading(ON, LIVE_UNTIL));
   const out = await publishAsHook(event(work, { file_path: "page.html" }), { env: { PASEO_AGENT_ID: SEAT }, call, native: true }) as any;
   assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /^Not published: .* is out of usage until .*Use the main account's Extra usage when it's out/s);
@@ -421,7 +424,7 @@ test("limited main, setting off → deny with the reason, no helper, a refused r
 });
 
 test("limited main, setting on with credits left → the helper runs on main's Extra usage", async () => {
-  const { work, call, helpers } = await setupHost(limitedState(), reading(ON));
+  const { work, call, helpers } = await setupHost(limitedState("window", LIVE_UNTIL), reading(ON, LIVE_UNTIL));
   const settings = (await import("./server/settings.ts")) as typeof import("./server/settings.ts");
   await settings.writeSettings({ publishAsExtraUsage: true });
   const out = await publishAsHook(event(work, { file_path: "page.html" }), { env: { PASEO_AGENT_ID: SEAT }, call, native: true }) as any;

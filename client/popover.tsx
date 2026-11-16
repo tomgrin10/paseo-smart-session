@@ -79,7 +79,7 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
     // A stuck pause can only be released; a waiting one gets the same two actions as its chat card.
     // Done acting on the pause: close. Left open, the protection row ("Use default", the switch)
     // takes the buttons' place in the same spot, so a second click on a slow Resume now turned
-    // pausing straight back on (the likely cause of 18dfa78f's re-hold, 2026-11-12).
+    // pausing straight back on (the likely cause of a re-hold seen on 2026-11-12).
     const release = () => run("release", async () => {
       await cancelResume({ agentId });
       close();
