@@ -740,7 +740,7 @@ test("Resume now with no account that has room resumes in place, as before", asy
 // --------------------------------------------------------------------------- audit B: the re-hold after Resume now
 
 /**
- * 2026-11-12, 18dfa78f: Resume now at 11:43:57 thawed a frozen hold and turned pausing off
+ * 2026-11-12, one session: Resume now at 11:43:57 thawed a frozen hold and turned pausing off
  * for the session; at 11:44:06 the guard held the same turn again, which it does only once
  * protection is back on. Nothing in the engine turns it back on; only a person's protection
  * change does (the popover's switch or "Use default", the overview's "Use default"), and the
