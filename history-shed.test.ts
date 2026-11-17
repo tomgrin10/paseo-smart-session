@@ -19,8 +19,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, appendFile } from "node:fs/promises";
+import { closeSync, existsSync, openSync, readdirSync, writeSync } from "node:fs";
+import { appendFile, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -49,6 +49,7 @@ import {
   settle,
   type ShedEnv,
   tempNames,
+  sideNames,
   markNoted,
   requestRestore as requestRestoreFor,
   unnoted,
@@ -331,7 +332,7 @@ test("two sheds racing: one commits, the other refuses, nothing is half-done", a
 
 // ---------------------------------------------------------------------------------------------- crashes
 
-const STEPS = ["commit:verify-original", "commit:verify-backup", "commit:write-temp", "commit:rename", "commit:verify-new"];
+const STEPS = ["commit:verify-original", "commit:verify-backup", "commit:write-temp", "commit:holders", "commit:link", "commit:rename", "commit:after-rename", "commit:verify-new", "commit:finish-save"];
 
 test("a crash at any step leaves the transcript either whole or fully shed, and the next try finishes", async (t) => {
   for (const step of [...STEPS, "commit:subagent"]) {
@@ -355,7 +356,7 @@ test("a crash at any step leaves the transcript either whole or fully shed, and 
       const final = (await readPlan(w.env, w.agentId))!;
       assert.equal(final.state, "committed");
       for (const s of final.subagents.filter((s) => s.move)) assert.equal(existsSync(join(w.sessionDir, "subagents", s.name)), false);
-      for (const temp of tempNames(plan)) assert.equal(existsSync(temp), false, "no temp file left");
+      for (const temp of [...tempNames(plan), ...sideNames(plan)]) assert.equal(existsSync(temp), false, "no temp file left");
       await rm(w.root, { recursive: true });
     });
   }
@@ -563,6 +564,310 @@ test("a commit whose process died before its chat row gets the row at the next o
   assert.ok((await commit(w2.env, p2, FAR())).ok);
   await requestRestoreFor(w2.env, w2.agentId);
   assert.equal(await unnoted(w2.env, w2.agentId), null);
+  await rm(w.root, { recursive: true });
+  await rm(w2.root, { recursive: true });
+});
+
+// ---------------------------------------------------------------------------------------------- review of 3.8.0-beta.1
+
+const LINE = '{"type":"user","message":{"content":"written during the shed"}}\n';
+const sideFiles = (plan: { path: string; id: string }) => [...tempNames(plan as never), ...sideNames(plan as never)];
+
+const COMMIT_WINDOW = ["commit:verify-original", "commit:verify-backup", "commit:write-temp", "commit:holders", "commit:link", "commit:rename", "commit:after-rename"];
+
+test("a line written at any point from the first read to the rename is in the result, or the commit is refused", async (t) => {
+  // A writer the holder scan can't see (a terminal `claude -c` opens the file only while it writes, and its
+  // command line doesn't name the session) has the file open already and writes at each step in turn.
+  for (const step of COMMIT_WINDOW) {
+    await t.test(step, async () => {
+      const w = await world();
+      const original = await readFile(w.transcript);
+      const plan = await prepared(w);
+      const fd = openSync(w.transcript, "a");
+      const env: ShedEnv = { ...w.env, step: (name) => { if (name === step) writeSync(fd, LINE); } };
+      const out = await commit(env, plan, FAR());
+      closeSync(fd);
+      const now = await readFile(w.transcript);
+      if (out.ok) assert.ok(now.includes(LINE), "a commit that went through kept the line");
+      else assert.ok(now.equals(Buffer.concat([original, Buffer.from(LINE)])), `refused (${out.why}): the original plus the line, byte for byte`);
+      assert.equal(sha(await readFile(join(plan.backupDir, "transcript.jsonl"))), sha(original), "backup intact");
+      for (const f of sideFiles(plan)) assert.equal(existsSync(f), false, `no ${f} left`);
+      await rm(w.root, { recursive: true });
+    });
+  }
+});
+
+test("a process still holding the old file after the rename puts the original back", async () => {
+  // Seen only by inode: after the rename the old file has no name a path scan would match.
+  const w = await world({}, { holders: async (_path, _sid, inode) => (inode ? ["4242:fd"] : []) });
+  const original = await readFile(w.transcript);
+  const plan = await prepared(w);
+  const out = await commit(w.env, plan, FAR());
+  assert.equal(!out.ok && out.why, "late-write");
+  assert.ok((await readFile(w.transcript)).equals(original));
+  assert.equal((await readPlan(w.env, w.agentId))?.state ?? "discarded", "discarded");
+  for (const f of sideFiles(plan)) assert.equal(existsSync(f), false, `no ${f} left`);
+  await rm(w.root, { recursive: true });
+});
+
+test("a commit stops before the rename once its open is canceled", async () => {
+  const w = await world();
+  const before = await fingerprint(w);
+  const plan = await prepared(w);
+  const controller = new AbortController();
+  const env: ShedEnv = { ...w.env, step: (name) => { if (name === "commit:write-temp") controller.abort(); } };
+  const out = await commit(env, plan, FAR(), controller.signal);
+  assert.equal(!out.ok && out.why, "aborted");
+  const after = diff(before, await fingerprint(w));
+  assert.deepEqual([after.changed, after.missing, after.added], [[], [], []]);
+  assert.equal((await readPlan(w.env, w.agentId))?.state, "prepared");
+  await rm(w.root, { recursive: true });
+});
+
+test("a crash after the rename, then new lines: the next open finishes the shed, and restore still works", async (t) => {
+  for (const step of ["commit:after-rename", "commit:verify-new", "commit:finish-save"]) {
+    await t.test(step, async () => {
+      const { requestRestore, restoreRequested } = await import("./server/history-shed.ts");
+      const w = await world();
+      const original = await readFile(w.transcript);
+      const plan = await prepared(w);
+      const crashing: ShedEnv = { ...w.env, step: (name) => { if (name === step) throw new Error(`crash at ${name}`); } };
+      assert.equal((await commit(crashing, plan, FAR())).ok, false);
+      await appendFile(w.transcript, LINE);
+      await settle(w.env, (await readPlan(w.env, w.agentId))!);
+      assert.equal((await readPlan(w.env, w.agentId))?.state, "committed", "finished, though the file grew since");
+      assert.equal((await requestRestore(w.env, w.agentId))?.length, 1);
+      const results = await restoreRequested(w.env, w.agentId, FAR());
+      assert.deepEqual(results.map((r) => r.ok), [true]);
+      assert.ok((await readFile(w.transcript)).equals(Buffer.concat([original, Buffer.from(LINE)])));
+      for (const f of sideFiles(plan)) assert.equal(existsSync(f), false, `no ${f} left`);
+      await rm(w.root, { recursive: true });
+    });
+  }
+});
+
+test("Smart Session never deletes a backup: a plan whose transcript moved on keeps its files", async () => {
+  const w = await world();
+  const plan = await prepared(w);
+  const files = new Map<string, string>();
+  const walk = async (dir: string) => { for (const e of await readdir(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (e.isDirectory()) await walk(p); else files.set(p, sha(await readFile(p))); } };
+  await walk(plan.backupDir);
+  await appendFile(w.transcript, LINE);
+  assert.equal(await settle(w.env, plan), "discarded");
+  assert.equal((await readPlan(w.env, w.agentId)), null, "no plan in use");
+  for (const [p, h] of files) assert.equal(sha(await readFile(p)), h, `${p} kept`);
+  await rm(w.root, { recursive: true });
+});
+
+test("the module removes nothing but its own temp names, its lock, and subagent files it verified in the backup", async () => {
+  const source = await readFile(new URL("./server/history-shed.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /\brm(dir)?(Sync)?\(|\brm\b.*from "node:fs/, "no rm or rmdir anywhere");
+  const removals = source.split("\n").filter((l) => /\bunlink(Sync)?\(/.test(l));
+  assert.ok(removals.length > 0);
+  for (const line of removals) {
+    assert.doesNotMatch(line, /backup/i, `never a backup path: ${line.trim()}`);
+    assert.match(line, /\bunlink(Sync)?\((temp|lockFile|second|movedSource|movedMeta)\b/, `only an allowed name: ${line.trim()}`);
+  }
+});
+
+test("backups live in Smart Session's data folder, keyed by the transcript's folder and session id", async () => {
+  const w = await world();
+  const before = await fingerprint(w);
+  const plan = await prepared(w);
+  assert.ok(plan.backupDir.startsWith(join(w.env.dataDir, "history-shed", "backups") + "/"), plan.backupDir);
+  assert.ok(plan.backupDir.includes(`/${w.sessionId}/`));
+  const after = diff(before, await fingerprint(w));
+  assert.deepEqual([after.changed, after.missing, after.added], [[], [], []], "nothing added beside the transcript");
+  await rm(w.root, { recursive: true });
+});
+
+test("a backup in the 3.8.0-beta.1 place is copied over, verified, and the old copy is left as it was", async () => {
+  const { migrateBackups, savePlanForTest } = await import("./server/history-shed.ts");
+  const w = await world();
+  const original = await readFile(w.transcript);
+  const plan = await prepared(w);
+  assert.ok((await commit(w.env, plan, FAR())).ok);
+  // Where beta.1 kept it: beside the transcript.
+  const old = join(w.sessionDir, "shed", plan.id);
+  await mkdir(join(old, "subagents"), { recursive: true });
+  const copied = new Map<string, string>();
+  const copyDir = async (from: string, to: string) => { for (const e of await readdir(from, { withFileTypes: true })) { if (e.isDirectory()) { await mkdir(join(to, e.name), { recursive: true }); await copyDir(join(from, e.name), join(to, e.name)); } else { const b = await readFile(join(from, e.name)); await writeFile(join(to, e.name), b); copied.set(join(to, e.name), sha(b)); } } };
+  await copyDir(plan.backupDir, old);
+  await rm(plan.backupDir, { recursive: true });
+  const committed = (await readPlan(w.env, w.agentId))!;
+  await savePlanForTest(w.env, { ...committed, backupDir: old });
+  assert.equal(await migrateBackups(w.env), 1);
+  const moved = (await readPlan(w.env, w.agentId))!;
+  assert.ok(moved.backupDir.startsWith(join(w.env.dataDir, "history-shed", "backups")));
+  assert.equal(sha(await readFile(join(moved.backupDir, "transcript.jsonl"))), sha(original));
+  for (const [p, h] of copied) assert.equal(sha(await readFile(p)), h, `old ${p} left as it was`);
+  assert.equal(await migrateBackups(w.env), 0, "once");
+  await requestRestoreFor(w.env, w.agentId);
+  const { restoreRequested } = await import("./server/history-shed.ts");
+  assert.deepEqual((await restoreRequested(w.env, w.agentId, FAR())).map((r) => r.ok), [true]);
+  assert.ok((await readFile(w.transcript)).equals(original));
+  await rm(w.root, { recursive: true });
+});
+
+test("a subagent the kept history still names stays in subagents/", async () => {
+  const w = await world();
+  const first = await prepared(w);
+  const moving = first.subagents.filter((s) => s.move);
+  assert.ok(moving.length >= 2);
+  const byId = moving[0]!.name.replace(/^agent-|\.jsonl$/g, "");
+  const toolUseId = JSON.parse(w.fixture.subagents[moving[1]!.name]!.meta).toolUseId as string;
+  assert.ok(toolUseId);
+  // A kept record mentions one by its agent id and another by the Task call that started it.
+  await appendFile(w.transcript, `${JSON.stringify({ type: "pr-link", sessionId: w.sessionId, note: `see ${byId} and ${toolUseId}` })}\n`);
+  await settle(w.env, first);
+  const second = await prepared(w);
+  const moves = new Map(second.subagents.map((s) => [s.name, s.move]));
+  assert.equal(moves.get(moving[0]!.name), false, "named by agent id");
+  assert.equal(moves.get(moving[1]!.name), false, "named by its tool_use id");
+  assert.equal(moves.get(moving[2]?.name ?? moving[0]!.name) ?? false, moving[2] ? true : false);
+  await rm(w.root, { recursive: true });
+});
+
+const RESTORE_WINDOW = ["restore:backup-current", "restore:write-temp", "restore:holders", "restore:link", "restore:rename", "restore:after-rename"];
+
+test("a line written at any point of a restore is in the result, or the restore is refused", async (t) => {
+  for (const step of RESTORE_WINDOW) {
+    await t.test(step, async () => {
+      const w = await world();
+      const original = await readFile(w.transcript);
+      const plan = await prepared(w);
+      assert.ok((await commit(w.env, plan, FAR())).ok);
+      const shed = await readFile(w.transcript);
+      const fd = openSync(w.transcript, "a");
+      const env: ShedEnv = { ...w.env, step: (name) => { if (name === step) writeSync(fd, LINE); } };
+      const out = await restore(env, (await readPlan(w.env, w.agentId))!, FAR());
+      closeSync(fd);
+      const now = await readFile(w.transcript);
+      if (out.ok) assert.ok(now.equals(Buffer.concat([original, Buffer.from(LINE)])), "restored, with the line");
+      else assert.ok(now.equals(Buffer.concat([shed, Buffer.from(LINE)])), `refused (${out.why}): the shed file plus the line`);
+      for (const f of sideFiles(plan)) assert.equal(existsSync(f), false, `no ${f} left`);
+      await rm(w.root, { recursive: true });
+    });
+  }
+});
+
+test("the transcript keeps its file mode through a shed and a restore", async () => {
+  const w = await world();
+  await chmod(w.transcript, 0o640);
+  const plan = await prepared(w);
+  assert.ok((await commit(w.env, plan, FAR())).ok);
+  assert.equal((await stat(w.transcript)).mode & 0o777, 0o640);
+  assert.ok((await restore(w.env, (await readPlan(w.env, w.agentId))!, FAR())).ok);
+  assert.equal((await stat(w.transcript)).mode & 0o777, 0o640);
+  await rm(w.root, { recursive: true });
+});
+
+test("an unreadable plan is reported, and that agent is left alone until it is fixed", async () => {
+  const { readPlans } = await import("./server/history-shed.ts");
+  const w = await world();
+  const plan = await prepared(w);
+  await writeFile(join(w.env.dataDir, "history-shed", "plans", w.agentId, "broken.json"), "{ not json");
+  const { unreadable } = await readPlans(w.env, w.agentId);
+  assert.deepEqual(unreadable, ["broken.json"]);
+  const before = await fingerprint(w);
+  const out = await commit(w.env, plan, FAR());
+  assert.equal(!out.ok && out.why, "unreadable-plan");
+  const again = await prepare(w.env, w.agentId, w.sessionId, due);
+  assert.equal(!again.ok && again.why, "unreadable-plan");
+  assert.deepEqual(diff(before, await fingerprint(w)).changed, []);
+  const log = await readFile(join(w.env.dataDir, "history-shed", `runs-${new Date().toISOString().slice(0, 7)}.jsonl`), "utf8");
+  assert.match(log, /"event":"plan-unreadable"/);
+  await rm(w.root, { recursive: true });
+});
+
+test("after two unused backups an agent is not prepared again until they are dealt with", async () => {
+  const w = await world();
+  for (let i = 0; i < 2; i++) {
+    const plan = await prepared(w);
+    await appendFile(w.transcript, LINE);
+    assert.equal(await settle(w.env, plan), "discarded");
+  }
+  const out = await prepare(w.env, w.agentId, w.sessionId, due);
+  assert.equal(!out.ok && out.why, "unused-backups");
+  await rm(w.root, { recursive: true });
+});
+
+// ---------------------------------------------------------------------------------------------- the open hook
+
+async function opener(w: World, settings: { shedHistory: boolean }, extra: Partial<ShedEnv> = {}) {
+  const { openHandler } = await import("./server/history-shed-open.ts");
+  const noted: string[] = [];
+  const open = openHandler({
+    env: () => ({ ...w.env, ...extra }),
+    settings: async () => settings,
+    session: (agentId) => persistedSession(w.paseoHome, agentId),
+    note: (plan) => { noted.push(plan.id); },
+  });
+  const request = { agentId: w.agentId, provider: "claude", reason: "resume" as const, purpose: "interactive" as const, env: {} };
+  return { open: (signal?: AbortSignal, enteredAt?: number) => open(request, signal, enteredAt), noted };
+}
+
+test("the open hook's budget counts from the hook's start, not from after its own reads", async () => {
+  const w = await world();
+  await prepared(w);
+  const { open } = await opener(w, { shedHistory: true });
+  await open(undefined, Date.now() - 20_000);
+  assert.equal((await readPlan(w.env, w.agentId))?.state, "prepared", "too late to start: nothing changed");
+  await open();
+  assert.equal((await readPlan(w.env, w.agentId))?.state, "committed");
+  await rm(w.root, { recursive: true });
+});
+
+test("after an open was canceled, the next open doesn't commit, and the one after does", async () => {
+  const w = await world();
+  const original = await readFile(w.transcript);
+  await prepared(w);
+  const controller = new AbortController();
+  const { open } = await opener(w, { shedHistory: true }, { step: (name) => { if (name === "commit:write-temp") controller.abort(); } });
+  await open(controller.signal);
+  assert.ok((await readFile(w.transcript)).equals(original));
+  const plain = await opener(w, { shedHistory: true });
+  await plain.open();
+  assert.equal((await readPlan(w.env, w.agentId))?.state, "prepared", "Claude may be starting from the canceled open: wait");
+  await plain.open();
+  assert.equal((await readPlan(w.env, w.agentId))?.state, "committed");
+  await rm(w.root, { recursive: true });
+});
+
+test("a second open while the first is still working stops the first and commits nothing", async () => {
+  const w = await world();
+  const original = await readFile(w.transcript);
+  await prepared(w);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let reached!: () => void;
+  const atGate = new Promise<void>((r) => (reached = r));
+  const { open } = await opener(w, { shedHistory: true }, { step: async (name) => { if (name === "commit:write-temp") { reached(); await gate; } } });
+  const first = open(new AbortController().signal);
+  await atGate;
+  const second = open();
+  setTimeout(release, 50);
+  await Promise.all([first, second]);
+  assert.ok((await readFile(w.transcript)).equals(original));
+  assert.equal((await readPlan(w.env, w.agentId))?.state, "prepared");
+  await rm(w.root, { recursive: true });
+});
+
+test("a requested restore runs at the next open even with moving history turned off", async () => {
+  const w = await world();
+  const original = await readFile(w.transcript);
+  assert.ok((await commit(w.env, await prepared(w), FAR())).ok);
+  await requestRestoreFor(w.env, w.agentId);
+  const { open } = await opener(w, { shedHistory: false });
+  await open();
+  assert.ok((await readFile(w.transcript)).equals(original));
+  assert.equal((await readPlan(w.env, w.agentId))?.state, "restored");
+  // And with it off, a prepared plan is never committed.
+  const w2 = await world();
+  const before = await readFile(w2.transcript);
+  await prepared(w2);
+  await (await opener(w2, { shedHistory: false })).open();
+  assert.ok((await readFile(w2.transcript)).equals(before));
   await rm(w.root, { recursive: true });
   await rm(w2.root, { recursive: true });
 });

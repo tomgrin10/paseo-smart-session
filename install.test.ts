@@ -204,6 +204,26 @@ test("a load against another Paseo home never removes or duplicates this home's 
   assert.deepEqual(reconcile(legacy, null, undefined, SHIMS), {});
 });
 
+test("a load against another live Paseo home's settings file adds none of its own hooks there", () => {
+  // 3.8.0-beta.1 review: a sandbox load kept the real home's 7 entries and added its own 7 beside them.
+  const real = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS);
+  const sandbox = "/tmp/harness/paseo/plugin-data/smart-session/hooks";
+  assert.deepEqual(reconcile(real, sandbox, undefined, sandbox, () => true), real, "installHooks on in the sandbox");
+  // The doubled file such a load left behind: once the sandbox home is gone, its entries are stale, and the
+  // real home's next load removes them and keeps its own.
+  const doubled = JSON.parse(JSON.stringify(real).replaceAll(`${SHIMS}/`, `${sandbox}/`)) as typeof real;
+  for (const [event, groups] of Object.entries(real)) {
+    for (const group of groups) {
+      const twin = doubled[event]!.find((g) => (g.matcher ?? "") === (group.matcher ?? ""))!;
+      twin.hooks = [...(group.hooks ?? []), ...(twin.hooks ?? []).filter((h) => String(h.command).includes(sandbox))];
+    }
+  }
+  const alive = (dir: string) => dir === SHIMS;
+  assert.deepEqual(reconcile(doubled, SHIMS, undefined, SHIMS, alive), real, "stale sandbox entries go, the real ones stay");
+  // While the sandbox home still exists, neither load changes the other's entries.
+  assert.deepEqual(reconcile(doubled, sandbox, undefined, sandbox, () => true), doubled);
+});
+
 test("a matcher group that only ever held our hook is dropped, not left empty", () => {
   const installed = reconcile({}, SHIMS);
   assert.deepEqual(reconcile(installed, null), {});
