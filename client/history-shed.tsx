@@ -33,6 +33,10 @@ export function HistoryShedSection({ enabled, thresholds, saving, onToggle }: {
           ? <SettingsAction label="Unreadable plans" actionLabel="" disabled onPress={() => undefined}
             hint={`${status.data!.unreadable.length === 1 ? "A plan file" : `${status.data!.unreadable.length} plan files`} in Smart Session's data folder can't be read, so ${status.data!.unreadable.length === 1 ? "that agent is" : "those agents are"} left as they are. Fix or remove ${status.data!.unreadable.length === 1 ? "it" : "them"} under history-shed/plans.`} />
           : null}
+        {(status.data?.leftovers ?? []).length > 0
+          ? <SettingsAction label="Leftover files" actionLabel="" disabled onPress={() => undefined}
+            hint={`${status.data!.leftovers.length === 1 ? "A file" : `${status.data!.leftovers.length} files`} beside a transcript, left when a move was stopped or a process still had the file open: ${status.data!.leftovers.map((l) => l.file).join(", ")}. Nothing in them is lost. The agent's next load finishes what it can, and Smart Session's run log says why anything stays.`} />
+          : null}
         {plans.map((plan) => {
           const name = plan.title ?? `Agent ${plan.agentId.slice(0, 8)}`;
           const line = plan.state === "committed" || plan.state === "committing" || plan.state === "restoring"

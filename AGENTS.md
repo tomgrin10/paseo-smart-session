@@ -547,10 +547,12 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
 - A hook is ours only when it runs a shim in this load's own data directory (or an old install's `hooks/`). Another
   Paseo home's shims are that home's: a sandbox load (temp `PASEO_HOME`, real `HOME`) once stripped the real
   install's hooks from `~/.claude/settings.json` with `installHooks` off (2026-11-17). `install.test.ts` pins it.
-- **Invariant: a settings file holding another, still existing Paseo home's Smart Session hooks is that home's.** A
-  load against it adds nothing and removes nothing (`otherHome`; the report says `managedBy`); 3.8.0-beta.1 left a
-  sandbox's 7 entries beside the real 7. Entries whose shim folder no longer exists are stale, and the owning load
-  replaces them with its own.
+- **Invariant: a load changes only its own entries.** Another home's Smart Session entries, live or gone, are never
+  removed (guarded by `[ -f ]`, a gone home's entries run nothing). A settings file holding another home's entries
+  and none of this one's is that home's: nothing is added (`otherHome`; the report says `managedBy`). A file holding
+  both, as 3.8.0-beta.1 left the real one (7 + 7), is managed by each home for its own entries only. Before
+  3.8.0-beta.3 neither home changed anything there, even with every feature off, and a sandbox load stripped the
+  real entries once the real shim folder was missing (`install.test.ts`).
 - Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.
 - A seat session reads its ZeroSub home's `settings.json`, which ZeroSub links to the main one. Never write into
   those homes: per-home copies are how a hook silently stops reaching seat sessions (2026-11-10).
@@ -587,7 +589,11 @@ records before that point move into a backup and the transcript keeps the rest, 
   `signal` aborts) and fails the open. The budget (12 s before any rename) counts from the hook's entry, and the
   signal is checked up to the rename. One piece of work per agent: an open that arrives while an earlier one is still
   working aborts it, waits, and changes nothing. After a canceled open (`overranAt`), the next open leaves the files
-  alone. A requested restore runs whatever `shedHistory` says; only a commit needs it on. It never throws.
+  alone. It never throws.
+- **Invariant: off means off.** With `shedHistory` false an open reads no transcript and moves no subagent. It only
+  runs a restore the person asked for, or finishes a commit, restore or rollback a kill interrupted (`needsRecovery`:
+  the plan's state, its rollback record, or a stat of its second names), so no line is stranded. Even then no subagent
+  moves (`settle(..., { moveSubagents: false })`). The sweep and `prepare` don't run at all.
 - **Commit checks, under a lock file beside the plan**: no unreadable plan for the agent; the resolved path is the
   planned one; no process holds the file open or carries the session id on its command line (Linux `/proc`; elsewhere
   it refuses); the open file matches the original stamp (size, mtime, inode, sha256); the backup and every moved
@@ -595,8 +601,24 @@ records before that point move into a backup and the transcript keeps the rest, 
   mode from the open file, checks its sha256, checks holders again, saves the plan as `committing`, links the
   original to `.<sid>.jsonl.shed-<plan>.orig`, then does the last look and the rename synchronously (`swapNow`).
   After the rename, holders of the old inode (matched by inode through `/proc/*/fd`) and its size decide: quiet
-  drops the second name, otherwise `rollBack`. Subagent sources go one by one, each after re-verifying its copy.
-- **Crash recovery** (`settle`) reads the files to decide: two names of one file lose the second; the planned result
+  drops the second name, otherwise a rollback. A drop that fails (the original changed after the check) is a late
+  write too, never ignored: those bytes would sit only under the second name. Subagent sources go one by one, each
+  after re-verifying its copy.
+- **Invariant: a rollback killed at any step is finished by the next settle.** `startRollback` saves a record on the
+  plan (`rollback`: kind, the replacement's size, the original's verified size, bytes copied) before its first step.
+  `finishRollback` works from the files and the record, each step safe to repeat: it links the replacement as `.new`,
+  or reuses a `.new` that has the transcript's inode; renames the original back; appends the replacement's whole
+  lines past its planned size in one `O_APPEND` write (not interleaved with another writer's), skipped when those
+  bytes already occur past the original's size (killed after the write, before the record); then drops `.new` once
+  no process holds it. A torn last line stays in `.new` and the log says so. Only then is a shed discarded or a
+  restore committed again. Before 3.8.0-beta.3, a rollback killed after its link made every later settle fail on
+  `link()` with EEXIST, which the lock took for contention (stuck in `committing`), and one killed after its rename
+  stranded the replacement's lines when settle discarded the grown original.
+- **The lock**: an exclusive file beside the plan with the owner's pid; only the lock's own `open()` EEXIST means
+  another holder. An error from the work inside is the work's.
+- **Crash recovery** (`settle`) first finishes a rollback (a record, or a `.new` 3.8.0-beta.2 left without one),
+  before any other decision. A committed plan with a second name beside the transcript drops it when it is the backup
+  byte for byte, and rolls back when it is the backup grown (moved subagents are copied back). Then it reads the files to decide: two names of one file lose the second; the planned result
   (by prefix: Claude may have appended since) means finish, or roll back if the old file was written to; the original
   means try again later; the original plus new lines discards the plan and keeps its backup. Anything else is left
   alone. A restore interrupted after its rename is finished the same way. `env.step` is the crash seam at every step.
@@ -609,6 +631,8 @@ records before that point move into a backup and the transcript keeps the rest, 
   found restore comparing the whole file).
 - Plans are written to a temp name, synced, renamed, and the folder synced; backup folders are synced too. A plan file
   that doesn't parse is logged (`plan-unreadable`), listed in the status RPC, and its agent is left alone.
+- The status RPC lists `leftovers` (`leftoverFiles`: `.shed-*` / `.restore-*` second names beside any planned
+  transcript, by stat) and `rollbackPending` per plan. A canary checks both are empty first.
 - The gain is load time and chat length. Disk use goes up by the moved part, because the copy stays.
 - Runs log to `history-shed/runs-YYYY-MM.jsonl`, plans live in `history-shed/plans/<agentId>/`.
 - The chat row goes through the host API only an RPC handler receives (the plugin calls its own status RPC once, as the

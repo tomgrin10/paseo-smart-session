@@ -30,6 +30,7 @@ import {
   type ShedEnv,
   type ShedPlan,
   unreadablePlans,
+  leftoverFiles,
 } from "./history-shed.ts";
 import { openHandler } from "./history-shed-open.ts";
 import { readSettings } from "./settings.ts";
@@ -161,6 +162,7 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
     return {
       enabled: settings.shedHistory,
       unreadable: (await unreadablePlans(shedEnv())).filter((u) => agentId === undefined || u.agentId === agentId),
+      leftovers: (await leftoverFiles(shedEnv())).filter((l) => agentId === undefined || l.agentId === agentId),
       plans: await Promise.all(plans.map(async (p) => ({
         agentId: p.agentId,
         title: (await persistedSession(paseoHome(), p.agentId).catch(() => null))?.title ?? null,
@@ -173,6 +175,7 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
         committedAt: p.committedAt ?? null,
         restoredAt: p.restoredAt ?? null,
         restoreRequested: p.restoreRequested === true,
+        rollbackPending: p.rollback !== undefined,
       }))),
     };
   });

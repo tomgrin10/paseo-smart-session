@@ -239,19 +239,36 @@ function shimDirOf(command: unknown): string | null {
   return match ? match[1]! : null;
 }
 
-/** The other, still existing Paseo home whose Smart Session hooks this settings file holds, if any. */
-export function otherHome(existing: HookMap, own: string | null | undefined, alive: (shimDir: string) => boolean): string | null {
-  const ownDir = typeof own === "string" ? own.replace(/\/+$/, "") : null;
-  if (ownDir === null) return null;
+/** The shim directories of other Paseo homes whose Smart Session hooks this settings file holds. */
+function foreignDirs(existing: HookMap, ownDir: string): string[] {
+  const dirs = new Set<string>();
   for (const groups of Object.values(existing)) {
     for (const group of Array.isArray(groups) ? groups : []) {
       for (const hook of group.hooks ?? []) {
         const dir = shimDirOf(hook.command);
-        if (dir !== null && dir !== ownDir && alive(dir)) return dir;
+        if (dir !== null && dir !== ownDir) dirs.add(dir);
       }
     }
   }
-  return null;
+  return [...dirs];
+}
+
+/** Whether this settings file holds any hook entry of this home's own shims. */
+function holdsOwn(existing: HookMap, ownDir: string): boolean {
+  return Object.values(existing).some((groups) => (Array.isArray(groups) ? groups : []).some((group) => (group.hooks ?? []).some((hook) => shimDirOf(hook.command) === ownDir)));
+}
+
+/**
+ * The other Paseo home this settings file belongs to, if any: it holds that home's Smart Session hooks and
+ * none of this one's. Such a file gets nothing added and nothing removed by this home. `alive` only says, in
+ * the report, whether that home still exists; a home that is gone keeps its entries too (guarded by
+ * `[ -f ]`, they run nothing) because they are never another home's to remove.
+ */
+export function otherHome(existing: HookMap, own: string | null | undefined, alive: (shimDir: string) => boolean = () => true): string | null {
+  const ownDir = typeof own === "string" ? own.replace(/\/+$/, "") : null;
+  if (ownDir === null || holdsOwn(existing, ownDir)) return null;
+  const dirs = foreignDirs(existing, ownDir);
+  return dirs.find(alive) ?? dirs[0] ?? null;
 }
 
 /** A shell word, single-quoted. */
@@ -283,12 +300,13 @@ export function reconcile(
   alive: (shimDir: string) => boolean = () => true,
 ): HookMap {
   const next: HookMap = {};
-  // Another Paseo home's hooks are in this file, and that home still exists: the file is that home's to manage.
-  // A load against it (a sandbox sharing ~/.claude) neither adds its own entries nor removes any. Entries of a
-  // home that no longer exists are stale, and the load that owns the file replaces them with its own.
+  // Only this home's own entries ever change. Another home's entries, live or gone, are never removed, and a
+  // file holding another home's entries and none of this one's is that home's: nothing is added there either
+  // (a sandbox sharing ~/.claude). A file holding both (3.8.0-beta.1 left some) is managed by each home for its
+  // own entries only, so neither freezes the other.
   if (otherHome(existing, own, alive) !== null) return existing;
   const ownDir = typeof own === "string" ? own.replace(/\/+$/, "") : null;
-  const stale = (command: unknown) => {
+  const foreign = (command: unknown) => {
     const dir = shimDirOf(command);
     return dir !== null && ownDir !== null && dir !== ownDir;
   };
@@ -297,7 +315,7 @@ export function reconcile(
     const kept = (Array.isArray(groups) ? groups : [])
       .map((group) => ({
         ...group,
-        hooks: (group.hooks ?? []).filter((hook) => !isOurs(hook.command, own) && !stale(hook.command)),
+        hooks: (group.hooks ?? []).filter((hook) => foreign(hook.command) || !isOurs(hook.command, own)),
       }))
       // A matcher group we emptied was only ever there for us.
       .filter((group) => (group.hooks ?? []).length > 0);
