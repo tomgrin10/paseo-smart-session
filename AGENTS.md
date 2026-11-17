@@ -19,6 +19,11 @@
 
 ## The data is the point
 
+- **Invariant: Smart Session never loses session data, and changes only the files it means to.** Before it changes a
+  Claude transcript it writes a full copy, checks the copy's sha256, and never deletes a copy of a change that happened;
+  only the user removes one. The only files that may change are the transcript resolved from the agent's persisted
+  session id and the subagent files that were backed up with it. Ambiguity (two records, two transcripts) means no
+  change, and nothing is ever deleted by pattern. `history-shed.test.ts` fingerprints every file around each step.
 - `$PASEO_HOME/plugin-data/smart-session/` holds the only copy of plan-utilization history that
   exists anywhere. `/usage` is a snapshot, Paseo's quota fetcher keeps no store, and Claude Code
   overwrites its cache in place — a percentage of a plan limit cannot be reconstructed after the
@@ -521,11 +526,52 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
   on (except `Stop`, which also names killed background jobs and rides any feature), `PreToolUse(Artifact)` while publishing as the main account is on, and each is removed when its feature is turned
   off. So "Register the hooks" stays usable with Smart Compact off, and a fresh install with Smart Compact off still gets
   the Artifact hook (`install.test.ts`).
+- A hook is ours only when it runs a shim in this load's own data directory (or an old install's `hooks/`). Another
+  Paseo home's shims are that home's: a sandbox load (temp `PASEO_HOME`, real `HOME`) once stripped the real
+  install's hooks from `~/.claude/settings.json` with `installHooks` off (2026-11-17). `install.test.ts` pins it.
 - Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.
 - A seat session reads its ZeroSub home's `settings.json`, which ZeroSub links to the main one. Never write into
   those homes: per-home copies are how a hook silently stops reaching seat sessions (2026-11-10).
   `server/settings-links.ts` only checks the links (read-only) and `install()` reports a broken one in `homes`,
   shown on the settings page and by `publish_as_settings`.
+
+## Moving old history aside (`shedHistory`, off by default)
+
+A long-lived Claude agent's chat replays its whole transcript (`transcript-history.js` reads `<sid>.jsonl` and
+`<sid>/subagents/**`), although Claude itself reads only what follows the last compaction. With the setting on, the
+records before that point move into a backup and the transcript keeps the rest, in place, under the same session id.
+
+- **Invariant: an agent's id and its post-compaction context survive a shed.** Same agent record, same session id,
+  same file path; the chain Claude loads (leaf back to the newest boundary, with the preserved segment relinked) is
+  byte-for-byte what it was. `planCut` (`shared/history-shed.ts`) recomputes the chain on the planned result and
+  refuses on any difference.
+- **Opt-in only.** `shedHistory` is true only when the stored value is exactly `true`. No migration, default flip or
+  prompt turns it on; fresh installs and upgrades stay off (`history-shed.test.ts`). Codex and other providers are
+  never touched.
+- **The cut** (`planCut`): the earliest of the newest `compact_boundary`, the live chain's records and the boundary's
+  `preservedMessages`. Only chain and per-request types move (`MOVABLE_TYPES`); metadata records before the cut stay.
+  Refuses with no boundary, a boundary as the last line, a broken chain, or less than 1 MB to move.
+- **Two phases.** `prepare` (agent closed, 5 s after `agent.closed` and in a 15 min sweep over closed agents; never
+  wakes one) indexes, plans, and writes `<project>/<sid>/shed/<stamp>/transcript.jsonl` with a verified sha256, plus
+  subagent files older than the boundary. `commit` runs only in `agent.session_open` for a resume, import or
+  history view (`openIsSafe`; never on create or refresh, where the old runtime is still alive), within 15 s of the
+  30 s hook budget, and never throws (a throwing open hook fails the open).
+- **Commit checks, under a lock file in the backup folder**: the resolved path is the planned one; no process holds the
+  file open or carries the session id on its command line (Linux `/proc`; elsewhere it refuses); the file still
+  matches the original stamp (size, mtime, inode, sha256); the backup and every moved subagent's backup still verify;
+  no subagent file changed or appeared. It writes a temp file, checks its sha256, stats and checks holders again,
+  renames, and checks the new file. Subagent sources are removed one by one, each after re-verifying its copy.
+- **Crash recovery** (`settle`) reads the file to decide: the planned result means finish; the original means try again
+  later; the original plus new lines means the plan is stale and its unused copy is removed by exact name (never when a
+  commit happened). Anything else is left alone. `env.step` is the crash seam the tests use at every step.
+- **Restore** (settings, per agent) runs at the agent's next safe open: it copies the current file aside first, writes
+  backup plus everything appended since, verifies, renames, and copies moved subagents back. A restored agent is not
+  shed again.
+- The gain is load time and chat length. Disk use goes up by the moved part, because the copy stays.
+- Runs log to `history-shed/runs-YYYY-MM.jsonl`, plans live in `history-shed/plans/<agentId>/`.
+- The chat row goes through the host API only an RPC handler receives (the plugin calls its own status RPC once, as the
+  guard does). `notedAt` records it; a commit that outlived its process gets the row at the next open. Paseo keeps a
+  Claude agent's plugin rows in memory only, so the row is gone after a daemon restart; the settings list is the record.
 
 ## Chat timeline
 

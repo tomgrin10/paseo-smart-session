@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import { dataDir } from "./store.ts";
 import { DEFAULT_THRESHOLDS, normalizeThresholds, type Thresholds } from "../shared/thresholds.ts";
+import { DEFAULT_SHED_THRESHOLDS, normalizeShedThresholds, type ShedThresholds } from "../shared/history-shed.ts";
 
 export interface Settings {
   /**
@@ -76,6 +77,14 @@ export interface Settings {
    * since it spends paid credits; off, such a publish is refused with the reason.
    */
   readonly publishAsExtraUsage: boolean;
+  /**
+   * "Move old history aside": when an agent next loads, its Claude transcript's history from before
+   * the last compaction moves into a full backup copy beside it (`server/history-shed.ts`). Off unless
+   * the person turns it on: nothing (install, upgrade, a transcript's size) ever turns it on.
+   */
+  readonly shedHistory: boolean;
+  /** When a transcript is worth it: at least `minMb`, or at least `minCompactions` compactions. */
+  readonly shedThresholds: ShedThresholds;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -88,6 +97,8 @@ export const DEFAULT_SETTINGS: Settings = {
   publishAsMain: true,
   publishAsAccount: null,
   publishAsExtraUsage: false,
+  shedHistory: false,
+  shedThresholds: DEFAULT_SHED_THRESHOLDS,
 };
 
 const filePath = () => join(dataDir(), "settings.json");
@@ -111,6 +122,8 @@ export async function readSettings(): Promise<Settings> {
       publishAsMain: raw.publishAsMain !== false,
       publishAsAccount: accountId(raw.publishAsAccount),
       publishAsExtraUsage: raw.publishAsExtraUsage === true,
+      shedHistory: raw.shedHistory === true,
+      shedThresholds: normalizeShedThresholds(raw.shedThresholds),
     };
   } catch {
     cached = DEFAULT_SETTINGS;
@@ -130,6 +143,8 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
     publishAsMain: next.publishAsMain !== false,
     publishAsAccount: accountId(next.publishAsAccount),
     publishAsExtraUsage: next.publishAsExtraUsage === true,
+    shedHistory: next.shedHistory === true,
+    shedThresholds: normalizeShedThresholds(next.shedThresholds),
   };
   await mkdir(dataDir(), { recursive: true });
   const target = filePath();

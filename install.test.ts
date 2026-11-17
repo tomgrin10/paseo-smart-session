@@ -187,6 +187,23 @@ test("a null plugin directory removes ours and keeps everyone else's", () => {
   assert.equal(removed.PostToolUse, undefined);
 });
 
+test("a load against another Paseo home never removes or duplicates this home's hooks", () => {
+  // A sandbox (harness) load shares ~/.claude/settings.json with the real install. Its own shims live in
+  // its own PASEO_HOME, so the real home's entries are not its to strip, with installHooks off or on.
+  const real = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS);
+  const sandbox = "/tmp/harness/paseo/plugin-data/smart-session/hooks";
+  assert.deepEqual(reconcile(real, null, undefined, sandbox), real, "installHooks off in the sandbox");
+  const both = reconcile(real, sandbox, undefined, sandbox);
+  for (const event of Object.keys(real)) {
+    const mine = (map: typeof real) => commandsFor(map, event).filter((c) => c.includes(`'${SHIMS}/`)).length;
+    assert.equal(mine(both), mine(real), event);
+  }
+  // The real home itself still removes its own, and adopts old install-directory entries.
+  assert.deepEqual(commandsFor(reconcile(real, null, undefined, SHIMS), "Stop"), [foreign.command]);
+  const legacy = { Stop: [{ matcher: "", hooks: [{ type: "command", command: "node /old/install/hooks/ask-compact.mjs" }] }] };
+  assert.deepEqual(reconcile(legacy, null, undefined, SHIMS), {});
+});
+
 test("a matcher group that only ever held our hook is dropped, not left empty", () => {
   const installed = reconcile({}, SHIMS);
   assert.deepEqual(reconcile(installed, null), {});

@@ -7,6 +7,7 @@ import { contributeChat } from "./client/chat";
 import { commandItems } from "./client/commands";
 import { contributeGuardTimeline } from "./client/guard/index";
 import { watchGuard } from "./client/guard/status";
+import { contributeHistoryShedTimeline } from "./client/history-shed";
 import { createLive } from "./client/live";
 import { OVERVIEW_SCREEN, PAUSED_SCREEN, SMART_COMPACT_SETTINGS, makeOverview } from "./client/overview";
 import { contributeClient } from "./client/pill";
@@ -29,6 +30,7 @@ export default function contribute(host: PluginClientContext) {
     ...commandItems().map((item) => client.addCommandCenterItem(item)),
     contributeChat(client),
     contributeGuardTimeline(client),
+    contributeHistoryShedTimeline(client),
   ];
 
   // The sidebar row shows the session window between overview visits.

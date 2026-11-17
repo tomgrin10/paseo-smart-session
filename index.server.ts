@@ -1,6 +1,7 @@
 import { contributeGuard } from "./server/guard/index.ts";
 import { zerosubBudgetAccount } from "./server/guard/zerosub.ts";
 import { contributeSessionMcp } from "./server/session-mcp.ts";
+import { contributeHistoryShed } from "./server/history-shed-host.ts";
 import { contributeUsageSource, usageCards } from "./server/usage-source.ts";
 import { budgetPool, subscriptionsView } from "./server/subscriptions.ts";
 import { displayPreferences } from "./shared/display";
@@ -80,6 +81,8 @@ export default function contribute(host: PluginServerContext) {
   server.registerSettings(displayPreferences);
   // Pauses work at a provider's session limit; off until someone turns it on.
   const removeGuard = contributeGuard(server);
+  // Moves a Claude transcript's history from before its last compaction into a backup; off unless turned on.
+  const removeHistoryShed = contributeHistoryShed(server);
   // Paseo 0.16+: Smart Session's forecast and every ZeroSub account in Paseo's own usage card.
   contributeUsageSource(server);
   server.handle(usageCardsStatus, async () => {
@@ -273,5 +276,5 @@ export default function contribute(host: PluginServerContext) {
 
   // The recorder and governor register their timers in this shared lifecycle.
   // Paseo waits for this cleanup before stopping the plugin subprocess.
-  return () => runTeardowns([removeSessionMcp, removeGuard, ...lifecycle.teardowns.splice(0)]);
+  return () => runTeardowns([removeSessionMcp, removeGuard, removeHistoryShed, ...lifecycle.teardowns.splice(0)]);
 }

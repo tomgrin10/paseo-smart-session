@@ -205,6 +205,9 @@ export const SettingsSchema = z.object({
   publishAsAccount: z.string().nullable(),
   /** "Use the main account's Extra usage when it's out". Off by default: it spends paid credits. */
   publishAsExtraUsage: z.boolean(),
+  /** "Move old history aside". Off unless the person turns it on. */
+  shedHistory: z.boolean(),
+  shedThresholds: z.object({ minMb: z.number(), minCompactions: z.number() }),
 });
 
 /**
@@ -337,5 +340,50 @@ export const publishAsWait = defineRpc({
     z.object({ done: z.literal(false) }),
     /** `text` is what the model reads: `successReason` or `failureReason` in `shared/publish-as.ts`. */
     z.object({ done: z.literal(true), result: PublishResultSchema, text: z.string() }),
+  ]),
+});
+
+// ---------------------------------------------------------------------------------------------- moving old history aside
+
+/** The chat row a shed leaves: "Older history moved to <folder>". */
+export const HISTORY_SHED_KIND = "history-shed";
+
+export const HistoryShedNoteSchema = z.object({
+  at: z.string(),
+  /** Transcript bytes before and after. */
+  from: z.number(),
+  to: z.number(),
+  backupDir: z.string(),
+});
+
+/** Every agent whose old history Smart Session moved aside, or is ready to. */
+export const historyShedStatus = defineRpc({
+  name: "smart-session.history_shed.status",
+  input: z.object({ agentId: z.string().min(1).optional() }),
+  output: z.object({
+    enabled: z.boolean(),
+    plans: z.array(z.object({
+      agentId: z.string(),
+      title: z.string().nullable(),
+      state: z.enum(["prepared", "committing", "committed", "restored", "discarded"]),
+      from: z.number(),
+      to: z.number(),
+      compactions: z.number(),
+      backupDir: z.string(),
+      preparedAt: z.string(),
+      committedAt: z.string().nullable(),
+      restoredAt: z.string().nullable(),
+      restoreRequested: z.boolean(),
+    })),
+  }),
+});
+
+/** Puts an agent's full history back at its next load; it is not moved aside again after that. */
+export const historyShedRestore = defineRpc({
+  name: "smart-session.history_shed.restore",
+  input: z.object({ agentId: z.string().min(1) }),
+  output: z.discriminatedUnion("ok", [
+    z.object({ ok: z.literal(true), note: z.string() }),
+    z.object({ ok: z.literal(false), error: z.string() }),
   ]),
 });
