@@ -95,6 +95,21 @@ export interface ShedPlan {
   overranAt?: string;
   /** Where a 3.8.0-beta.1 backup was before it was copied into the data folder (left there as it was). */
   migratedFrom?: string;
+  /** A rollback under way: saved before its first step, so a settle after a kill finishes it from the files. */
+  rollback?: RollbackRecord;
+}
+
+/**
+ * Undoing a swap whose replaced file was written to. `replacementSize`: the replacement's size as written (bytes
+ * past it are lines written into it, copied after the original). `origSize`: the replaced file's size when last
+ * verified (copied bytes are looked for only past it). `copied`: how many bytes past `replacementSize` are back.
+ */
+export interface RollbackRecord {
+  readonly kind: "shed" | "restore";
+  readonly replacementSize: number;
+  readonly origSize: number;
+  copied: number;
+  readonly startedAt: string;
 }
 
 export type Refusal =
@@ -730,19 +745,21 @@ async function withLock<T>(env: ShedEnv, plan: ShedPlan, work: () => Promise<T>,
   try {
     await mkdir(dir, { recursive: true });
     for (let attempt = 0; attempt < 2; attempt++) {
+      let handle: FileHandle;
       try {
-        const handle = await open(lockFile, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-        await handle.writeFile(`${process.pid}`);
-        await handle.close();
-        try { return await work(); } finally { await unlink(lockFile).catch(() => undefined); }
+        handle = await open(lockFile, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
       } catch (error) {
+        // Only this open's EEXIST means another holder. An EEXIST from inside the work is the work's error.
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         const owner = Number((await readFile(lockFile, "utf8").catch(() => "")).trim());
         let alive = false;
         if (Number.isInteger(owner) && owner > 0) { try { process.kill(owner, 0); alive = true; } catch (e) { alive = (e as NodeJS.ErrnoException).code === "EPERM"; } }
         if (alive && owner !== process.pid) return busy();
         await unlink(lockFile).catch(() => undefined);
+        continue;
       }
+      try { await handle.writeFile(`${process.pid}`); } finally { await handle.close(); }
+      try { return await work(); } finally { await unlink(lockFile).catch(() => undefined); }
     }
     return busy();
   } finally {
@@ -841,50 +858,158 @@ async function quiet(env: ShedEnv, plan: ShedPlan, handle: FileHandle, was: Open
   return now.size === was.size && now.mtimeMs === was.mtimeMs;
 }
 
-/**
- * Undoes a swap whose replaced file was written to: that file (with every late byte, in order) goes
- * back under its name, and anything written into the replacement meanwhile is appended after it. The
- * replacement keeps a second name until its own late bytes are copied; if a writer still holds it, it
- * stays, and the run log says where.
- */
-async function rollBack(env: ShedEnv, plan: ShedPlan, kind: "shed" | "restore", original: string, replacementSize: number): Promise<void> {
-  const spare = sideNames(plan)[kind === "shed" ? 1 : 3]!;
-  const placed = await stat(plan.path);
-  await link(plan.path, spare);
-  renameSync(original, plan.path);
-  await fsyncDir(dirname(plan.path));
-  let extra = 0;
-  let stillHeld = false;
-  const spareHandle = await open(spare, constants.O_RDONLY);
+/** Whether `needle` occurs in `path` at or after byte `from`. */
+async function occursFrom(path: string, from: number, needle: Buffer): Promise<boolean> {
+  const handle = await open(path, constants.O_RDONLY);
   try {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const holders = await env.processes.holders(plan.path, plan.sessionId, { dev: placed.dev, ino: placed.ino });
-      stillHeld = holders === null || holders.length > 0;
-      if (!stillHeld) break;
-      await sleep(100);
-    }
-    const size = (await spareHandle.stat()).size;
-    extra = size - replacementSize;
-    if (extra > 0) {
-      const target = await open(plan.path, constants.O_WRONLY | constants.O_APPEND);
-      try {
-        const buffer = Buffer.allocUnsafe(CHUNK);
-        for (let done = 0; done < extra;) {
-          const { bytesRead } = await spareHandle.read(buffer, 0, Math.min(buffer.length, extra - done), replacementSize + done);
-          if (bytesRead === 0) break;
-          await target.write(buffer, 0, bytesRead);
-          done += bytesRead;
-        }
-        await target.sync();
-      } finally {
-        await target.close();
-      }
-    }
-    if (!stillHeld) await dropSecondName(spare, { ino: placed.ino, size });
+    const size = (await handle.stat()).size;
+    if (size - from < needle.length) return false;
+    const tail = Buffer.allocUnsafe(size - from);
+    const { bytesRead } = await handle.read(tail, 0, tail.length, from);
+    return tail.subarray(0, bytesRead).includes(needle);
   } finally {
-    await spareHandle.close();
+    await handle.close();
   }
-  await logRun(env, { event: "rolled-back", kind, agentId: plan.agentId, why: "the replaced file was written to after the last check", appendedFromReplacement: Math.max(0, extra), ...(stillHeld ? { keptReplacementAs: spare } : {}) });
+}
+
+/** Whether the file's last byte ends a line (an empty file does). */
+async function endsLine(path: string): Promise<boolean> {
+  const handle = await open(path, constants.O_RDONLY);
+  try {
+    const size = (await handle.stat()).size;
+    if (size === 0) return true;
+    const last = Buffer.alloc(1);
+    await handle.read(last, 0, 1, size - 1);
+    return last[0] === 0x0a;
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Copies the moved subagent transcripts back from the backup where their place is free. */
+async function putSubagentsBack(plan: ShedPlan): Promise<void> {
+  if ((plan.movedSubagents ?? []).length === 0) return;
+  const subagentsDir = join(dirname(plan.path), basename(plan.path, ".jsonl"), "subagents");
+  await mkdir(subagentsDir, { recursive: true });
+  for (const name of plan.movedSubagents ?? []) {
+    const sub = plan.subagents.find((s) => s.name === name)!;
+    for (const file of [sub, ...(sub.meta ? [sub.meta] : [])]) {
+      const target = join(subagentsDir, file.name);
+      if (existsSync(target)) continue;
+      await copyVerified(join(plan.backupDir, "subagents", file.name), target, file);
+    }
+  }
+  await fsyncDir(subagentsDir);
+}
+
+/**
+ * Starts undoing a swap whose replaced file was written to. The record is saved first, so a kill at any
+ * later point leaves a plan the next settle finishes from the files (`finishRollback`).
+ */
+async function startRollback(env: ShedEnv, plan: ShedPlan, kind: "shed" | "restore", replacementSize: number, origSize: number): Promise<"done" | "pending"> {
+  plan.rollback = { kind, replacementSize, origSize, copied: 0, startedAt: at(env) };
+  await savePlan(env, plan);
+  return finishRollback(env, plan);
+}
+
+/**
+ * Undoes a swap, each step safe to repeat after a kill: the replaced file (with every late byte, in order)
+ * goes back under its name, and the whole lines written into the replacement meanwhile are appended after
+ * it, in one write. The replacement keeps a second name (`.new`) until that copy is done and no process
+ * holds it; one that is still held, or that ends in a torn line, stays and the run log and status say so.
+ * Then the plan's state is what it was before the swap: a shed is discarded (its backup stays), a restore
+ * is committed again.
+ */
+async function finishRollback(env: ShedEnv, plan: ShedPlan): Promise<"done" | "pending"> {
+  const record = plan.rollback!;
+  const names = sideNames(plan);
+  const original = names[record.kind === "shed" ? 0 : 2]!;
+  const spare = names[record.kind === "shed" ? 1 : 3]!;
+  const pending = async (why: string): Promise<"pending"> => {
+    await logRun(env, { event: "rollback-pending", kind: record.kind, agentId: plan.agentId, why, ...(existsSync(spare) ? { keptReplacementAs: spare } : {}) });
+    return "pending";
+  };
+  let named = await stat(plan.path).catch(() => null);
+  if (!named) return pending("no transcript");
+  let replacement = await stat(spare).catch(() => null);
+  const replaced = await stat(original).catch(() => null);
+  if (replaced) {
+    // Not renamed back yet: the transcript's name is still the replacement's.
+    if (replaced.ino === named.ino && replaced.dev === named.dev) return pending("the replaced file is already back under its name and still has a second name");
+    await env.step?.("rollback:link");
+    if (!replacement) {
+      await link(plan.path, spare);
+      replacement = await stat(spare);
+    } else if (replacement.ino !== named.ino || replacement.dev !== named.dev) {
+      return pending("the replacement's second name holds another file");
+    }
+    await env.step?.("rollback:rename");
+    renameSync(original, plan.path);
+    await fsyncDir(dirname(plan.path));
+    named = await stat(plan.path);
+  }
+  let torn = 0;
+  if (replacement) {
+    if (replacement.ino === named.ino && replacement.dev === named.dev) return pending("the replacement is under the transcript's name and the replaced file is gone");
+    const spareHandle = await open(spare, constants.O_RDONLY);
+    try {
+      let held = true;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const holders = await env.processes.holders(plan.path, plan.sessionId, { dev: replacement.dev, ino: replacement.ino });
+        held = holders === null || holders.length > 0;
+        if (!held) break;
+        await sleep(100);
+      }
+      const size = (await spareHandle.stat()).size;
+      const from = record.replacementSize + record.copied;
+      if (size > from) {
+        const segment = Buffer.allocUnsafe(size - from);
+        const { bytesRead } = await spareHandle.read(segment, 0, segment.length, from);
+        // Whole lines only: a line still being written stays in the replacement for now.
+        const whole = segment.subarray(0, segment.subarray(0, bytesRead).lastIndexOf(0x0a) + 1);
+        torn = bytesRead - whole.length;
+        if (whole.length > 0) {
+          await env.step?.("rollback:append");
+          // Already there (killed after the write, before the record was saved): not again.
+          if (!(await occursFrom(plan.path, record.origSize, whole))) {
+            let ready = await endsLine(plan.path);
+            for (let attempt = 0; !ready && attempt < 5; attempt++) { await sleep(100); ready = await endsLine(plan.path); }
+            if (!ready) return pending("the transcript ends in a line still being written");
+            // One write: an O_APPEND write of a regular file is not interleaved with another writer's.
+            const target = await open(plan.path, constants.O_WRONLY | constants.O_APPEND);
+            try {
+              const { bytesWritten } = await target.write(whole, 0, whole.length);
+              if (bytesWritten !== whole.length) throw new Error("short append");
+              await target.sync();
+            } finally {
+              await target.close();
+            }
+          }
+          record.copied += whole.length;
+          await savePlan(env, plan);
+        }
+      }
+      if (held) return pending("a process still holds the replacement");
+      if (torn === 0) {
+        await env.step?.("rollback:drop");
+        if (!(await dropSecondName(spare, { ino: replacement.ino, size }))) return pending("the replacement changed while it was copied");
+      }
+    } finally {
+      await spareHandle.close();
+    }
+  }
+  if (record.kind === "shed") {
+    await putSubagentsBack(plan);
+    plan.state = "discarded";
+    plan.discardedWhy = "late-write";
+  } else {
+    plan.state = "committed";
+  }
+  const copied = record.copied;
+  delete plan.rollback;
+  await savePlan(env, plan);
+  await logRun(env, { event: "rolled-back", kind: record.kind, agentId: plan.agentId, why: "the replaced file was written to after the last check", appendedFromReplacement: copied, ...(torn > 0 ? { tornLineKeptIn: spare, tornBytes: torn } : {}) });
+  return "done";
 }
 
 // ---------------------------------------------------------------------------------------------- commit
@@ -972,15 +1097,14 @@ async function commitLocked(env: ShedEnv, plan: ShedPlan, deadline: number, sign
     }
     await fsyncDir(dirname(plan.path));
     await env.step?.("commit:after-rename");
-    if (!(await quiet(env, plan, handle, current))) {
-      await rollBack(env, plan, "shed", kept!, plan.cut.newSize);
-      plan.state = "discarded";
-      plan.discardedWhy = "late-write";
-      await savePlan(env, plan);
+    // Quiet: the original is exactly the verified backup, so its second name can go. A drop that fails means
+    // the original changed after the check: undone like any late write, never left only under the second name.
+    const calm = await quiet(env, plan, handle, current);
+    await env.step?.("commit:drop-original");
+    if (!calm || !(await dropSecondName(kept!, current))) {
+      await startRollback(env, plan, "shed", plan.cut.newSize, current.size);
       return { ok: false, why: "late-write", plan };
     }
-    // Quiet: the original is exactly the verified backup, so its second name can go.
-    await dropSecondName(kept!, current);
     await env.step?.("commit:verify-new");
     return await finishCommit(env, plan);
   } catch (error) {
@@ -996,7 +1120,7 @@ async function commitLocked(env: ShedEnv, plan: ShedPlan, deadline: number, sign
  * since). Then the subagent transcripts that leave `subagents/` go, each only once its backup reads
  * back with the same hash. Also the recovery path when a crash interrupted a commit.
  */
-async function finishCommit(env: ShedEnv, plan: ShedPlan): Promise<Outcome> {
+async function finishCommit(env: ShedEnv, plan: ShedPlan, moveSubagents = true): Promise<Outcome> {
   if ((await prefixSha(plan.path, plan.cut.newSize)) !== plan.expectedSha256) {
     await logRun(env, { event: "error", stage: "verify-new", agentId: plan.agentId });
     return { ok: false, why: "error:new file differs from the plan", plan };
@@ -1008,7 +1132,7 @@ async function finishCommit(env: ShedEnv, plan: ShedPlan): Promise<Outcome> {
   await savePlan(env, plan);
   await writeFile(join(plan.backupDir, "committed.json"), JSON.stringify({ committedAt: plan.committedAt, newSha256: plan.expectedSha256, newSize: plan.cut.newSize }, null, 2), { mode: 0o600 }).catch(() => undefined);
   const subagentsDir = join(dirname(plan.path), basename(plan.path, ".jsonl"), "subagents");
-  for (const sub of plan.subagents.filter((s) => s.move && !plan.movedSubagents!.includes(s.name))) {
+  for (const sub of plan.subagents.filter((s) => moveSubagents && s.move && !plan.movedSubagents!.includes(s.name))) {
     await env.step?.(`commit:subagent:${sub.name}`);
     const movedSource = join(subagentsDir, sub.name);
     const copy = await stampFile(join(plan.backupDir, "subagents", sub.name)).catch(() => null);
@@ -1034,21 +1158,60 @@ async function finishCommit(env: ShedEnv, plan: ShedPlan): Promise<Outcome> {
 // ---------------------------------------------------------------------------------------------- settle
 
 /**
- * Settles a plan a crash or a change left behind. A commit or restore interrupted after its rename is
- * finished (or undone, when the replaced file was written to); a plan whose transcript moved on is
- * discarded, and its backup stays. Smart Session never deletes a backup.
+ * Settles a plan a crash or a change left behind. A rollback under way is finished first, before any other
+ * decision. A commit or restore interrupted after its rename is finished (or undone, when the replaced file
+ * was written to); a plan whose transcript moved on is discarded, and its backup stays. Smart Session never
+ * deletes a backup. `moveSubagents: false` (the setting off) finishes what must be finished so no line is
+ * stranded, and moves no subagent.
  */
-export async function settle(env: ShedEnv, plan: ShedPlan): Promise<"none" | "finished" | "discarded" | "kept"> {
-  return withLock(env, plan, () => settleLocked(env, plan), () => "kept" as const);
+export async function settle(env: ShedEnv, plan: ShedPlan, options: { readonly moveSubagents?: boolean } = {}): Promise<"none" | "finished" | "discarded" | "kept"> {
+  return withLock(env, plan, () => settleLocked(env, plan, options.moveSubagents ?? true), () => "kept" as const);
 }
 
-async function settleLocked(env: ShedEnv, plan: ShedPlan): Promise<"none" | "finished" | "discarded" | "kept"> {
+/** Whether a plan has work a crash left: a rollback, a swap after its rename, or a second name beside the transcript. */
+export function needsRecovery(plan: ShedPlan): boolean {
+  return plan.rollback !== undefined || plan.state === "committing" || plan.state === "restoring" || sideNames(plan).some((name) => existsSync(name));
+}
+
+async function settleRollback(env: ShedEnv, plan: ShedPlan): Promise<"discarded" | "kept"> {
+  const kind = plan.rollback!.kind;
+  const out = await finishRollback(env, plan);
+  return out === "done" && kind === "shed" ? "discarded" : "kept";
+}
+
+async function settleLocked(env: ShedEnv, plan: ShedPlan, moveSubagents = true): Promise<"none" | "finished" | "discarded" | "kept"> {
   if ((await readPlans(env, plan.agentId)).unreadable.length > 0) return "kept";
   const stored = (await agentPlans(env, plan.agentId)).find((p) => p.id === plan.id);
   if (stored) Object.assign(plan, stored);
+  if (plan.rollback) return settleRollback(env, plan);
+  const [temp] = tempNames(plan);
+  const [kept, spare] = sideNames(plan);
+  if (plan.state === "committing" || plan.state === "committed") {
+    // A rollback 3.8.0-beta.2 began without a record (its replacement's second name is there): finish it.
+    if (existsSync(spare!)) {
+      await env.step?.("settle:read");
+      return startRollback(env, plan, "shed", plan.cut.newSize, plan.original.size).then((out) => (out === "done" ? "discarded" : "kept"));
+    }
+  }
   if (plan.state === "committed") {
+    const named = await stat(plan.path).catch(() => null);
+    const old = await stat(kept!).catch(() => null);
+    if (named && old && !(old.ino === named.ino && old.dev === named.dev)) {
+      // A second name a commit failed to drop (3.8.0-beta.2 ignored that): the backup itself, or grown with late lines.
+      await env.step?.("settle:read");
+      const holders = await env.processes.holders(plan.path, plan.sessionId);
+      if (holders === null || holders.length > 0) return "kept";
+      if (old.size === plan.original.size && (await stampFile(kept!)).sha256 === plan.original.sha256) {
+        await dropSecondName(kept!, { ino: old.ino, size: old.size });
+      } else if (old.size > plan.original.size && (await prefixSha(kept!, plan.original.size)) === plan.original.sha256) {
+        return (await startRollback(env, plan, "shed", plan.cut.newSize, plan.original.size)) === "done" ? "discarded" : "kept";
+      } else {
+        await logRun(env, { event: "kept", agentId: plan.agentId, why: "a second name beside the transcript matches neither the backup nor the backup grown", file: kept });
+        return "kept";
+      }
+    }
     const pending = plan.subagents.some((s) => s.move && !(plan.movedSubagents ?? []).includes(s.name));
-    if (!pending) return "none";
+    if (!pending || !moveSubagents) return "none";
     const holders = await env.processes.holders(plan.path, plan.sessionId);
     if (holders === null || holders.length > 0) return "kept";
     await finishCommit(env, plan);
@@ -1056,12 +1219,11 @@ async function settleLocked(env: ShedEnv, plan: ShedPlan): Promise<"none" | "fin
   }
   if (plan.state === "restoring") return settleRestore(env, plan);
   if (plan.state !== "prepared" && plan.state !== "committing") return "none";
-  const [temp] = tempNames(plan);
-  const [kept] = sideNames(plan);
   const holders = await env.processes.holders(plan.path, plan.sessionId);
   if (holders === null || holders.length > 0) return "kept";
   const named = await stat(plan.path).catch(() => null);
   if (!named) return "kept";
+  await env.step?.("settle:read");
   // Linked but not renamed: one file under two names.
   await dropSameFile(kept!, plan.path);
   // Shed already? The transcript starts with the planned new file.
@@ -1070,16 +1232,14 @@ async function settleLocked(env: ShedEnv, plan: ShedPlan): Promise<"none" | "fin
     if (old) {
       const oldHolders = await env.processes.holders(plan.path, plan.sessionId, { dev: old.dev, ino: old.ino });
       if (oldHolders === null || oldHolders.length > 0 || old.size !== plan.original.size) {
-        await rollBack(env, plan, "shed", kept!, plan.cut.newSize);
-        plan.state = "discarded";
-        plan.discardedWhy = "late-write";
-        await savePlan(env, plan);
-        return "discarded";
+        return (await startRollback(env, plan, "shed", plan.cut.newSize, plan.original.size)) === "done" ? "discarded" : "kept";
       }
-      await dropSecondName(kept!, { ino: old.ino, size: plan.original.size });
+      if (!(await dropSecondName(kept!, { ino: old.ino, size: plan.original.size }))) {
+        return (await startRollback(env, plan, "shed", plan.cut.newSize, plan.original.size)) === "done" ? "discarded" : "kept";
+      }
     }
     await clearOwnTemp(temp!);
-    await finishCommit(env, plan);
+    await finishCommit(env, plan, moveSubagents);
     return "finished";
   }
   // Not shed: the transcript still starts with the backed-up original.
@@ -1117,9 +1277,8 @@ async function settleRestore(env: ShedEnv, plan: ShedPlan): Promise<"finished" |
       const keptCopy = (await readdir(plan.backupDir).catch(() => [] as string[])).filter((n) => n.startsWith("before-restore-")).sort().pop();
       const copied = keptCopy ? (await stat(join(plan.backupDir, keptCopy))).size : -1;
       if (oldHolders === null || oldHolders.length > 0 || old.size !== copied) {
-        await rollBack(env, plan, "restore", kept!, named.size);
-        plan.state = "committed";
-        await savePlan(env, plan);
+        // The restored file's size is only known by a record; without one (3.8.0-beta.2) it stays for a person.
+        await logRun(env, { event: "kept", stage: "restore", agentId: plan.agentId, why: "the shed file was written to after a restore's last check", file: kept });
         return "kept";
       }
       await dropSecondName(kept!, { ino: old.ino, size: old.size });
@@ -1143,7 +1302,7 @@ async function settleRestore(env: ShedEnv, plan: ShedPlan): Promise<"finished" |
  */
 export async function restore(env: ShedEnv, plan: ShedPlan, deadline: number, signal?: AbortSignal): Promise<Outcome> {
   return withLock(env, plan, async () => {
-    if (plan.state === "committing" || plan.state === "restoring") await settleLocked(env, plan);
+    if (plan.state === "committing" || plan.state === "restoring" || plan.rollback) await settleLocked(env, plan);
     return restoreLocked(env, plan, deadline, signal);
   }, () => ({ ok: false, why: "busy", plan }));
 }
@@ -1156,6 +1315,7 @@ async function restoreLocked(env: ShedEnv, plan: ShedPlan, deadline: number, sig
   let handle: FileHandle | null = null;
   try {
     if ((await readPlans(env, plan.agentId)).unreadable.length > 0) return { ok: false, why: "unreadable-plan", plan };
+    if (plan.rollback) return { ok: false, why: "busy", plan };
     if (plan.state !== "committed") return { ok: false, why: "nothing-to-restore", plan };
     const located = await resolveTranscript(plan.sessionId, await env.configDirs());
     if ("why" in located) return { ok: false, why: located.why, plan };
@@ -1207,13 +1367,12 @@ async function restoreLocked(env: ShedEnv, plan: ShedPlan, deadline: number, sig
     }
     await fsyncDir(dirname(plan.path));
     await env.step?.("restore:after-rename");
-    if (!(await quiet(env, plan, handle, current))) {
-      await rollBack(env, plan, "restore", kept!, restored.size);
-      plan.state = "committed";
-      await savePlan(env, plan);
+    const calm = await quiet(env, plan, handle, current);
+    await env.step?.("restore:drop-original");
+    if (!calm || !(await dropSecondName(kept!, current))) {
+      await startRollback(env, plan, "restore", restored.size, current.size);
       return { ok: false, why: "late-write", plan };
     }
-    await dropSecondName(kept!, current);
     // By prefix: Claude may already have appended to the restored file.
     if ((await prefixSha(plan.path, restored.size)) !== restoredSha) return { ok: false, why: "error:restored file differs", plan };
     await finishRestore(env, plan, { size: restored.size, appended, keptCurrentAs: basename(before) });
@@ -1227,22 +1386,38 @@ async function restoreLocked(env: ShedEnv, plan: ShedPlan, deadline: number, sig
 }
 
 async function finishRestore(env: ShedEnv, plan: ShedPlan, done: { size: number; appended: number; keptCurrentAs: string } | null): Promise<void> {
-  const subagentsDir = join(dirname(plan.path), basename(plan.path, ".jsonl"), "subagents");
-  await mkdir(subagentsDir, { recursive: true });
-  for (const name of plan.movedSubagents ?? []) {
-    const sub = plan.subagents.find((s) => s.name === name)!;
-    for (const file of [sub, ...(sub.meta ? [sub.meta] : [])]) {
-      const target = join(subagentsDir, file.name);
-      if (existsSync(target)) continue;
-      await copyVerified(join(plan.backupDir, "subagents", file.name), target, file);
-    }
-  }
-  await fsyncDir(subagentsDir);
+  await putSubagentsBack(plan);
   plan.state = "restored";
   plan.restoredAt = at(env);
   await savePlan(env, plan);
   await writeFile(join(plan.backupDir, "restored.json"), JSON.stringify({ restoredAt: plan.restoredAt, keptCurrentAs: done?.keptCurrentAs ?? null }, null, 2), { mode: 0o600 }).catch(() => undefined);
   await logRun(env, { event: "restored", agentId: plan.agentId, sessionId: plan.sessionId, ...(done ? { size: done.size, appended: done.appended } : { recovered: true }) });
+}
+
+// ---------------------------------------------------------------------------------------------- leftovers
+
+const SIDE_NAME = /^\.(.+\.jsonl)\.(shed|restore)-([0-9A-Za-z-]+)\.(orig|new)$/;
+
+/**
+ * Second names (`.shed-*.orig`, `.shed-*.new`, and the restore ones) beside any transcript a plan names: what a
+ * kill, or a writer still holding a file, left. Stat only, no transcript is read. For the status.
+ */
+export async function leftoverFiles(env: ShedEnv): Promise<{ agentId: string | null; planId: string; file: string; size: number }[]> {
+  const owners = new Map<string, string>();
+  const dirs = new Set<string>();
+  for (const id of await agentIds(env)) {
+    for (const plan of (await readPlans(env, id)).plans) { owners.set(plan.id, plan.agentId); dirs.add(dirname(plan.path)); }
+  }
+  const out: { agentId: string | null; planId: string; file: string; size: number }[] = [];
+  for (const dir of dirs) {
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      const match = SIDE_NAME.exec(name);
+      if (!match) continue;
+      const info = await stat(join(dir, name)).catch(() => null);
+      if (info) out.push({ agentId: owners.get(match[3]!) ?? null, planId: match[3]!, file: join(dir, name), size: info.size });
+    }
+  }
+  return out.sort((a, b) => (a.file < b.file ? -1 : 1));
 }
 
 // ---------------------------------------------------------------------------------------------- 3.8.0-beta.1 backups

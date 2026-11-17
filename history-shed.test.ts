@@ -579,7 +579,7 @@ test("a commit whose process died before its chat row gets the row at the next o
 const LINE = '{"type":"user","message":{"content":"written during the shed"}}\n';
 const sideFiles = (plan: { path: string; id: string }) => [...tempNames(plan as never), ...sideNames(plan as never)];
 
-const COMMIT_WINDOW = ["commit:verify-original", "commit:verify-backup", "commit:write-temp", "commit:holders", "commit:link", "commit:rename", "commit:after-rename"];
+const COMMIT_WINDOW = ["commit:verify-original", "commit:verify-backup", "commit:write-temp", "commit:holders", "commit:link", "commit:rename", "commit:after-rename", "commit:drop-original"];
 
 test("a line written at any point from the first read to the rename is in the result, or the commit is refused", async (t) => {
   // A writer the holder scan can't see (a terminal `claude -c` opens the file only while it writes, and its
@@ -736,7 +736,7 @@ test("a subagent the kept history still names stays in subagents/", async () => 
   await rm(w.root, { recursive: true });
 });
 
-const RESTORE_WINDOW = ["restore:backup-current", "restore:write-temp", "restore:holders", "restore:link", "restore:rename", "restore:after-rename"];
+const RESTORE_WINDOW = ["restore:backup-current", "restore:write-temp", "restore:holders", "restore:link", "restore:rename", "restore:after-rename", "restore:drop-original"];
 
 test("a line written at any point of a restore is in the result, or the restore is refused", async (t) => {
   for (const step of RESTORE_WINDOW) {
