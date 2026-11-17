@@ -98,9 +98,7 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
     } catch { /* Daemon unreachable: the next sweep tries again. */ }
   };
 
-  const removeOpen = server.before("agent.session_open", async ({ request }, context) => {
-    // The open is the first event after a daemon start: without this the chat row waited for a turn to end.
-    runtime = context?.paseo ?? runtime;
+  const removeOpen = server.before("agent.session_open", async ({ request }) => {
     try {
       if (request.provider !== "claude") return;
       if (!openIsSafe({ reason: request.reason, purpose: request.purpose } as OpenKind)) return;
@@ -129,14 +127,24 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
     return;
   });
 
-  /** One chat row once the agent is open: "Older history moved to <folder>". Best effort. */
+  /**
+   * Timeline appends need the host-owned API, which only an RPC handler receives (as in the guard): ask our own
+   * status RPC once to get it. Hook and event contexts don't carry one that can append.
+   */
+  const hostApi = async (): Promise<PluginHandlerContext["paseo"]> => {
+    if (!runtime) await withDaemon(async (client) => { await client.invokePluginRpc?.("smart-session", historyShedStatus.name, {}); });
+    if (!runtime) throw new Error("Plugin runtime API is unavailable.");
+    return runtime;
+  };
+
+  /** One chat row once the agent is open: "Older history moved to <folder>". Best effort, retried for a minute. */
   const noteLater = (plan: ShedPlan) => {
     let tries = 0;
     const attempt = async () => {
-      if (stopped || ++tries > 30) return;
+      if (stopped) return;
+      if (++tries > 30) { await logRun(shedEnv(), { event: "note-failed", agentId: plan.agentId }); return; }
       try {
-        if (!runtime) throw new Error("no runtime yet");
-        await runtime.agents.ref(plan.agentId).timeline.append({
+        await (await hostApi()).agents.ref(plan.agentId).timeline.append({
           type: "plugin",
           id: `history-shed-${plan.id}`,
           kind: HISTORY_SHED_KIND,
@@ -150,14 +158,10 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
     setTimeout(() => void attempt(), 1_000).unref?.();
   };
 
-  const removeClosed = server.on("agent.closed", (event, context) => {
-    runtime = context?.paseo ?? runtime;
+  const removeClosed = server.on("agent.closed", (event) => {
     if (event.agent.provider !== "claude") return;
     // A moment later, once Paseo has finished closing it.
     setTimeout(() => void prepareAgent(event.agent.id), 5_000).unref?.();
-  });
-  const removeTurnEnded = server.on("agent.turn_ended", (_event, context) => {
-    runtime = context?.paseo ?? runtime;
   });
 
   server.handle(historyShedStatus, async ({ agentId }, context) => {
@@ -201,6 +205,5 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
     clearInterval(every);
     removeOpen?.();
     removeClosed?.();
-    removeTurnEnded?.();
   };
 }
