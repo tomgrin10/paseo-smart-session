@@ -116,6 +116,18 @@ On a phone, the pill opens as a sheet and every screen fits one column.
 
 ![Smart Session at phone width: the overview with every subscription and its runway, the pill's sheet while paused, and the settings screen with Pause at the limit (Session Guard)](docs/media/smart-session-mobile.png)
 
+## Shorter chat history for long-running agents
+
+A Claude agent's chat loads its whole transcript, so an agent that has run for weeks opens slower after every compaction and scrolls back through history Claude itself no longer reads. **Move old history aside** (**off by default**) fixes that for Claude agents past 50 MB or 10 compactions:
+
+- **What moves.** Everything before the agent's last compaction. Claude only reads what comes after it, so the agent keeps its id, its session and everything it currently knows.
+- **A full copy first.** Before the transcript changes, a full copy goes to a `shed` folder beside it and is checked byte for byte. Smart Session never deletes it, so those transcripts take about twice the disk. Remove a copy yourself once you're sure.
+- **When.** The copy is made while the agent is closed. The change happens the next time the agent loads or its chat opens, and only if nothing has the transcript open and nothing changed since. Otherwise it's left as it is and tried later.
+- **Restore.** **Settings → Smart Session → Chat history** lists each agent it moved, with **Restore**. The full history, plus anything said since, goes back at the agent's next load, and that agent is left alone from then on.
+- **What you get.** A shorter chat that opens faster. In a test, a padded transcript's chat went from 415 rows and 13 s to load to 7 rows in under half a second. It doesn't cut the daemon's memory much.
+
+Linux only (it checks `/proc` for anything holding the transcript open). Codex agents are never touched. The thresholds live in `settings.json` as `shedThresholds` (`minMb`, `minCompactions`).
+
 ## Settings
 
 Everything is on one screen, **Settings → Plugins → Smart Session**, in the order a session meets it. ⌘K **Smart Session: settings** opens it.
@@ -136,6 +148,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | Artifacts | Publish artifacts as the main account | On | With ZeroSub: pages from sessions on other Claude accounts are published on the main one |
 | | Publish as | Main account | Shown with more than one Claude account |
 | | Use the main account's Extra usage when it's out | Off | While the account pages are published as is out of usage, publish on its Extra usage (billed). Off, publishing stops with the reason |
+| Chat history | Move old history aside | Off | Claude agents past 50 MB or 10 compactions: history from before the last compaction moves to a full backup beside the transcript at the agent's next load. Each moved agent has **Restore** |
 | Display | Sidebar row | On | |
 | | Pill on every session | On | A paused session keeps its pill either way |
 | | Replace Paseo's Claude usage card | On | Paseo 0.16+, web and desktop |
@@ -148,9 +161,9 @@ Hiding the row or the pill never turns a feature off.
 
 ## Data and access
 
-Everything lives in `$PASEO_HOME/plugin-data/smart-session/`: monthly usage and context logs (and, with ZeroSub, a monthly log of each subscription's readings, keyed by account id), compaction records, an hourly spend index by model, workspace and agent type, and one `state/<agentId>.md` per agent. Logs are append-only, and a damaged line is skipped rather than risking the rest.
+Everything lives in `$PASEO_HOME/plugin-data/smart-session/`: monthly usage and context logs (and, with ZeroSub, a monthly log of each subscription's readings, keyed by account id), compaction records, history-shed plans and a monthly run log, an hourly spend index by model, workspace and agent type, and one `state/<agentId>.md` per agent. Logs are append-only, and a damaged line is skipped rather than risking the rest.
 
-Paseo plugins run trusted, unsandboxed code on the daemon host. Smart Session reads local Claude Code usage data, reads ZeroSub's account registry and usage readings when ZeroSub is enabled (never its account homes' contents or credentials; it only checks that each home's `settings.json` is still a link to the main one, and says so when it isn't), and talks only to the local daemon. A linked `settings.json` stays a link: Smart Session writes its hooks through to the file it points at. Publishing as the main account starts helper agents through that daemon and asks ZeroSub to pin each one to the main account. For password-protected daemons it reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`, and never writes or logs it.
+Paseo plugins run trusted, unsandboxed code on the daemon host. Smart Session reads local Claude Code usage data, reads ZeroSub's account registry and usage readings when ZeroSub is enabled (never its account homes' credentials; of their settings it only checks that each home's `settings.json` is still a link to the main one, and says so when it isn't), and talks only to the local daemon. A linked `settings.json` stays a link: Smart Session writes its hooks through to the file it points at. With Move old history aside on, it reads Claude transcripts (under `~/.claude` and each ZeroSub home's shared `projects` folder) and rewrites only the one it backed up. Publishing as the main account starts helper agents through that daemon and asks ZeroSub to pin each one to the main account. For password-protected daemons it reads `PASEO_PASSWORD`, then `PASEO_PASSWORD_FILE`, then `~/paseo-hub/secrets/daemon-password`, and never writes or logs it.
 
 ## Development
 
