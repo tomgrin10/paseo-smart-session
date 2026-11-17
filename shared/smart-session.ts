@@ -362,10 +362,12 @@ export const historyShedStatus = defineRpc({
   input: z.object({ agentId: z.string().min(1).optional() }),
   output: z.object({
     enabled: z.boolean(),
+    /** Plan files that can't be read; those agents are left alone until the file is fixed or removed. */
+    unreadable: z.array(z.object({ agentId: z.string(), file: z.string() })),
     plans: z.array(z.object({
       agentId: z.string(),
       title: z.string().nullable(),
-      state: z.enum(["prepared", "committing", "committed", "restored", "discarded"]),
+      state: z.enum(["prepared", "committing", "committed", "restoring", "restored", "discarded"]),
       from: z.number(),
       to: z.number(),
       compactions: z.number(),

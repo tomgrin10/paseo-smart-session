@@ -5,8 +5,8 @@
  * - Prepare (read-only, writes the backup) only for an agent that is not loaded: when Paseo closes
  *   it, and in a slow sweep over agents that are already closed. Never wakes an agent.
  * - Commit, and a requested restore, only inside `agent.session_open` for a Claude agent opening
- *   with no live runtime (a resume, an import, or a history-only view). Never throws there: a
- *   failing open hook fails the agent's open, so every path ends in "leave it as it is".
+ *   with no live runtime (a resume, an import, or a history-only view); see `history-shed-open.ts`.
+ *   A requested restore runs whatever the setting says. Never throws there.
  */
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { homedir } from "node:os";
@@ -15,31 +15,27 @@ import { isDue } from "../shared/history-shed.ts";
 import { historyShedRestore, historyShedStatus, HISTORY_SHED_KIND } from "../shared/smart-session.ts";
 import { readAgents, withDaemon } from "./daemon.ts";
 import {
+  agentPlans,
   claudeConfigDirs,
-  commit,
   linuxProcesses,
+  listPlans,
   logRun,
-  type OpenKind,
-  openIsSafe,
+  markNoted,
+  migrateBackups,
   persistedSession,
   prepare,
   readPlan,
-  restoreRequested,
+  requestRestore,
   settle,
   type ShedEnv,
   type ShedPlan,
-  agentPlans,
-  listPlans,
-  markNoted,
-  requestRestore,
-  unnoted,
+  unreadablePlans,
 } from "./history-shed.ts";
+import { openHandler } from "./history-shed-open.ts";
 import { readSettings } from "./settings.ts";
 import { dataDir } from "./store.ts";
 
 const paseoHome = () => process.env.PASEO_HOME ?? join(homedir(), ".paseo");
-/** Commit work inside the open hook stops before the rename after this long (the hook allows 30 s). */
-const COMMIT_BUDGET_MS = 15_000;
 const SWEEP_EVERY_MS = 15 * 60_000;
 const FIRST_SWEEP_MS = 3 * 60_000;
 
@@ -55,6 +51,8 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
   let runtime: PluginHandlerContext["paseo"] | null = null;
   let stopped = false;
   const preparing = new Set<string>();
+  /** The last refusal logged per agent, so a sweep every 15 minutes doesn't repeat it. */
+  const lastRefusal = new Map<string, string>();
 
   const prepareAgent = async (agentId: string): Promise<void> => {
     if (stopped || preparing.has(agentId)) return;
@@ -78,9 +76,11 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
         const due = isDue(size, plan, settings.shedThresholds);
         return due.due ? true : due.why;
       });
-      if (!out.ok && !out.why.startsWith("due:") && !out.why.startsWith("cut:no-boundary")) {
+      if (!out.ok && !out.why.startsWith("due:") && !out.why.startsWith("cut:no-boundary") && lastRefusal.get(agentId) !== out.why) {
         await logRun(env, { event: "not-prepared", agentId, why: out.why });
       }
+      if (out.ok) lastRefusal.delete(agentId);
+      else lastRefusal.set(agentId, out.why);
     } catch (error) {
       await logRun(shedEnv(), { event: "error", stage: "prepare", agentId, error: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -100,37 +100,15 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
     } catch { /* Daemon unreachable: the next sweep tries again. */ }
   };
 
-  const removeOpen = server.before("agent.session_open", async ({ request }) => {
-    try {
-      if (request.provider !== "claude") return;
-      if (!openIsSafe({ reason: request.reason, purpose: request.purpose } as OpenKind)) return;
-      if (!(await readSettings()).shedHistory) return;
-      const env = shedEnv([request.env?.CLAUDE_CONFIG_DIR]);
-      let plan = await readPlan(env, request.agentId);
-      if (!plan) return;
-      const session = await persistedSession(paseoHome(), request.agentId);
-      if (!session || session.sessionId !== plan.sessionId) return;
-      await settle(env, plan);
-      plan = (await readPlan(env, request.agentId))!;
-      const deadline = Date.now() + COMMIT_BUDGET_MS;
-      if ((await agentPlans(env, request.agentId)).some((p) => p.state === "committed" && p.restoreRequested)) {
-        for (const out of await restoreRequested(env, request.agentId, deadline)) {
-          if (!out.ok) await logRun(env, { event: "restore-refused", agentId: request.agentId, why: out.why });
-        }
-        return;
-      }
-      if (plan.state !== "prepared") {
-        // A commit whose process died before its chat row: add the row now.
-        const missing = await unnoted(env, request.agentId);
-        if (missing) noteLater(missing);
-        return;
-      }
-      const out = await commit(env, plan, deadline);
-      if (out.ok) noteLater(out.plan);
-      else await logRun(env, { event: "refused", agentId: plan.agentId, why: out.why });
-    } catch (error) {
-      await logRun(shedEnv(), { event: "error", stage: "open", agentId: request.agentId, error: error instanceof Error ? error.message : String(error) });
-    }
+  const onOpen = openHandler({
+    env: (extra) => shedEnv(extra),
+    settings: readSettings,
+    session: (agentId) => persistedSession(paseoHome(), agentId),
+    note: (plan) => noteLater(plan),
+  });
+  const removeOpen = server.before("agent.session_open", async ({ request }, context) => {
+    // The budget counts from here: Paseo cancels a hook after 30 s and fails the open.
+    await onOpen(request, context?.signal, Date.now());
     return;
   });
 
@@ -182,6 +160,7 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
     const plans = (await listPlans(shedEnv())).filter((p) => agentId === undefined || p.agentId === agentId);
     return {
       enabled: settings.shedHistory,
+      unreadable: (await unreadablePlans(shedEnv())).filter((u) => agentId === undefined || u.agentId === agentId),
       plans: await Promise.all(plans.map(async (p) => ({
         agentId: p.agentId,
         title: (await persistedSession(paseoHome(), p.agentId).catch(() => null))?.title ?? null,
@@ -206,6 +185,9 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
       : { ok: true as const, note: "The full history goes back the next time this agent loads or its chat opens." };
   });
 
+  // Backups 3.8.0-beta.1 kept beside the transcript are copied into the data folder (whatever the setting says).
+  const migrate = setTimeout(() => void migrateBackups(shedEnv()).catch(() => undefined), 10_000);
+  migrate.unref?.();
   const first = setTimeout(() => void sweep(), FIRST_SWEEP_MS);
   first.unref?.();
   const every = setInterval(() => void sweep(), SWEEP_EVERY_MS);
@@ -213,6 +195,7 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
 
   return () => {
     stopped = true;
+    clearTimeout(migrate);
     clearTimeout(first);
     clearInterval(every);
     removeOpen?.();
