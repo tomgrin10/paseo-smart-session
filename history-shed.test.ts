@@ -268,8 +268,14 @@ test("commit refuses, changing nothing, when anything moved since prepare", asyn
   ];
   for (const [name, mutate, why, processes] of cases) {
     await t.test(name, async () => {
-      const w = await world({}, processes ?? idle);
+      const w = await world();
       const plan = await prepared(w);
+      if (processes) {
+        // A holder at prepare time is refused there too.
+        const held = await prepare({ ...w.env, processes }, w.agentId, w.sessionId, due);
+        assert.equal(!held.ok && held.why, why);
+        (w.env as { processes: ProcessView }).processes = processes;
+      }
       await mutate(w);
       const before = await fingerprint(w);
       const out = await commit(w.env, plan, FAR());
@@ -599,7 +605,9 @@ test("a line written at any point from the first read to the rename is in the re
 
 test("a process still holding the old file after the rename puts the original back", async () => {
   // Seen only by inode: after the rename the old file has no name a path scan would match.
-  const w = await world({}, { holders: async (_path, _sid, inode) => (inode ? ["4242:fd"] : []) });
+  let originalIno = -1;
+  const w = await world({}, { holders: async (_path, _sid, inode) => (inode?.ino === originalIno ? ["4242:fd"] : []) });
+  originalIno = (await stat(w.transcript)).ino;
   const original = await readFile(w.transcript);
   const plan = await prepared(w);
   const out = await commit(w.env, plan, FAR());

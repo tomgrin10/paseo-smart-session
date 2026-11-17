@@ -5,14 +5,18 @@
  * Invariants (AGENTS.md, tests in history-shed.test.ts):
  * - No data is lost. A full copy of the transcript, and of every subagent transcript that leaves
  *   `subagents/`, is written and verified by sha256 before anything changes. Smart Session never
- *   deletes a backup; only the person can.
+ *   deletes a backup, used or not; only the person can. Backups live in Smart Session's own data
+ *   folder, outside Claude Code's retention and out of sight of transcript scanners.
+ * - A line written at any moment of a shed or a restore ends up in the result, or the change is
+ *   undone with it in place. The original stays open and keeps a second name until the swap is
+ *   proven quiet: its size and mtime are checked last, with nothing between that check and the
+ *   rename, and after the rename the old file must have no holder and no new byte, or it goes back.
  * - Only the intended files change: the one transcript resolved from the agent's own persisted
- *   session id, and the subagent transcripts the plan names. Nothing is globbed; anything ambiguous
- *   (several candidate files, a size or hash that moved, a process holding the file) refuses.
+ *   session id, and the subagent transcripts the plan names (never one the kept history mentions).
+ *   Nothing is globbed; anything ambiguous refuses.
  * - The transcript is replaced only by an atomic rename, and only while no Claude process can be
- *   writing it: inside Paseo's `agent.open.before` for an agent that is not loaded (a resume, an
- *   import, or a history-only open). A reload (`refresh`) still has its old runtime alive, so it
- *   never sheds there.
+ *   writing it: inside Paseo's `agent.open.before` for an agent that is not loaded. A reload
+ *   (`refresh`) still has its old runtime alive, so it never sheds there.
  * - An agent's id and its post-compaction context survive: same file path, same session id, and the
  *   chain Claude rebuilds is byte-identical (`planCut` refuses otherwise).
  *
@@ -21,8 +25,8 @@
  * plan, writes the new file to a temp name, checks its hash, and renames it over the transcript.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { constants, existsSync } from "node:fs";
-import { mkdir, open, readdir, readFile, readlink, realpath, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { constants, existsSync, fstatSync, renameSync, statSync } from "node:fs";
+import { type FileHandle, link, mkdir, open, readdir, readFile, readlink, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
@@ -35,6 +39,8 @@ import {
 } from "../shared/history-shed.ts";
 
 const CHUNK = 1 << 20;
+/** Unused backups (plans the transcript moved past before their commit) an agent may collect before it waits. */
+export const MAX_UNUSED_BACKUPS = 2;
 
 // ---------------------------------------------------------------------------------------------- types
 
@@ -45,15 +51,20 @@ export interface FileStamp {
   readonly sha256: string;
 }
 
+interface OpenStamp extends FileStamp {
+  readonly dev: number;
+  readonly mode: number;
+}
+
 export interface SubagentEntry extends FileStamp {
   readonly name: string;
   /** The `.meta.json` beside it, when there is one. */
   readonly meta: (FileStamp & { readonly name: string }) | null;
-  /** Leaves `subagents/` at the commit (its whole run predates the cut). */
+  /** Leaves `subagents/` at the commit (its whole run predates the cut, and nothing kept names it). */
   readonly move: boolean;
 }
 
-export type PlanState = "prepared" | "committing" | "committed" | "restored" | "discarded";
+export type PlanState = "prepared" | "committing" | "committed" | "restoring" | "restored" | "discarded";
 
 /** What `prepare` decided, kept in Smart Session's data folder until the commit or its discard. */
 export interface ShedPlan {
@@ -66,7 +77,7 @@ export interface ShedPlan {
   readonly original: FileStamp;
   readonly cut: Pick<CutPlan, "ranges" | "newSize" | "movedBytes" | "compactions" | "chainLength" | "boundaryTimestamp"> & { movedRecords: number; keptBefore: number };
   readonly expectedSha256: string;
-  readonly backupDir: string;
+  backupDir: string;
   readonly subagents: readonly SubagentEntry[];
   readonly preparedAt: string;
   state: PlanState;
@@ -78,6 +89,12 @@ export interface ShedPlan {
   notedAt?: string;
   /** The person asked for the full history back; done at the agent's next safe open. */
   restoreRequested?: boolean;
+  /** Why it was discarded; its backup stays. */
+  discardedWhy?: string;
+  /** An open that worked on this plan was canceled by Paseo (its hook timed out): the next open leaves it. */
+  overranAt?: string;
+  /** Where a 3.8.0-beta.1 backup was before it was copied into the data folder (left there as it was). */
+  migratedFrom?: string;
 }
 
 export type Refusal =
@@ -92,9 +109,13 @@ export type Refusal =
   | "backup-mismatch"
   | "subagents-changed"
   | "deadline"
+  | "aborted"
+  | "late-write"
   | "unsafe-open"
   | "restore-mismatch"
   | "nothing-to-restore"
+  | "unreadable-plan"
+  | "unused-backups"
   | `cut:${string}`
   | `due:${string}`
   | `error:${string}`;
@@ -103,13 +124,17 @@ export type Outcome =
   | { readonly ok: true; readonly plan: ShedPlan }
   | { readonly ok: false; readonly why: Refusal; readonly plan?: ShedPlan };
 
-/** Which processes hold a file open or name a session id on their command line. Null: unknown. */
+/**
+ * Which processes hold a file open or name a session id on their command line. Null: unknown.
+ * With `inode`, a holder is matched by that file's identity instead of its path: after a rename the
+ * old file has no name a path comparison would find.
+ */
 export interface ProcessView {
-  holders(path: string, sessionId: string): Promise<string[] | null>;
+  holders(path: string, sessionId: string, inode?: { readonly dev: number; readonly ino: number }): Promise<string[] | null>;
 }
 
 export interface ShedEnv {
-  /** Smart Session's data folder (plans, run log). */
+  /** Smart Session's data folder (plans, backups, run log). */
   readonly dataDir: string;
   /** Claude config folders to look in: CLAUDE_CONFIG_DIR, ~/.claude, ZeroSub account homes. */
   readonly configDirs: () => Promise<string[]>;
@@ -120,47 +145,53 @@ export interface ShedEnv {
 }
 
 const at = (env: ShedEnv) => new Date((env.now ?? Date.now)()).toISOString();
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 // ---------------------------------------------------------------------------------------------- files
+
+async function hashHandle(handle: FileHandle, length?: number): Promise<{ sha256: string; size: number }> {
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(CHUNK);
+  let position = 0;
+  for (;;) {
+    const want = length === undefined ? buffer.length : Math.min(buffer.length, length - position);
+    if (want <= 0) break;
+    const { bytesRead } = await handle.read(buffer, 0, want, position);
+    if (bytesRead === 0) break;
+    hash.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
+  }
+  return { sha256: hash.digest("hex"), size: position };
+}
+
+/** sha256 and size of an open file, with the identity it had when the read began. */
+async function stampHandle(handle: FileHandle): Promise<OpenStamp> {
+  const before = await handle.stat();
+  const { sha256, size } = await hashHandle(handle);
+  return { size, mtimeMs: before.mtimeMs, ino: before.ino, dev: before.dev, mode: before.mode & 0o7777, sha256 };
+}
 
 /** sha256 and size of a file, read in chunks; also the stamp it had when the read began. */
 export async function stampFile(path: string): Promise<FileStamp> {
   const handle = await open(path, constants.O_RDONLY);
   try {
-    const before = await handle.stat();
-    const hash = createHash("sha256");
-    const buffer = Buffer.allocUnsafe(CHUNK);
-    let position = 0;
-    for (;;) {
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
-      if (bytesRead === 0) break;
-      hash.update(buffer.subarray(0, bytesRead));
-      position += bytesRead;
-    }
-    return { size: position, mtimeMs: before.mtimeMs, ino: before.ino, sha256: hash.digest("hex") };
+    const { size, mtimeMs, ino, sha256 } = await stampHandle(handle);
+    return { size, mtimeMs, ino, sha256 };
   } finally {
     await handle.close();
   }
 }
 
-/** sha256 of a file's first `length` bytes; null when it is shorter. */
+/** sha256 of the first `length` bytes; null when the file is shorter. */
+async function prefixShaOf(handle: FileHandle, length: number): Promise<string | null> {
+  if ((await handle.stat()).size < length) return null;
+  const { sha256, size } = await hashHandle(handle, length);
+  return size === length ? sha256 : null;
+}
+
 async function prefixSha(path: string, length: number): Promise<string | null> {
   const handle = await open(path, constants.O_RDONLY);
-  try {
-    if ((await handle.stat()).size < length) return null;
-    const hash = createHash("sha256");
-    const buffer = Buffer.allocUnsafe(CHUNK);
-    let position = 0;
-    while (position < length) {
-      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, length - position), position);
-      if (bytesRead === 0) return null;
-      hash.update(buffer.subarray(0, bytesRead));
-      position += bytesRead;
-    }
-    return hash.digest("hex");
-  } finally {
-    await handle.close();
-  }
+  try { return await prefixShaOf(handle, length); } finally { await handle.close(); }
 }
 
 /** Every line's index entry and the whole file's hash, in one pass. */
@@ -217,38 +248,67 @@ async function fsyncDir(dir: string) {
   } catch { /* Not every filesystem allows it; the rename is still atomic. */ }
 }
 
-/** Copy `ranges` of `source` into a new file (never an existing one), synced; returns its sha256. */
-async function writeRanges(source: string, ranges: readonly (readonly [number, number])[], target: string): Promise<string> {
-  const input = await open(source, constants.O_RDONLY);
+/** A part of a new file: a byte range of an open file or of a path. */
+type Part = readonly [FileHandle | string, number, number];
+
+/** Writes `parts` into a new file (never an existing one) with `mode`, synced; returns its sha256. */
+async function writeParts(target: string, parts: readonly Part[], mode = 0o600): Promise<string> {
   const output = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  const hash = createHash("sha256");
   try {
-    const hash = createHash("sha256");
+    await output.chmod(mode);
     const buffer = Buffer.allocUnsafe(CHUNK);
-    for (const [offset, length] of ranges) {
-      let done = 0;
-      while (done < length) {
-        const { bytesRead } = await input.read(buffer, 0, Math.min(buffer.length, length - done), offset + done);
-        if (bytesRead === 0) throw new Error("source ended early");
-        const slice = buffer.subarray(0, bytesRead);
-        hash.update(slice);
-        await output.write(slice, 0, slice.length);
-        done += bytesRead;
+    for (const [source, offset, length] of parts) {
+      const input = typeof source === "string" ? await open(source, constants.O_RDONLY) : source;
+      try {
+        let done = 0;
+        while (done < length) {
+          const { bytesRead } = await input.read(buffer, 0, Math.min(buffer.length, length - done), offset + done);
+          if (bytesRead === 0) throw new Error("source ended early");
+          const slice = buffer.subarray(0, bytesRead);
+          hash.update(slice);
+          await output.write(slice, 0, slice.length);
+          done += bytesRead;
+        }
+      } finally {
+        if (typeof source === "string") await input.close();
       }
     }
     await output.sync();
-    return hash.digest("hex");
   } finally {
-    await input.close();
     await output.close();
   }
+  return hash.digest("hex");
 }
 
 /** A verified copy into a new file. Throws unless the copy's own hash equals `expect`. */
-async function copyVerified(source: string, target: string, expect: FileStamp): Promise<void> {
-  const written = await writeRanges(source, [[0, expect.size]], target);
+async function copyVerified(source: FileHandle | string, target: string, expect: FileStamp): Promise<void> {
+  const written = await writeParts(target, [[source, 0, expect.size]]);
   if (written !== expect.sha256) throw new Error("copy differs from its source");
   const reread = await stampFile(target);
   if (reread.sha256 !== expect.sha256 || reread.size !== expect.size) throw new Error("copy did not read back");
+}
+
+/** Which of `needles` occur in the given byte ranges of a file. */
+async function rangesMention(handle: FileHandle, ranges: readonly (readonly [number, number])[], needles: readonly string[]): Promise<Set<string>> {
+  const found = new Set<string>();
+  if (needles.length === 0) return found;
+  const longest = Math.max(...needles.map((n) => Buffer.byteLength(n)));
+  const buffer = Buffer.allocUnsafe(CHUNK + longest);
+  for (const [offset, length] of ranges) {
+    let carry = 0;
+    let done = 0;
+    while (done < length) {
+      const { bytesRead } = await handle.read(buffer, carry, Math.min(CHUNK, length - done), offset + done);
+      if (bytesRead === 0) break;
+      const window = buffer.subarray(0, carry + bytesRead);
+      for (const needle of needles) if (!found.has(needle) && window.includes(needle)) found.add(needle);
+      carry = Math.min(longest - 1, window.length);
+      window.copy(buffer, 0, window.length - carry);
+      done += bytesRead;
+    }
+  }
+  return found;
 }
 
 // ---------------------------------------------------------------------------------------------- locating
@@ -298,12 +358,13 @@ export async function persistedSession(paseoHome: string, agentId: string): Prom
   }
 }
 
-/** Linux: processes that hold `path` open, or carry `sessionId` on their command line. */
+/** Linux: processes that hold `path` (or, with `inode`, that file) open, or carry `sessionId` on their command line. */
 export const linuxProcesses: ProcessView = {
-  async holders(path, sessionId) {
+  async holders(path, sessionId, inode) {
     let pids: string[];
     try { pids = (await readdir("/proc")).filter((name) => /^\d+$/.test(name)); } catch { return null; }
     const own = String(process.pid);
+    const folder = `${dirname(path)}/`;
     const out: string[] = [];
     const check = async (pid: string) => {
       if (pid === own) return;
@@ -314,7 +375,15 @@ export const linuxProcesses: ProcessView = {
       let fds: string[];
       try { fds = await readdir(`/proc/${pid}/fd`); } catch { return; }
       for (const fd of fds) {
-        try { if ((await readlink(`/proc/${pid}/fd/${fd}`)) === path) { out.push(`${pid}:fd`); return; } } catch { /* gone */ }
+        try {
+          const target = await readlink(`/proc/${pid}/fd/${fd}`);
+          if (inode) {
+            // A renamed-over file reads as "<path> (deleted)" or as its second name; same folder either way.
+            if (!target.startsWith(folder)) continue;
+            const info = await stat(`/proc/${pid}/fd/${fd}`);
+            if (info.ino === inode.ino && info.dev === inode.dev) { out.push(`${pid}:fd`); return; }
+          } else if (target === path) { out.push(`${pid}:fd`); return; }
+        } catch { /* gone */ }
       }
     };
     // Many processes, each read independently: a few at a time keeps it quick on a busy machine.
@@ -328,20 +397,61 @@ export const linuxProcesses: ProcessView = {
 
 // ---------------------------------------------------------------------------------------------- plans
 
-const planRoot = (env: ShedEnv) => join(env.dataDir, "history-shed", "plans");
+const shedRoot = (env: ShedEnv) => join(env.dataDir, "history-shed");
+const planRoot = (env: ShedEnv) => join(shedRoot(env), "plans");
+const backupRoot = (env: ShedEnv) => join(shedRoot(env), "backups");
 const safeId = (agentId: string) => (/^[A-Za-z0-9_-]+$/.test(agentId) ? agentId : null);
+
+/**
+ * Where a plan's backup goes: Smart Session's data folder, by the transcript's real folder (which
+ * names its Claude config folder and project) and its session id. Not under `~/.claude/projects`,
+ * where Claude Code's cleanup, a removed ZeroSub account home or a transcript search would reach it.
+ */
+export function backupDirFor(env: ShedEnv, transcript: string, sessionId: string, planId: string): string {
+  const folder = dirname(transcript);
+  const key = `${basename(folder).slice(-80)}-${createHash("sha256").update(folder).digest("hex").slice(0, 8)}`;
+  return join(backupRoot(env), key, sessionId, planId);
+}
+
+function isPlan(value: unknown, agentId: string): value is ShedPlan {
+  const p = value as Partial<ShedPlan> | null;
+  return !!p && p.version === 1 && typeof p.id === "string" && p.agentId === agentId && isSessionId(p.sessionId)
+    && typeof p.path === "string" && typeof p.backupDir === "string" && typeof p.state === "string"
+    && !!p.original && typeof p.original.sha256 === "string" && !!p.cut && Array.isArray(p.cut.ranges) && Array.isArray(p.subagents);
+}
+
+const reportedUnreadable = new Set<string>();
+
+/** Every plan for an agent, newest first, and the plan files that could not be read (reported once each). */
+export async function readPlans(env: ShedEnv, agentId: string): Promise<{ plans: ShedPlan[]; unreadable: string[] }> {
+  const id = safeId(agentId);
+  if (!id) return { plans: [], unreadable: [] };
+  let names: string[];
+  try { names = (await readdir(join(planRoot(env), id))).filter((n) => n.endsWith(".json")).sort(); } catch { return { plans: [], unreadable: [] }; }
+  const plans: ShedPlan[] = [];
+  const unreadable: string[] = [];
+  for (const name of names) {
+    try {
+      const value = JSON.parse(await readFile(join(planRoot(env), id, name), "utf8"));
+      if (isPlan(value, agentId)) plans.push(value);
+      else unreadable.push(name);
+    } catch {
+      unreadable.push(name);
+    }
+  }
+  for (const name of unreadable) {
+    const key = join(planRoot(env), id, name);
+    if (reportedUnreadable.has(key)) continue;
+    reportedUnreadable.add(key);
+    await logRun(env, { event: "plan-unreadable", agentId, file: name, note: "This agent is left alone until the file is readable again or removed." });
+  }
+  plans.sort((a, b) => (a.preparedAt < b.preparedAt ? 1 : a.preparedAt > b.preparedAt ? -1 : a.id < b.id ? 1 : -1));
+  return { plans, unreadable };
+}
 
 /** Every plan for an agent, newest first (one file per shed, so restore can walk back through all). */
 export async function agentPlans(env: ShedEnv, agentId: string): Promise<ShedPlan[]> {
-  const id = safeId(agentId);
-  if (!id) return [];
-  let names: string[];
-  try { names = (await readdir(join(planRoot(env), id))).filter((n) => n.endsWith(".json")); } catch { return []; }
-  const plans: ShedPlan[] = [];
-  for (const name of names) {
-    try { plans.push(JSON.parse(await readFile(join(planRoot(env), id, name), "utf8")) as ShedPlan); } catch { /* skip */ }
-  }
-  return plans.sort((a, b) => (a.preparedAt < b.preparedAt ? 1 : a.preparedAt > b.preparedAt ? -1 : a.id < b.id ? 1 : -1));
+  return (await readPlans(env, agentId)).plans;
 }
 
 /** The newest plan that still matters (not a discarded one). */
@@ -349,17 +459,27 @@ export async function readPlan(env: ShedEnv, agentId: string): Promise<ShedPlan 
   return (await agentPlans(env, agentId)).find((p) => p.state !== "discarded") ?? null;
 }
 
+async function agentIds(env: ShedEnv): Promise<string[]> {
+  try { return (await readdir(planRoot(env))).filter((id) => safeId(id) !== null); } catch { return []; }
+}
+
 export async function listPlans(env: ShedEnv): Promise<ShedPlan[]> {
-  let ids: string[];
-  try { ids = await readdir(planRoot(env)); } catch { return []; }
   const out: ShedPlan[] = [];
-  for (const id of ids) {
+  for (const id of await agentIds(env)) {
     const latest = await readPlan(env, id);
     if (latest) out.push(latest);
   }
   return out;
 }
 
+/** Plan files that can't be read, by agent: shown in the status, and those agents are left alone. */
+export async function unreadablePlans(env: ShedEnv): Promise<{ agentId: string; file: string }[]> {
+  const out: { agentId: string; file: string }[] = [];
+  for (const id of await agentIds(env)) for (const file of (await readPlans(env, id)).unreadable) out.push({ agentId: id, file });
+  return out;
+}
+
+/** Written to a temp name, synced, renamed, and the folder synced: a plan survives a power cut whole or not at all. */
 async function savePlan(env: ShedEnv, plan: ShedPlan): Promise<void> {
   const id = safeId(plan.agentId);
   if (!id) throw new Error("bad agent id");
@@ -367,9 +487,19 @@ async function savePlan(env: ShedEnv, plan: ShedPlan): Promise<void> {
   await mkdir(dir, { recursive: true });
   const target = join(dir, `${plan.id}.json`);
   const temp = `${target}.${randomUUID()}.tmp`;
-  await writeFile(temp, JSON.stringify(plan, null, 2), { mode: 0o600 });
+  const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  try {
+    await handle.writeFile(JSON.stringify(plan, null, 2));
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
   await rename(temp, target);
+  await fsyncDir(dir);
 }
+
+/** For tests that need a plan as an older version wrote it. */
+export const savePlanForTest = savePlan;
 
 /** The newest committed shed of this agent whose chat row was never added, if any. */
 export async function unnoted(env: ShedEnv, agentId: string): Promise<ShedPlan | null> {
@@ -377,32 +507,43 @@ export async function unnoted(env: ShedEnv, agentId: string): Promise<ShedPlan |
   return newest && newest.state === "committed" && !newest.notedAt && !newest.restoreRequested ? newest : null;
 }
 
-/** Records that the chat row was added. Under the plan's lock, and only while it is still committed. */
-export async function markNoted(env: ShedEnv, plan: ShedPlan): Promise<void> {
-  await withLock(plan, async () => {
+/** Changes a stored plan under its lock, only if `when` still holds for the stored copy. */
+async function updatePlan(env: ShedEnv, plan: ShedPlan, when: (current: ShedPlan) => boolean, change: (current: ShedPlan) => void): Promise<void> {
+  await withLock(env, plan, async () => {
     const current = (await agentPlans(env, plan.agentId)).find((p) => p.id === plan.id);
-    if (!current || current.state !== "committed" || current.notedAt) return;
-    current.notedAt = at(env);
+    if (!current || !when(current)) return;
+    change(current);
     await savePlan(env, current);
   }, () => undefined);
 }
 
+/** Records that the chat row was added. Under the plan's lock, and only while it is still committed. */
+export async function markNoted(env: ShedEnv, plan: ShedPlan): Promise<void> {
+  await updatePlan(env, plan, (c) => c.state === "committed" && !c.notedAt, (c) => { c.notedAt = at(env); });
+}
+
+/** Records that Paseo canceled an open that worked on this plan: the next open leaves it alone. */
+export async function markOverrun(env: ShedEnv, plan: ShedPlan): Promise<void> {
+  await updatePlan(env, plan, () => true, (c) => { c.overranAt = at(env); });
+}
+
+export async function clearOverrun(env: ShedEnv, plan: ShedPlan): Promise<void> {
+  await updatePlan(env, plan, (c) => c.overranAt !== undefined, (c) => { delete c.overranAt; });
+}
+
 /** Marks every shed of this agent for restoring at its next safe open. Null when there is none. */
 export async function requestRestore(env: ShedEnv, agentId: string): Promise<ShedPlan[] | null> {
-  const plans = (await agentPlans(env, agentId)).filter((p) => p.state === "committed");
+  const plans = (await agentPlans(env, agentId)).filter((p) => p.state === "committed" || p.state === "committing" || p.state === "restoring");
   if (plans.length === 0) return null;
-  for (const plan of plans) {
-    plan.restoreRequested = true;
-    await savePlan(env, plan);
-  }
+  for (const plan of plans) await updatePlan(env, plan, (c) => c.state === plan.state, (c) => { c.restoreRequested = true; });
   return plans;
 }
 
-/** Restores every requested shed, newest first, while time allows. */
-export async function restoreRequested(env: ShedEnv, agentId: string, deadline: number): Promise<Outcome[]> {
+/** Restores every requested shed, newest first, while time allows. Settles a crashed commit or restore first. */
+export async function restoreRequested(env: ShedEnv, agentId: string, deadline: number, signal?: AbortSignal): Promise<Outcome[]> {
   const out: Outcome[] = [];
-  for (const plan of (await agentPlans(env, agentId)).filter((p) => p.state === "committed" && p.restoreRequested)) {
-    const result = await restore(env, plan, deadline);
+  for (const plan of (await agentPlans(env, agentId)).filter((p) => p.restoreRequested && (p.state === "committed" || p.state === "committing" || p.state === "restoring"))) {
+    const result = await restore(env, plan, deadline, signal);
     out.push(result);
     if (!result.ok) break;
   }
@@ -412,7 +553,7 @@ export async function restoreRequested(env: ShedEnv, agentId: string, deadline: 
 /** One line per prepare, commit, restore or refusal (`history-shed/runs-YYYY-MM.jsonl`). */
 export async function logRun(env: ShedEnv, entry: Record<string, unknown>): Promise<void> {
   try {
-    const dir = join(env.dataDir, "history-shed");
+    const dir = shedRoot(env);
     await mkdir(dir, { recursive: true });
     const now = at(env);
     await writeFile(join(dir, `runs-${now.slice(0, 7)}.jsonl`), `${JSON.stringify({ at: now, ...entry })}\n`, { flag: "a" });
@@ -446,6 +587,18 @@ async function newestTimestamp(path: string): Promise<number | null> {
   return newest;
 }
 
+/** The ids a kept record would use to point at a subagent: its agent id and the Task call that started it. */
+async function subagentIds(dir: string, name: string, metaName: string | null): Promise<string[]> {
+  const ids = [name.replace(/^agent-/, "").replace(/\.jsonl$/, "")];
+  if (metaName) {
+    try {
+      const toolUseId = JSON.parse(await readFile(join(dir, metaName), "utf8"))?.toolUseId;
+      if (typeof toolUseId === "string") ids.push(toolUseId);
+    } catch { /* No usable meta: the agent id alone. */ }
+  }
+  return ids.filter((id) => id.length >= 8);
+}
+
 /**
  * Reads the transcript, plans the cut, and writes and verifies the backup. Touches no existing file.
  * `isDue` decides from the size and plan whether it is worth it.
@@ -457,123 +610,147 @@ export async function prepare(
   isDueFor: (size: number, plan: CutPlan) => true | string,
 ): Promise<Outcome> {
   if (!isSessionId(sessionId)) return { ok: false, why: "no-session" };
+  const { plans, unreadable } = await readPlans(env, agentId);
+  if (unreadable.length > 0) return { ok: false, why: "unreadable-plan" };
+  // Never deleted, so bounded instead: an agent whose transcript keeps moving on before each commit waits.
+  const unused = plans.filter((p) => p.state === "discarded" && existsSync(join(p.backupDir, "transcript.jsonl"))).length;
+  if (unused >= MAX_UNUSED_BACKUPS) return { ok: false, why: "unused-backups" };
   const located = await resolveTranscript(sessionId, await env.configDirs());
   if ("why" in located) return { ok: false, why: located.why };
   const path = located.path;
+  const holders = await env.processes.holders(path, sessionId);
+  if (holders === null) return { ok: false, why: "no-proc" };
+  if (holders.length > 0) return { ok: false, why: "busy" };
   await env.step?.("prepare:index");
   const { records, stamp } = await indexTranscript(path);
   const cut = planCut(records);
   if (!cut.ok) return { ok: false, why: `cut:${cut.why}` };
   const due = isDueFor(stamp.size, cut);
   if (due !== true) return { ok: false, why: `due:${due}` };
-  // The file must not have changed while it was read.
-  const recheck = await stat(path);
-  if (recheck.size !== stamp.size || recheck.mtimeMs !== stamp.mtimeMs || recheck.ino !== stamp.ino) return { ok: false, why: "changed" };
-  const expectedSha256 = await shaOfRanges(path, cut.ranges);
-  const sessionDir = join(dirname(path), basename(path, ".jsonl"));
-  const id = `${new Date((env.now ?? Date.now)()).toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
-  const backupDir = join(sessionDir, "shed", id);
-  await env.step?.("prepare:backup");
-  await mkdir(join(backupDir, "subagents"), { recursive: true });
-  await copyVerified(path, join(backupDir, "transcript.jsonl"), stamp);
-  const boundaryAt = cut.boundaryTimestamp === null ? NaN : Date.parse(cut.boundaryTimestamp);
-  const subagents: SubagentEntry[] = [];
-  for (const { name, stamp: sub, meta } of await subagentStamps(sessionDir)) {
-    const newest = await newestTimestamp(join(sessionDir, "subagents", name));
-    const move = Number.isFinite(boundaryAt) && newest !== null && newest < boundaryAt;
-    if (move) {
-      await copyVerified(join(sessionDir, "subagents", name), join(backupDir, "subagents", name), sub);
-      if (meta) await copyVerified(join(sessionDir, "subagents", meta.name), join(backupDir, "subagents", meta.name), meta);
-    }
-    subagents.push({ name, ...sub, meta, move });
-  }
-  const after = await stampFile(path);
-  if (after.sha256 !== stamp.sha256 || after.size !== stamp.size) return { ok: false, why: "changed" };
-  const plan: ShedPlan = {
-    version: 1,
-    id,
-    agentId,
-    sessionId,
-    path,
-    original: stamp,
-    cut: {
-      ranges: cut.ranges,
-      newSize: cut.newSize,
-      movedBytes: cut.movedBytes,
-      compactions: cut.compactions,
-      chainLength: cut.chainLength,
-      boundaryTimestamp: cut.boundaryTimestamp,
-      movedRecords: cut.moved.length,
-      keptBefore: cut.keptBefore.length,
-    },
-    expectedSha256,
-    backupDir,
-    subagents,
-    preparedAt: at(env),
-    state: "prepared",
-  };
-  await writeFile(join(backupDir, "manifest.json"), JSON.stringify({ ...plan, note: "Full copy of the transcript before Smart Session moved its older history aside. Smart Session never deletes this folder." }, null, 2), { flag: "wx", mode: 0o600 });
-  await savePlan(env, plan);
-  await logRun(env, { event: "prepared", agentId, sessionId, size: stamp.size, newSize: cut.newSize, movedBytes: cut.movedBytes, compactions: cut.compactions, subagentsMoving: subagents.filter((s) => s.move).length, backupDir });
-  return { ok: true, plan };
-}
-
-async function shaOfRanges(path: string, ranges: readonly (readonly [number, number])[]): Promise<string> {
   const handle = await open(path, constants.O_RDONLY);
   try {
-    const hash = createHash("sha256");
-    const buffer = Buffer.allocUnsafe(CHUNK);
-    for (const [offset, length] of ranges) {
-      let done = 0;
-      while (done < length) {
-        const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, length - done), offset + done);
-        if (bytesRead === 0) throw new Error("file ended early");
-        hash.update(buffer.subarray(0, bytesRead));
-        done += bytesRead;
-      }
+    // The file must not have changed while it was read.
+    const recheck = await handle.stat();
+    if (recheck.size !== stamp.size || recheck.mtimeMs !== stamp.mtimeMs || recheck.ino !== stamp.ino) return { ok: false, why: "changed" };
+    const expectedSha256 = await shaOfRanges(handle, cut.ranges);
+    const sessionDir = join(dirname(path), basename(path, ".jsonl"));
+    const subagentsDir = join(sessionDir, "subagents");
+    const id = `${new Date((env.now ?? Date.now)()).toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+    const backupDir = backupDirFor(env, path, sessionId, id);
+    // Which old subagents could leave: their whole run predates the cut, and no kept record names them.
+    const boundaryAt = cut.boundaryTimestamp === null ? NaN : Date.parse(cut.boundaryTimestamp);
+    const found = await subagentStamps(sessionDir);
+    const candidates = new Map<string, string[]>();
+    for (const { name, meta } of found) {
+      const newest = await newestTimestamp(join(subagentsDir, name));
+      if (Number.isFinite(boundaryAt) && newest !== null && newest < boundaryAt) candidates.set(name, await subagentIds(subagentsDir, name, meta?.name ?? null));
     }
-    return hash.digest("hex");
+    const mentioned = await rangesMention(handle, cut.ranges, [...candidates.values()].flat());
+    await env.step?.("prepare:backup");
+    await mkdir(join(backupDir, "subagents"), { recursive: true });
+    await copyVerified(handle, join(backupDir, "transcript.jsonl"), stamp);
+    const subagents: SubagentEntry[] = [];
+    for (const { name, stamp: sub, meta } of found) {
+      const ids = candidates.get(name);
+      const move = ids !== undefined && !ids.some((x) => mentioned.has(x));
+      if (move) {
+        await copyVerified(join(subagentsDir, name), join(backupDir, "subagents", name), sub);
+        if (meta) await copyVerified(join(subagentsDir, meta.name), join(backupDir, "subagents", meta.name), meta);
+      }
+      subagents.push({ name, ...sub, meta, move });
+    }
+    const after = await stampHandle(handle);
+    if (after.sha256 !== stamp.sha256 || after.size !== stamp.size) return { ok: false, why: "changed" };
+    const plan: ShedPlan = {
+      version: 1,
+      id,
+      agentId,
+      sessionId,
+      path,
+      original: stamp,
+      cut: {
+        ranges: cut.ranges,
+        newSize: cut.newSize,
+        movedBytes: cut.movedBytes,
+        compactions: cut.compactions,
+        chainLength: cut.chainLength,
+        boundaryTimestamp: cut.boundaryTimestamp,
+        movedRecords: cut.moved.length,
+        keptBefore: cut.keptBefore.length,
+      },
+      expectedSha256,
+      backupDir,
+      subagents,
+      preparedAt: at(env),
+      state: "prepared",
+    };
+    await writeFile(join(backupDir, "manifest.json"), JSON.stringify({ ...plan, note: "Full copy of the transcript before Smart Session moved its older history aside. Smart Session never deletes this folder." }, null, 2), { flag: "wx", mode: 0o600 });
+    await fsyncDir(join(backupDir, "subagents"));
+    await fsyncDir(backupDir);
+    await fsyncDir(dirname(backupDir));
+    await savePlan(env, plan);
+    await logRun(env, { event: "prepared", agentId, sessionId, size: stamp.size, newSize: cut.newSize, movedBytes: cut.movedBytes, compactions: cut.compactions, subagentsMoving: subagents.filter((s) => s.move).length, subagentsKeptAsNamed: [...candidates.keys()].filter((n) => !subagents.find((s) => s.name === n)?.move).length, backupDir });
+    return { ok: true, plan };
   } finally {
     await handle.close();
   }
 }
 
+/** sha256 of the given ranges of an open file. */
+async function shaOfRanges(handle: FileHandle, ranges: readonly (readonly [number, number])[]): Promise<string> {
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(CHUNK);
+  for (const [offset, length] of ranges) {
+    let done = 0;
+    while (done < length) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, length - done), offset + done);
+      if (bytesRead === 0) throw new Error("file ended early");
+      hash.update(buffer.subarray(0, bytesRead));
+      done += bytesRead;
+    }
+  }
+  return hash.digest("hex");
+}
 
 // ---------------------------------------------------------------------------------------------- lock
 
 const held = new Set<string>();
 
 /**
- * One commit, restore or settle per plan at a time, across processes: an exclusive lock file in the
- * plan's backup folder, holding the owner's pid. A lock whose pid is gone (a crash) is taken over.
+ * One commit, restore or settle per plan at a time, across processes: an exclusive lock file beside
+ * the plan, holding the owner's pid. A lock whose pid is gone (a crash) is taken over.
  */
-async function withLock<T>(plan: ShedPlan, work: () => Promise<T>, busy: () => T): Promise<T> {
-  const file = join(plan.backupDir, ".lock");
-  if (held.has(file)) return busy();
-  held.add(file);
+async function withLock<T>(env: ShedEnv, plan: ShedPlan, work: () => Promise<T>, busy: () => T): Promise<T> {
+  const id = safeId(plan.agentId);
+  if (!id) return busy();
+  const dir = join(planRoot(env), id);
+  const lockFile = join(dir, `${plan.id}.lock`);
+  if (held.has(lockFile)) return busy();
+  held.add(lockFile);
   try {
+    await mkdir(dir, { recursive: true });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const handle = await open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+        const handle = await open(lockFile, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
         await handle.writeFile(`${process.pid}`);
         await handle.close();
-        try { return await work(); } finally { await unlink(file).catch(() => undefined); }
+        try { return await work(); } finally { await unlink(lockFile).catch(() => undefined); }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const owner = Number((await readFile(file, "utf8").catch(() => "")).trim());
+        const owner = Number((await readFile(lockFile, "utf8").catch(() => "")).trim());
         let alive = false;
         if (Number.isInteger(owner) && owner > 0) { try { process.kill(owner, 0); alive = true; } catch (e) { alive = (e as NodeJS.ErrnoException).code === "EPERM"; } }
         if (alive && owner !== process.pid) return busy();
-        await unlink(file).catch(() => undefined);
+        await unlink(lockFile).catch(() => undefined);
       }
     }
     return busy();
   } finally {
-    held.delete(file);
+    held.delete(lockFile);
   }
 }
 
-// ---------------------------------------------------------------------------------------------- commit
+// ---------------------------------------------------------------------------------------------- the swap
 
 /** What the open was: only an open with no live runtime may commit. */
 export interface OpenKind {
@@ -586,18 +763,150 @@ export function openIsSafe(open: OpenKind): boolean {
   return true;
 }
 
+/** The temp files a commit or restore of this plan writes beside the transcript, by exact name. */
+export function tempNames(plan: Pick<ShedPlan, "path" | "id">): string[] {
+  return [
+    join(dirname(plan.path), `.${basename(plan.path)}.shed-${plan.id}.tmp`),
+    join(dirname(plan.path), `.${basename(plan.path)}.restore-${plan.id}.tmp`),
+  ];
+}
+
+/**
+ * The second names a swap gives files beside the transcript while it proves itself: the file being
+ * replaced (`.orig`) and, while undoing, the replacement (`.new`). Shed first, then restore.
+ */
+export function sideNames(plan: Pick<ShedPlan, "path" | "id">): string[] {
+  const base = join(dirname(plan.path), `.${basename(plan.path)}`);
+  return [`${base}.shed-${plan.id}.orig`, `${base}.shed-${plan.id}.new`, `${base}.restore-${plan.id}.orig`, `${base}.restore-${plan.id}.new`];
+}
+
+/** A temp file this module names after its own plan id: removed only by that exact name. */
+async function clearOwnTemp(temp: string): Promise<void> {
+  if (!/\.(shed|restore)-[0-9A-Za-z-]+\.tmp$/.test(temp)) return;
+  await unlink(temp).catch(() => undefined);
+}
+
+/**
+ * Removes a second name, only while it is still the file expected (same inode, same size) and, for the
+ * replaced original, while its every byte is in a verified backup. The same bytes stay reachable.
+ */
+async function dropSecondName(second: string, expect: { readonly ino: number; readonly size: number }): Promise<boolean> {
+  if (!/\.(shed|restore)-[0-9A-Za-z-]+\.(orig|new)$/.test(second)) return false;
+  const info = await stat(second).catch(() => null);
+  if (!info) return true;
+  if (info.ino !== expect.ino || info.size !== expect.size) return false;
+  await unlink(second);
+  return true;
+}
+
+/** Removes a second name while both names are still one and the same file: nothing becomes unreachable. */
+async function dropSameFile(second: string, path: string): Promise<void> {
+  if (!/\.(shed|restore)-[0-9A-Za-z-]+\.(orig|new)$/.test(second)) return;
+  const [a, b] = await Promise.all([stat(second).catch(() => null), stat(path).catch(() => null)]);
+  if (a && b && a.ino === b.ino && a.dev === b.dev) await unlink(second);
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The last look and the rename, with nothing in between: no await, so no other work of this process
+ * runs there, and the size and mtime of the open original and the inode at the path are what was
+ * verified. Returns why not, or null once renamed.
+ */
+function swapNow(handle: FileHandle, path: string, temp: string, was: OpenStamp, stop: () => Refusal | null): Refusal | null {
+  const open = fstatSync(handle.fd);
+  if (open.size !== was.size || open.mtimeMs !== was.mtimeMs) return "changed";
+  const named = statSync(path);
+  if (named.ino !== was.ino || named.dev !== was.dev) return "changed";
+  const why = stop();
+  if (why) return why;
+  renameSync(temp, path);
+  return null;
+}
+
+/**
+ * After a rename: the replaced file (still open in `handle`) must have no holder and no new byte. A writer
+ * that had it open before the rename would otherwise write into a file with no name.
+ */
+async function quiet(env: ShedEnv, plan: ShedPlan, handle: FileHandle, was: OpenStamp): Promise<boolean> {
+  const inode = { dev: was.dev, ino: was.ino };
+  for (let attempt = 0; ; attempt++) {
+    const holders = await env.processes.holders(plan.path, plan.sessionId, inode);
+    if (holders === null) return false;
+    if (holders.length === 0) break;
+    if (attempt === 4) return false;
+    await sleep(100);
+  }
+  const now = await handle.stat();
+  return now.size === was.size && now.mtimeMs === was.mtimeMs;
+}
+
+/**
+ * Undoes a swap whose replaced file was written to: that file (with every late byte, in order) goes
+ * back under its name, and anything written into the replacement meanwhile is appended after it. The
+ * replacement keeps a second name until its own late bytes are copied; if a writer still holds it, it
+ * stays, and the run log says where.
+ */
+async function rollBack(env: ShedEnv, plan: ShedPlan, kind: "shed" | "restore", original: string, replacementSize: number): Promise<void> {
+  const spare = sideNames(plan)[kind === "shed" ? 1 : 3]!;
+  const placed = await stat(plan.path);
+  await link(plan.path, spare);
+  renameSync(original, plan.path);
+  await fsyncDir(dirname(plan.path));
+  let extra = 0;
+  let stillHeld = false;
+  const spareHandle = await open(spare, constants.O_RDONLY);
+  try {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const holders = await env.processes.holders(plan.path, plan.sessionId, { dev: placed.dev, ino: placed.ino });
+      stillHeld = holders === null || holders.length > 0;
+      if (!stillHeld) break;
+      await sleep(100);
+    }
+    const size = (await spareHandle.stat()).size;
+    extra = size - replacementSize;
+    if (extra > 0) {
+      const target = await open(plan.path, constants.O_WRONLY | constants.O_APPEND);
+      try {
+        const buffer = Buffer.allocUnsafe(CHUNK);
+        for (let done = 0; done < extra;) {
+          const { bytesRead } = await spareHandle.read(buffer, 0, Math.min(buffer.length, extra - done), replacementSize + done);
+          if (bytesRead === 0) break;
+          await target.write(buffer, 0, bytesRead);
+          done += bytesRead;
+        }
+        await target.sync();
+      } finally {
+        await target.close();
+      }
+    }
+    if (!stillHeld) await dropSecondName(spare, { ino: placed.ino, size });
+  } finally {
+    await spareHandle.close();
+  }
+  await logRun(env, { event: "rolled-back", kind, agentId: plan.agentId, why: "the replaced file was written to after the last check", appendedFromReplacement: Math.max(0, extra), ...(stillHeld ? { keptReplacementAs: spare } : {}) });
+}
+
+// ---------------------------------------------------------------------------------------------- commit
+
 /**
  * Replaces the transcript with the planned cut, after re-verifying everything. Call only where no
  * Claude process can be writing it (see `openIsSafe`). Never throws; a refusal leaves every file as
- * it was. `deadline` is an absolute time after which it stops before the rename.
+ * it was, plus whatever was written meanwhile. It stops before the rename once `deadline` (an absolute
+ * time) passes or `signal` aborts.
  */
-export async function commit(env: ShedEnv, plan: ShedPlan, deadline: number): Promise<Outcome> {
-  return withLock(plan, () => commitLocked(env, plan, deadline), () => ({ ok: false, why: "busy", plan }));
+export async function commit(env: ShedEnv, plan: ShedPlan, deadline: number, signal?: AbortSignal): Promise<Outcome> {
+  return withLock(env, plan, () => commitLocked(env, plan, deadline, signal), () => ({ ok: false, why: "busy", plan }));
 }
 
-async function commitLocked(env: ShedEnv, plan: ShedPlan, deadline: number): Promise<Outcome> {
+async function commitLocked(env: ShedEnv, plan: ShedPlan, deadline: number, signal?: AbortSignal): Promise<Outcome> {
+  const now = () => (env.now ?? Date.now)();
+  const stop = (): Refusal | null => (signal?.aborted ? "aborted" : now() > deadline ? "deadline" : null);
+  const [temp] = tempNames(plan);
+  const [kept] = sideNames(plan);
+  let handle: FileHandle | null = null;
   try {
-    const now = () => (env.now ?? Date.now)();
+    if ((await readPlans(env, plan.agentId)).unreadable.length > 0) return { ok: false, why: "unreadable-plan", plan };
     if (plan.state !== "prepared") return { ok: false, why: "changed", plan };
     const located = await resolveTranscript(plan.sessionId, await env.configDirs());
     if ("why" in located) return { ok: false, why: located.why, plan };
@@ -606,11 +915,13 @@ async function commitLocked(env: ShedEnv, plan: ShedPlan, deadline: number): Pro
     if (holders === null) return { ok: false, why: "no-proc", plan };
     if (holders.length > 0) return { ok: false, why: "busy", plan };
     await env.step?.("commit:verify-original");
-    const current = await stampFile(plan.path);
+    // Held open to the end: every later read is of this file, and its growth after the rename is seen.
+    handle = await open(plan.path, constants.O_RDONLY);
+    const current = await stampHandle(handle);
     if (current.sha256 !== plan.original.sha256 || current.size !== plan.original.size || current.ino !== plan.original.ino) {
       return { ok: false, why: "changed", plan };
     }
-    if (now() > deadline) return { ok: false, why: "deadline", plan };
+    if (stop()) return { ok: false, why: stop()!, plan };
     await env.step?.("commit:verify-backup");
     const backup = await stampFile(join(plan.backupDir, "transcript.jsonl"));
     if (backup.sha256 !== plan.original.sha256 || backup.size !== plan.original.size) return { ok: false, why: "backup-mismatch", plan };
@@ -628,52 +939,69 @@ async function commitLocked(env: ShedEnv, plan: ShedPlan, deadline: number): Pro
       const copy = await stampFile(join(plan.backupDir, "subagents", sub.name));
       if (copy.sha256 !== sub.sha256) return { ok: false, why: "backup-mismatch", plan };
     }
-    if (now() > deadline) return { ok: false, why: "deadline", plan };
-    // The new file goes to a temp name beside the transcript, never over anything.
-    const temp = join(dirname(plan.path), `.${basename(plan.path)}.shed-${plan.id}.tmp`);
-    await clearOwnTemp(temp);
+    if (stop()) return { ok: false, why: stop()!, plan };
+    // The new file goes to a temp name beside the transcript, never over anything, with the transcript's mode.
+    await clearOwnTemp(temp!);
     await env.step?.("commit:write-temp");
-    const written = await writeRanges(plan.path, plan.cut.ranges, temp);
-    const tempStamp = await stampFile(temp);
+    const written = await writeParts(temp!, plan.cut.ranges.map(([o, l]) => [handle!, o, l] as const), current.mode);
+    const tempStamp = await stampFile(temp!);
     if (written !== plan.expectedSha256 || tempStamp.sha256 !== plan.expectedSha256 || tempStamp.size !== plan.cut.newSize) {
-      await unlink(temp).catch(() => undefined);
+      await clearOwnTemp(temp!);
       return { ok: false, why: "backup-mismatch", plan };
     }
-    // Last look before the rename: the transcript is still exactly what was backed up.
-    const last = await stat(plan.path);
-    if (last.size !== plan.original.size || last.mtimeMs !== current.mtimeMs || last.ino !== plan.original.ino || now() > deadline) {
-      await unlink(temp).catch(() => undefined);
-      return { ok: false, why: now() > deadline ? "deadline" : "changed", plan };
-    }
-    const held = await env.processes.holders(plan.path, plan.sessionId);
-    if (held === null || held.length > 0) {
-      await unlink(temp).catch(() => undefined);
-      return { ok: false, why: held === null ? "no-proc" : "busy", plan };
+    if (stop()) { await clearOwnTemp(temp!); return { ok: false, why: stop()!, plan }; }
+    await env.step?.("commit:holders");
+    const late = await env.processes.holders(plan.path, plan.sessionId);
+    if (late === null || late.length > 0) {
+      await clearOwnTemp(temp!);
+      return { ok: false, why: late === null ? "no-proc" : "busy", plan };
     }
     plan.state = "committing";
     await savePlan(env, plan);
+    // The original gets a second name until the swap proves quiet, so nothing written to it can be lost.
+    await env.step?.("commit:link");
+    await link(plan.path, kept!);
     await env.step?.("commit:rename");
-    await rename(temp, plan.path);
+    const why = swapNow(handle, plan.path, temp!, current, stop);
+    if (why) {
+      await dropSameFile(kept!, plan.path);
+      await clearOwnTemp(temp!);
+      plan.state = "prepared";
+      await savePlan(env, plan);
+      return { ok: false, why, plan };
+    }
     await fsyncDir(dirname(plan.path));
+    await env.step?.("commit:after-rename");
+    if (!(await quiet(env, plan, handle, current))) {
+      await rollBack(env, plan, "shed", kept!, plan.cut.newSize);
+      plan.state = "discarded";
+      plan.discardedWhy = "late-write";
+      await savePlan(env, plan);
+      return { ok: false, why: "late-write", plan };
+    }
+    // Quiet: the original is exactly the verified backup, so its second name can go.
+    await dropSecondName(kept!, current);
     await env.step?.("commit:verify-new");
     return await finishCommit(env, plan);
   } catch (error) {
-    await logRun(env, { event: "error", stage: "commit", agentId: plan.agentId, error: error instanceof Error ? error.message : String(error) });
-    return { ok: false, why: `error:${error instanceof Error ? error.message : String(error)}`, plan };
+    await logRun(env, { event: "error", stage: "commit", agentId: plan.agentId, error: message(error) });
+    return { ok: false, why: `error:${message(error)}`, plan };
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
 /**
- * After the rename: the transcript must be exactly the planned file. Then the subagent transcripts
- * that leave `subagents/` go, each only once its backup reads back with the same hash. Also the
- * recovery path when a crash interrupted a commit.
+ * After the rename: the transcript must start with exactly the planned file (Claude may have appended
+ * since). Then the subagent transcripts that leave `subagents/` go, each only once its backup reads
+ * back with the same hash. Also the recovery path when a crash interrupted a commit.
  */
 async function finishCommit(env: ShedEnv, plan: ShedPlan): Promise<Outcome> {
-  const now = await stampFile(plan.path);
-  if (now.sha256 !== plan.expectedSha256 || now.size !== plan.cut.newSize) {
-    await logRun(env, { event: "error", stage: "verify-new", agentId: plan.agentId, size: now.size });
+  if ((await prefixSha(plan.path, plan.cut.newSize)) !== plan.expectedSha256) {
+    await logRun(env, { event: "error", stage: "verify-new", agentId: plan.agentId });
     return { ok: false, why: "error:new file differs from the plan", plan };
   }
+  await env.step?.("commit:finish-save");
   plan.state = "committed";
   plan.committedAt = plan.committedAt ?? at(env);
   plan.movedSubagents = plan.movedSubagents ?? [];
@@ -682,18 +1010,19 @@ async function finishCommit(env: ShedEnv, plan: ShedPlan): Promise<Outcome> {
   const subagentsDir = join(dirname(plan.path), basename(plan.path, ".jsonl"), "subagents");
   for (const sub of plan.subagents.filter((s) => s.move && !plan.movedSubagents!.includes(s.name))) {
     await env.step?.(`commit:subagent:${sub.name}`);
-    const source = join(subagentsDir, sub.name);
+    const movedSource = join(subagentsDir, sub.name);
     const copy = await stampFile(join(plan.backupDir, "subagents", sub.name)).catch(() => null);
-    const live = await stampFile(source).catch(() => null);
+    const live = await stampFile(movedSource).catch(() => null);
     if (!copy || copy.sha256 !== sub.sha256) continue;
     if (live && live.sha256 !== sub.sha256) continue;
     if (sub.meta) {
+      const movedMeta = join(subagentsDir, sub.meta.name);
       const metaCopy = await stampFile(join(plan.backupDir, "subagents", sub.meta.name)).catch(() => null);
-      const metaLive = await stampFile(join(subagentsDir, sub.meta.name)).catch(() => null);
+      const metaLive = await stampFile(movedMeta).catch(() => null);
       if (!metaCopy || metaCopy.sha256 !== sub.meta.sha256 || (metaLive && metaLive.sha256 !== sub.meta.sha256)) continue;
-      if (metaLive) await unlink(join(subagentsDir, sub.meta.name));
+      if (metaLive) await unlink(movedMeta);
     }
-    if (live) await unlink(source);
+    if (live) await unlink(movedSource);
     plan.movedSubagents!.push(sub.name);
     await savePlan(env, plan);
   }
@@ -702,17 +1031,21 @@ async function finishCommit(env: ShedEnv, plan: ShedPlan): Promise<Outcome> {
   return { ok: true, plan };
 }
 
+// ---------------------------------------------------------------------------------------------- settle
+
 /**
- * Settles a plan a crash or a change left behind. A commit interrupted after the rename is finished;
- * a plan whose transcript moved on (the agent ran again) is discarded, and only then may its unused
- * backup folder go, by exact name. Never removes a backup a commit relied on.
+ * Settles a plan a crash or a change left behind. A commit or restore interrupted after its rename is
+ * finished (or undone, when the replaced file was written to); a plan whose transcript moved on is
+ * discarded, and its backup stays. Smart Session never deletes a backup.
  */
 export async function settle(env: ShedEnv, plan: ShedPlan): Promise<"none" | "finished" | "discarded" | "kept"> {
-  if (!existsSync(plan.backupDir)) return "kept";
-  return withLock(plan, () => settleLocked(env, plan), () => "kept" as const);
+  return withLock(env, plan, () => settleLocked(env, plan), () => "kept" as const);
 }
 
 async function settleLocked(env: ShedEnv, plan: ShedPlan): Promise<"none" | "finished" | "discarded" | "kept"> {
+  if ((await readPlans(env, plan.agentId)).unreadable.length > 0) return "kept";
+  const stored = (await agentPlans(env, plan.agentId)).find((p) => p.id === plan.id);
+  if (stored) Object.assign(plan, stored);
   if (plan.state === "committed") {
     const pending = plan.subagents.some((s) => s.move && !(plan.movedSubagents ?? []).includes(s.name));
     if (!pending) return "none";
@@ -721,66 +1054,108 @@ async function settleLocked(env: ShedEnv, plan: ShedPlan): Promise<"none" | "fin
     await finishCommit(env, plan);
     return "finished";
   }
+  if (plan.state === "restoring") return settleRestore(env, plan);
   if (plan.state !== "prepared" && plan.state !== "committing") return "none";
+  const [temp] = tempNames(plan);
+  const [kept] = sideNames(plan);
+  const holders = await env.processes.holders(plan.path, plan.sessionId);
+  if (holders === null || holders.length > 0) return "kept";
+  const named = await stat(plan.path).catch(() => null);
+  if (!named) return "kept";
+  // Linked but not renamed: one file under two names.
+  await dropSameFile(kept!, plan.path);
   // Shed already? The transcript starts with the planned new file.
-  if ((await prefixSha(plan.path, plan.cut.newSize).catch(() => null)) === plan.expectedSha256) {
-    const holders = await env.processes.holders(plan.path, plan.sessionId);
-    if (holders === null || holders.length > 0) {
-      plan.state = "committed";
-      plan.committedAt = plan.committedAt ?? at(env);
-      plan.movedSubagents = plan.movedSubagents ?? [];
-      await savePlan(env, plan);
-      return "kept";
+  if ((await prefixSha(plan.path, plan.cut.newSize).catch(() => null)) === plan.expectedSha256 && named.ino !== plan.original.ino) {
+    const old = await stat(kept!).catch(() => null);
+    if (old) {
+      const oldHolders = await env.processes.holders(plan.path, plan.sessionId, { dev: old.dev, ino: old.ino });
+      if (oldHolders === null || oldHolders.length > 0 || old.size !== plan.original.size) {
+        await rollBack(env, plan, "shed", kept!, plan.cut.newSize);
+        plan.state = "discarded";
+        plan.discardedWhy = "late-write";
+        await savePlan(env, plan);
+        return "discarded";
+      }
+      await dropSecondName(kept!, { ino: old.ino, size: plan.original.size });
     }
+    await clearOwnTemp(temp!);
     await finishCommit(env, plan);
     return "finished";
   }
   // Not shed: the transcript still starts with the backed-up original.
   if ((await prefixSha(plan.path, plan.original.size).catch(() => null)) === plan.original.sha256) {
-    const same = await stampFile(plan.path).catch(() => null);
-    if (same && same.sha256 === plan.original.sha256) {
+    await clearOwnTemp(temp!);
+    if (named.size === plan.original.size) {
       // Untouched (a crash before the rename at most): the plan still holds.
-      for (const temp of tempNames(plan)) await clearOwnTemp(temp);
       if (plan.state !== "prepared") { plan.state = "prepared"; await savePlan(env, plan); }
       return "none";
     }
     plan.state = "discarded";
+    plan.discardedWhy = "moved-on";
     await savePlan(env, plan);
-    await discardBackup(plan);
-    await logRun(env, { event: "discarded", agentId: plan.agentId, why: "transcript moved on before the commit" });
+    await logRun(env, { event: "discarded", agentId: plan.agentId, why: "transcript moved on before the commit; its backup stays", backupDir: plan.backupDir });
     return "discarded";
   }
   await logRun(env, { event: "kept", agentId: plan.agentId, why: "transcript matches neither the original nor the cut" });
   return "kept";
 }
 
-/** Removes an unused backup folder by the exact names `prepare` wrote. */
-async function discardBackup(plan: ShedPlan): Promise<void> {
-  if (existsSync(join(plan.backupDir, "committed.json"))) return;
-  const names = ["transcript.jsonl", "manifest.json"];
-  for (const name of names) await unlink(join(plan.backupDir, name)).catch(() => undefined);
-  for (const sub of plan.subagents.filter((s) => s.move)) {
-    await unlink(join(plan.backupDir, "subagents", sub.name)).catch(() => undefined);
-    if (sub.meta) await unlink(join(plan.backupDir, "subagents", sub.meta.name)).catch(() => undefined);
+/** A restore that crashed: finished when its rename happened (or undone, if the shed file was written to), else back to committed. */
+async function settleRestore(env: ShedEnv, plan: ShedPlan): Promise<"finished" | "kept" | "none"> {
+  const [, restoreTemp] = tempNames(plan);
+  const [, , kept] = sideNames(plan);
+  const holders = await env.processes.holders(plan.path, plan.sessionId);
+  if (holders === null || holders.length > 0) return "kept";
+  const named = await stat(plan.path).catch(() => null);
+  if (!named) return "kept";
+  await dropSameFile(kept!, plan.path);
+  const restored = (await prefixSha(plan.path, plan.original.size).catch(() => null)) === plan.original.sha256;
+  if (restored) {
+    const old = await stat(kept!).catch(() => null);
+    if (old) {
+      const oldHolders = await env.processes.holders(plan.path, plan.sessionId, { dev: old.dev, ino: old.ino });
+      const keptCopy = (await readdir(plan.backupDir).catch(() => [] as string[])).filter((n) => n.startsWith("before-restore-")).sort().pop();
+      const copied = keptCopy ? (await stat(join(plan.backupDir, keptCopy))).size : -1;
+      if (oldHolders === null || oldHolders.length > 0 || old.size !== copied) {
+        await rollBack(env, plan, "restore", kept!, named.size);
+        plan.state = "committed";
+        await savePlan(env, plan);
+        return "kept";
+      }
+      await dropSecondName(kept!, { ino: old.ino, size: old.size });
+    }
+    await clearOwnTemp(restoreTemp!);
+    await finishRestore(env, plan, null);
+    return "finished";
   }
-  await rmdir(join(plan.backupDir, "subagents")).catch(() => undefined);
-  await rmdir(plan.backupDir).catch(() => undefined);
+  await clearOwnTemp(restoreTemp!);
+  plan.state = "committed";
+  await savePlan(env, plan);
+  return "none";
 }
 
 // ---------------------------------------------------------------------------------------------- restore
 
 /**
  * Puts the full history back: the backup, then every line written since the shed. The current
- * transcript is itself backed up first. Same safety rules as `commit`. Subagent transcripts come
- * back when their place is free.
+ * transcript is itself backed up first. Same safety rules as `commit`, the last look included.
+ * Subagent transcripts come back when their place is free.
  */
-export async function restore(env: ShedEnv, plan: ShedPlan, deadline: number): Promise<Outcome> {
-  return withLock(plan, () => restoreLocked(env, plan, deadline), () => ({ ok: false, why: "busy", plan }));
+export async function restore(env: ShedEnv, plan: ShedPlan, deadline: number, signal?: AbortSignal): Promise<Outcome> {
+  return withLock(env, plan, async () => {
+    if (plan.state === "committing" || plan.state === "restoring") await settleLocked(env, plan);
+    return restoreLocked(env, plan, deadline, signal);
+  }, () => ({ ok: false, why: "busy", plan }));
 }
 
-async function restoreLocked(env: ShedEnv, plan: ShedPlan, deadline: number): Promise<Outcome> {
+async function restoreLocked(env: ShedEnv, plan: ShedPlan, deadline: number, signal?: AbortSignal): Promise<Outcome> {
+  const now = () => (env.now ?? Date.now)();
+  const stop = (): Refusal | null => (signal?.aborted ? "aborted" : now() > deadline ? "deadline" : null);
+  const [, temp] = tempNames(plan);
+  const [, , kept] = sideNames(plan);
+  let handle: FileHandle | null = null;
   try {
-    const now = () => (env.now ?? Date.now)();
+    if ((await readPlans(env, plan.agentId)).unreadable.length > 0) return { ok: false, why: "unreadable-plan", plan };
     if (plan.state !== "committed") return { ok: false, why: "nothing-to-restore", plan };
     const located = await resolveTranscript(plan.sessionId, await env.configDirs());
     if ("why" in located) return { ok: false, why: located.why, plan };
@@ -788,85 +1163,136 @@ async function restoreLocked(env: ShedEnv, plan: ShedPlan, deadline: number): Pr
     const holders = await env.processes.holders(plan.path, plan.sessionId);
     if (holders === null) return { ok: false, why: "no-proc", plan };
     if (holders.length > 0) return { ok: false, why: "busy", plan };
-    const current = await stampFile(plan.path);
-    if ((await prefixSha(plan.path, plan.cut.newSize)) !== plan.expectedSha256) return { ok: false, why: "restore-mismatch", plan };
+    handle = await open(plan.path, constants.O_RDONLY);
+    const current = await stampHandle(handle);
+    if ((await prefixShaOf(handle, plan.cut.newSize)) !== plan.expectedSha256) return { ok: false, why: "restore-mismatch", plan };
     const backup = join(plan.backupDir, "transcript.jsonl");
     const backupStamp = await stampFile(backup);
     if (backupStamp.sha256 !== plan.original.sha256) return { ok: false, why: "backup-mismatch", plan };
-    if (now() > deadline) return { ok: false, why: "deadline", plan };
+    if (stop()) return { ok: false, why: stop()!, plan };
     // The transcript as it is now is kept too, so a restore loses nothing either.
-    const before = join(plan.backupDir, `before-restore-${Date.now()}.jsonl`);
     await env.step?.("restore:backup-current");
-    await copyVerified(plan.path, before, current);
-    const temp = join(dirname(plan.path), `.${basename(plan.path)}.restore-${plan.id}.tmp`);
+    const before = join(plan.backupDir, `before-restore-${Date.now()}.jsonl`);
+    await copyVerified(handle, before, current);
+    await fsyncDir(plan.backupDir);
+    await clearOwnTemp(temp!);
     await env.step?.("restore:write-temp");
-    await clearOwnTemp(temp);
-    // Backup, then what was appended after the cut.
+    // Backup, then what was appended after the cut, read from the file as verified.
     const appended = current.size - plan.cut.newSize;
-    const restoredSha = await concatInto(temp, [[backup, 0, backupStamp.size], [plan.path, plan.cut.newSize, appended]]);
-    const restored = await stampFile(temp);
+    const restoredSha = await writeParts(temp!, [[backup, 0, backupStamp.size], [handle, plan.cut.newSize, appended]], current.mode);
+    const restored = await stampFile(temp!);
     if (restored.sha256 !== restoredSha || restored.size !== backupStamp.size + appended) {
-      await unlink(temp).catch(() => undefined);
+      await clearOwnTemp(temp!);
       return { ok: false, why: "backup-mismatch", plan };
     }
-    const last = await stat(plan.path);
-    if (last.size !== current.size || last.mtimeMs !== current.mtimeMs || now() > deadline) {
-      await unlink(temp).catch(() => undefined);
-      return { ok: false, why: now() > deadline ? "deadline" : "changed", plan };
+    if (stop()) { await clearOwnTemp(temp!); return { ok: false, why: stop()!, plan }; }
+    await env.step?.("restore:holders");
+    const late = await env.processes.holders(plan.path, plan.sessionId);
+    if (late === null || late.length > 0) {
+      await clearOwnTemp(temp!);
+      return { ok: false, why: late === null ? "no-proc" : "busy", plan };
     }
+    plan.state = "restoring";
+    await savePlan(env, plan);
+    await env.step?.("restore:link");
+    await link(plan.path, kept!);
     await env.step?.("restore:rename");
-    await rename(temp, plan.path);
+    const why = swapNow(handle, plan.path, temp!, current, stop);
+    if (why) {
+      await dropSameFile(kept!, plan.path);
+      await clearOwnTemp(temp!);
+      plan.state = "committed";
+      await savePlan(env, plan);
+      return { ok: false, why, plan };
+    }
     await fsyncDir(dirname(plan.path));
+    await env.step?.("restore:after-rename");
+    if (!(await quiet(env, plan, handle, current))) {
+      await rollBack(env, plan, "restore", kept!, restored.size);
+      plan.state = "committed";
+      await savePlan(env, plan);
+      return { ok: false, why: "late-write", plan };
+    }
+    await dropSecondName(kept!, current);
     const after = await stampFile(plan.path);
     if (after.sha256 !== restoredSha) return { ok: false, why: "error:restored file differs", plan };
-    const subagentsDir = join(dirname(plan.path), basename(plan.path, ".jsonl"), "subagents");
-    await mkdir(subagentsDir, { recursive: true });
-    for (const name of plan.movedSubagents ?? []) {
-      const sub = plan.subagents.find((s) => s.name === name)!;
-      for (const file of [sub, ...(sub.meta ? [sub.meta] : [])]) {
-        const target = join(subagentsDir, file.name);
-        if (existsSync(target)) continue;
-        await copyVerified(join(plan.backupDir, "subagents", file.name), target, file);
-      }
-    }
-    plan.state = "restored";
-    plan.restoredAt = at(env);
-    await savePlan(env, plan);
-    await writeFile(join(plan.backupDir, "restored.json"), JSON.stringify({ restoredAt: plan.restoredAt, keptCurrentAs: basename(before) }, null, 2), { mode: 0o600 }).catch(() => undefined);
-    await logRun(env, { event: "restored", agentId: plan.agentId, sessionId: plan.sessionId, size: after.size, appended });
+    await finishRestore(env, plan, { size: after.size, appended, keptCurrentAs: basename(before) });
     return { ok: true, plan };
   } catch (error) {
-    await logRun(env, { event: "error", stage: "restore", agentId: plan.agentId, error: error instanceof Error ? error.message : String(error) });
-    return { ok: false, why: `error:${error instanceof Error ? error.message : String(error)}`, plan };
+    await logRun(env, { event: "error", stage: "restore", agentId: plan.agentId, error: message(error) });
+    return { ok: false, why: `error:${message(error)}`, plan };
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
-async function concatInto(target: string, parts: readonly (readonly [string, number, number])[]): Promise<string> {
-  const output = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-  const hash = createHash("sha256");
-  try {
-    const buffer = Buffer.allocUnsafe(CHUNK);
-    for (const [source, offset, length] of parts) {
-      const input = await open(source, constants.O_RDONLY);
-      try {
-        let done = 0;
-        while (done < length) {
-          const { bytesRead } = await input.read(buffer, 0, Math.min(buffer.length, length - done), offset + done);
-          if (bytesRead === 0) throw new Error("source ended early");
-          const slice = buffer.subarray(0, bytesRead);
-          hash.update(slice);
-          await output.write(slice, 0, slice.length);
-          done += bytesRead;
-        }
-      } finally {
-        await input.close();
-      }
+async function finishRestore(env: ShedEnv, plan: ShedPlan, done: { size: number; appended: number; keptCurrentAs: string } | null): Promise<void> {
+  const subagentsDir = join(dirname(plan.path), basename(plan.path, ".jsonl"), "subagents");
+  await mkdir(subagentsDir, { recursive: true });
+  for (const name of plan.movedSubagents ?? []) {
+    const sub = plan.subagents.find((s) => s.name === name)!;
+    for (const file of [sub, ...(sub.meta ? [sub.meta] : [])]) {
+      const target = join(subagentsDir, file.name);
+      if (existsSync(target)) continue;
+      await copyVerified(join(plan.backupDir, "subagents", file.name), target, file);
     }
-    await output.sync();
-  } finally {
-    await output.close();
   }
-  return hash.digest("hex");
+  await fsyncDir(subagentsDir);
+  plan.state = "restored";
+  plan.restoredAt = at(env);
+  await savePlan(env, plan);
+  await writeFile(join(plan.backupDir, "restored.json"), JSON.stringify({ restoredAt: plan.restoredAt, keptCurrentAs: done?.keptCurrentAs ?? null }, null, 2), { mode: 0o600 }).catch(() => undefined);
+  await logRun(env, { event: "restored", agentId: plan.agentId, sessionId: plan.sessionId, ...(done ? { size: done.size, appended: done.appended } : { recovered: true }) });
+}
+
+// ---------------------------------------------------------------------------------------------- 3.8.0-beta.1 backups
+
+/**
+ * Copies every backup 3.8.0-beta.1 kept beside its transcript (`<session>/shed/<plan>/`) into the data
+ * folder, verifying each file by sha256, then points the plan at the copy. The old folder is left
+ * exactly as it was, plus a note saying where the copy went. Returns how many moved.
+ */
+export async function migrateBackups(env: ShedEnv): Promise<number> {
+  let moved = 0;
+  for (const id of await agentIds(env)) {
+    for (const plan of (await readPlans(env, id)).plans) {
+      if (plan.backupDir.startsWith(`${backupRoot(env)}/`) || !existsSync(plan.backupDir)) continue;
+      const done = await withLock(env, plan, async () => {
+        const target = backupDirFor(env, plan.path, plan.sessionId, plan.id);
+        await copyTree(plan.backupDir, target);
+        const from = plan.backupDir;
+        plan.migratedFrom = from;
+        plan.backupDir = target;
+        await savePlan(env, plan);
+        await writeFile(join(from, "moved-to.json"), JSON.stringify({ movedTo: target, at: at(env), note: "Smart Session copied this backup there and verified it. This folder was left as it was." }, null, 2), { flag: "wx", mode: 0o600 }).catch(() => undefined);
+        await logRun(env, { event: "migrated", agentId: plan.agentId, from, to: target });
+        return true;
+      }, () => false).catch(async (error) => {
+        await logRun(env, { event: "error", stage: "migrate", agentId: plan.agentId, error: message(error) });
+        return false;
+      });
+      if (done) moved++;
+    }
+  }
+  return moved;
+}
+
+/** Copies a folder's files, each verified; an earlier, interrupted copy of the same file is replaced by a new one. */
+async function copyTree(from: string, to: string): Promise<void> {
+  await mkdir(to, { recursive: true });
+  for (const entry of await readdir(from, { withFileTypes: true })) {
+    const source = join(from, entry.name);
+    const target = join(to, entry.name);
+    if (entry.isDirectory()) { await copyTree(source, target); continue; }
+    if (!entry.isFile() || entry.name === ".lock" || entry.name === "moved-to.json") continue;
+    const stamp = await stampFile(source);
+    const there = await stampFile(target).catch(() => null);
+    if (there && there.sha256 === stamp.sha256 && there.size === stamp.size) continue;
+    const partial = `${target}.copy-${randomUUID().slice(0, 8)}`;
+    await copyVerified(source, partial, stamp);
+    await rename(partial, target);
+  }
+  await fsyncDir(to);
 }
 
 // ---------------------------------------------------------------------------------------------- config dirs
@@ -882,18 +1308,4 @@ export async function claudeConfigDirs(paseoHome: string, extra: readonly (strin
     }
   } catch { /* No ZeroSub. */ }
   return [...new Set(dirs)];
-}
-
-/** The temp files a commit or restore of this plan may leave behind after a crash, by exact name. */
-export function tempNames(plan: ShedPlan): string[] {
-  return [
-    join(dirname(plan.path), `.${basename(plan.path)}.shed-${plan.id}.tmp`),
-    join(dirname(plan.path), `.${basename(plan.path)}.restore-${plan.id}.tmp`),
-  ];
-}
-
-/** A temp file this module names after its own plan id: removed only by that exact name. */
-async function clearOwnTemp(temp: string): Promise<void> {
-  if (!/\.(shed|restore)-[0-9A-Za-z-]+\.tmp$/.test(temp)) return;
-  await unlink(temp).catch(() => undefined);
 }
