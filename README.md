@@ -124,7 +124,8 @@ A Claude agent's chat loads its whole transcript, so an agent that has run for w
 - **A full copy first.** Before the transcript changes, a full copy goes to a `shed` folder beside it and is checked byte for byte. Smart Session never deletes it, so those transcripts take about twice the disk. Remove a copy yourself once you're sure.
 - **When.** The copy is made while the agent is closed. The change happens the next time the agent loads or its chat opens, and only if nothing has the transcript open and nothing changed since. Otherwise it's left as it is and tried later.
 - **Restore.** **Settings → Smart Session → Chat history** lists each agent it moved, with **Restore**. The full history, plus anything said since, goes back at the agent's next load, and that agent is left alone from then on.
-- **What you get.** A shorter chat that opens faster. In a test, a padded transcript's chat went from 415 rows and 13 s to load to 7 rows in under half a second. It doesn't cut the daemon's memory much.
+- **What you get.** A shorter chat that opens faster. In a test, a 61 MB transcript's chat went from 315 rows and 1.8 s to load to 9 rows in 0.1 s. It doesn't cut the daemon's memory much.
+- **In the chat.** One row says where the older history went. Paseo keeps rows like it only until the daemon restarts; the list under **Chat history** stays.
 
 Linux only (it checks `/proc` for anything holding the transcript open). Codex agents are never touched. The thresholds live in `settings.json` as `shedThresholds` (`minMb`, `minCompactions`).
 

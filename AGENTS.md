@@ -569,6 +569,9 @@ records before that point move into a backup and the transcript keeps the rest, 
   shed again.
 - The gain is load time and chat length. Disk use goes up by the moved part, because the copy stays.
 - Runs log to `history-shed/runs-YYYY-MM.jsonl`, plans live in `history-shed/plans/<agentId>/`.
+- The chat row goes through the host API only an RPC handler receives (the plugin calls its own status RPC once, as the
+  guard does). `notedAt` records it; a commit that outlived its process gets the row at the next open. Paseo keeps a
+  Claude agent's plugin rows in memory only, so the row is gone after a daemon restart; the settings list is the record.
 
 ## Chat timeline
 
