@@ -33,7 +33,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, copyFile, mkdir, readFile, readdir, readlink, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
@@ -240,22 +240,49 @@ function shimDirOf(command: unknown): string | null {
   return match ? match[1]! : null;
 }
 
-const realOr = (path: string): string => { try { return realpathSync(path); } catch { return resolve(path); } };
+/**
+ * Where a path really is. A link whose target doesn't exist yet (a sandbox's settings.json linked to the person's
+ * before that file was ever written) is followed by hand, so it still resolves into the folder it points at.
+ */
+function realOr(path: string, hops = 0): string {
+  try { return realpathSync(path); } catch { /* missing: follow by hand */ }
+  const parent = dirname(path);
+  if (parent === path) return path;
+  try {
+    if (hops < 40 && lstatSync(path).isSymbolicLink()) return realOr(resolve(realOr(parent, hops + 1), readlinkSync(path)), hops + 1);
+  } catch { /* gone meanwhile: resolve by name */ }
+  return join(realOr(parent, hops + 1), basename(path));
+}
 const inside = (path: string, dir: string): boolean => path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
+
+let userHomeForTest: string | null = null;
+/** Test seam: the person's home, in place of the account database's. */
+export function setUserHomeForTest(dir: string | null): void { userHomeForTest = dir; }
 
 /** The person's own home from the account database, not `$HOME` (a sandbox may point that elsewhere). */
 function userHome(): string {
+  if (userHomeForTest !== null) return userHomeForTest;
   try { return userInfo().homedir; } catch { return homedir(); }
 }
 
+/** Whether the person's default Paseo home (`~/.paseo`) has Smart Session in it: its hook shim folder exists. */
+function defaultHomeHasSmartSession(person: string): boolean {
+  return existsSync(join(person, ".paseo", "plugin-data", "smart-session", "hooks"));
+}
+
 /**
- * Whether this load may write `settingsPath`. The default Paseo home (the person's `~/.paseo`) always manages
- * its own entries in the Claude settings it naturally uses. Any other home (a sandbox) writes only a settings
- * file inside its own `HOME` or `CLAUDE_CONFIG_DIR`, and never the person's real `~/.claude`, through a link or not.
+ * Whether this load may write `settingsPath`.
+ * - The default Paseo home (the person's `~/.paseo`) always manages its own entries in the Claude settings it uses.
+ * - Any other home writes a settings file inside its own `HOME` or `CLAUDE_CONFIG_DIR` that isn't the person's
+ *   real `~/.claude` (through a link or not, even a link to a file not there yet).
+ * - And, when `~/.paseo` has no Smart Session, the person's own settings too: that is a custom `PASEO_HOME`
+ *   (`/data/paseo`), the only home there is. A sandbox on that machine may then add entries; they are guarded (a
+ *   missing shim is a no-op) and removed by the next owner load once its shim folder is gone.
  */
 export function ownsSettings(settingsPath: string, where: { paseoHome: string; home?: string; configDir?: string; userHome?: string }): boolean {
   const person = where.userHome ?? userHome();
   if (realOr(where.paseoHome) === realOr(join(person, ".paseo"))) return true;
+  if (!defaultHomeHasSmartSession(person)) return true;
   // Where the file is named (a dotfiles link may point elsewhere), and where it really is (never the person's own).
   if (inside(realOr(settingsPath), realOr(join(person, ".claude")))) return false;
   const named = join(realOr(dirname(settingsPath)), basename(settingsPath));
@@ -293,17 +320,13 @@ export function reconcile(
 ): HookMap {
   const next: HookMap = {};
   const ownDir = typeof own === "string" ? own.replace(/\/+$/, "") : null;
-  // A load that doesn't own the file (a sandbox sharing the person's settings) adds nothing and only takes its
-  // own entries back out. The owner manages its own entries whatever else is there, keeps a live home's, and
-  // removes a gone home's (its shim folder no longer exists): it never defers to one.
-  if (!owner) {
-    if (ownDir === null) return existing;
-    shims = null;
-  }
+  // A load that doesn't own the file changes nothing in it, not even its own entries: they may be the working
+  // hooks of a custom-home install from before ownership existed. The owner manages its own entries whatever
+  // else is there, keeps a live home's, and removes a gone home's (its shim folder no longer exists).
+  if (!owner) return existing;
   const keep = (command: unknown) => {
     const dir = shimDirOf(command);
-    if (dir !== null && ownDir !== null && dir !== ownDir) return !owner || alive(dir);
-    if (!owner) return dir !== ownDir;
+    if (dir !== null && ownDir !== null && dir !== ownDir) return alive(dir);
     return !isOurs(command, own);
   };
 

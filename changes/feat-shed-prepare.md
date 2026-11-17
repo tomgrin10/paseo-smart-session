@@ -1,0 +1,3 @@
+- **Move now** for one agent: Chat history settings list your largest closed Claude agents. It backs one up now; its older history moves aside at its next load, even with the setting off.
+- A custom `PASEO_HOME` (when `~/.paseo` has no Smart Session) keeps its Claude Code hooks after upgrading. Before, it took its own hooks out of your settings.
+- Undoing a stopped move never cuts a half-written line it can't prove it wrote itself.
