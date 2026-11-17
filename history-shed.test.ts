@@ -942,7 +942,7 @@ test("a rollback killed after any of its steps is finished by the next settle, e
 
 test("a rollback killed at each of its own steps, in a commit and in a restore, is finished by the next settle", async (t) => {
   for (const kind of ["commit", "restore"] as const) {
-    for (const step of ["rollback:link", "rollback:rename", "rollback:append", "rollback:drop"]) {
+    for (const step of ["rollback:link", "rollback:rename", "rollback:append", "rollback:appended", "rollback:drop"]) {
       await t.test(`${kind} ${step}`, async () => {
         let busyIno = -1;
         const w = await world({}, { holders: async (_path, _sid, inode) => (inode?.ino === busyIno ? ["4242:fd"] : []) });
