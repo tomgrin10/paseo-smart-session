@@ -381,6 +381,16 @@ with `RELOAD_GATE_BYPASS="<Tom's words>, <when>"`. Harness daemons (temp `PASEO_
 
 Clean logs means no `[paseo]` error lines and no stack traces around the reload.
 
+**A harness run never shares a live login: no symlink, hard link, copy or env var.** Claude keeps its refresh lock
+in its config dir, so two processes with different `CLAUDE_CONFIG_DIR`s that share one login can refresh at the same
+time. The refresh token is single-use, so one of them burns it and the live session is signed out. This happened on
+2026-11-17. A temp config dir with `.credentials.json` symlinked in: the harness Claude refreshed, wrote its own file
+over the link, and the real file was left with a dead token. A live run (real Claude or Codex agents) waits for a
+harness-only login that Tom makes (e.g. `claude setup-token`) and approves first.
+`~/paseo-harness/tools/no-shared-login.mjs` refuses a run whose temp dirs hold a link to, a hard link of, or a
+possible copy of a real login file, or whose env carries a login. It uses stat only and never opens a login file.
+Never read a login file's contents, not even to check this.
+
 ### 3. Backend, over the protocol
 
 `probe.mjs` calls any plugin RPC without a UI, against the running daemon:
