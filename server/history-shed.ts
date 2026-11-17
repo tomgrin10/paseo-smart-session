@@ -110,8 +110,13 @@ export interface RollbackRecord {
   readonly origSize: number;
   copied: number;
   readonly startedAt: string;
-  /** The transcript's size just before this rollback's append write: bytes past it in that write are its own. */
+  /** The transcript's size just before this rollback's append write. */
   appendFloor?: number;
+  /**
+   * That write came back short: `length` bytes of the chunk from `from` landed at `start`, and the file ended there.
+   * The only proof that lets a later pass cut a torn tail; without it a torn tail is never cut.
+   */
+  shortWrite?: { readonly start: number; readonly length: number; readonly from: number };
 }
 
 export type Refusal =
@@ -159,6 +164,8 @@ export interface ShedEnv {
   readonly now?: () => number;
   /** Test seam: called before each step; a throw there stands in for a crash at that point. */
   readonly step?: (name: string) => void | Promise<void>;
+  /** Test seam: a rollback's one append write, returning the bytes written (a short count stands in for no space left). */
+  readonly appendWrite?: (fd: number, data: Buffer) => number | Promise<number>;
 }
 
 const at = (env: ShedEnv) => new Date((env.now ?? Date.now)()).toISOString();
@@ -862,13 +869,28 @@ async function quiet(env: ShedEnv, plan: ShedPlan, handle: FileHandle, was: Open
 
 /**
  * Appends `chunk` (whole lines from the replacement) to the transcript exactly once. A pass killed after its
- * write, or a short write, left a prefix of the same chunk (the replacement only grows) somewhere past the
- * record's `appendFloor` (the size before that write), or, without one, past the original's verified size.
- * It is found by the chunk's first line and compared byte by byte; only the rest is appended. A torn earlier
- * write is cut back to its last whole line, and only when the record proves those bytes are this rollback's
- * own: they start past `appendFloor` and are the file's tail. Returns why it can't, or null once done.
+ * write left the chunk's lines (the replacement only grows, so a prefix of this chunk) past the record's
+ * `appendFloor`, or, without one, past the original's verified size: they are found by the chunk's first whole
+ * line and compared byte by byte, and only the rest is appended.
+ *
+ * A torn tail is waited on first (another writer may be mid-line) and is cut only with proof it is this
+ * rollback's own: `shortWrite`, saved by a pass that saw its own write come back short, naming where those
+ * bytes landed, and they are still exactly the file's end. Anything else torn (another writer's line that looks
+ * like the chunk's start, or a write a kill interrupted) is never cut: the rollback stays pending and says why.
+ * Returns why it can't, or null once done.
  */
 async function appendOnce(env: ShedEnv, plan: ShedPlan, record: RollbackRecord, chunk: Buffer): Promise<string | null> {
+  let ready = await endsLine(plan.path);
+  for (let attempt = 0; !ready && attempt < 5; attempt++) { await sleep(100); ready = await endsLine(plan.path); }
+  if (!ready) {
+    const proof = record.shortWrite;
+    if (!proof || !(await provenShortWrite(plan.path, proof, chunk))) return "the transcript ends in a torn line this rollback can't prove it wrote";
+    const keep = chunk.subarray(proof.from, proof.from + proof.length).lastIndexOf(0x0a) + 1;
+    await env.step?.("rollback:cut-torn");
+    await truncate(plan.path, proof.start + keep);
+    delete record.shortWrite;
+    await savePlan(env, plan);
+  }
   const floor = record.appendFloor ?? record.origSize;
   const handle = await open(plan.path, constants.O_RDONLY);
   let tail: Buffer;
@@ -880,41 +902,48 @@ async function appendOnce(env: ShedEnv, plan: ShedPlan, record: RollbackRecord, 
     await handle.close();
   }
   const firstLine = chunk.subarray(0, chunk.indexOf(0x0a) + 1);
-  let at = tail.indexOf(firstLine);
+  const at = tail.indexOf(firstLine);
   let have = 0;
-  if (at >= 0) {
-    while (have < chunk.length && at + have < tail.length && tail[at + have] === chunk[have]) have++;
-  } else if (record.appendFloor !== undefined) {
-    // Torn inside the first line: then it is the very end of the file.
-    for (let k = Math.min(firstLine.length - 1, tail.length); k > 0; k--) {
-      if (tail.subarray(tail.length - k).equals(chunk.subarray(0, k))) { at = tail.length - k; have = k; break; }
-    }
-  }
-  if (have === chunk.length) return null;
-  if (have > 0 && chunk[have - 1] !== 0x0a) {
-    if (record.appendFloor === undefined || at + have !== tail.length) return "a torn line in the transcript this rollback can't prove it wrote";
-    const keep = chunk.subarray(0, have).lastIndexOf(0x0a) + 1;
-    await env.step?.("rollback:cut-torn");
-    await truncate(plan.path, floor + at + keep);
-    have = keep;
-  }
-  let ready = await endsLine(plan.path);
-  for (let attempt = 0; !ready && attempt < 5; attempt++) { await sleep(100); ready = await endsLine(plan.path); }
-  if (!ready) return "the transcript ends in a line still being written";
+  if (at >= 0) while (have < chunk.length && at + have < tail.length && tail[at + have] === chunk[have]) have++;
+  if (have === chunk.length) { delete record.shortWrite; return null; }
+  if (have > 0 && chunk[have - 1] !== 0x0a) return "a torn copy of the rollback's lines, followed by other lines, that it can't prove it wrote";
   const rest = chunk.subarray(have);
   // One write: an O_APPEND write of a regular file is not interleaved with another writer's.
   const target = await open(plan.path, constants.O_WRONLY | constants.O_APPEND);
   try {
-    record.appendFloor = (await target.stat()).size;
+    const before = (await target.stat()).size;
+    record.appendFloor = before;
+    delete record.shortWrite;
     await savePlan(env, plan);
-    const { bytesWritten } = await target.write(rest, 0, rest.length);
-    if (bytesWritten !== rest.length) throw new Error("short append");
+    const written = env.appendWrite ? await env.appendWrite(target.fd, rest) : (await target.write(rest, 0, rest.length)).bytesWritten;
+    if (written !== rest.length) {
+      // Proof only when the file ends exactly where this write's bytes would: nobody else wrote around it.
+      if (written > 0 && (await target.stat()).size === before + written) {
+        record.shortWrite = { start: before, length: written, from: have };
+        await savePlan(env, plan);
+      }
+      throw new Error("short append");
+    }
     await target.sync();
   } finally {
     await target.close();
   }
   await env.step?.("rollback:appended");
   return null;
+}
+
+/** Whether a short write's bytes are still exactly the file's end, as recorded. */
+async function provenShortWrite(path: string, proof: NonNullable<RollbackRecord["shortWrite"]>, chunk: Buffer): Promise<boolean> {
+  if (proof.from + proof.length > chunk.length) return false;
+  const handle = await open(path, constants.O_RDONLY);
+  try {
+    if ((await handle.stat()).size !== proof.start + proof.length) return false;
+    const bytes = Buffer.alloc(proof.length);
+    const { bytesRead } = await handle.read(bytes, 0, proof.length, proof.start);
+    return bytesRead === proof.length && bytes.equals(chunk.subarray(proof.from, proof.from + proof.length));
+  } finally {
+    await handle.close();
+  }
 }
 
 /** Whether the file's last byte ends a line (an empty file does). */
@@ -1019,6 +1048,7 @@ async function finishRollback(env: ShedEnv, plan: ShedPlan): Promise<"done" | "p
           if (why !== null) return pending(why);
           record.copied += whole.length;
           delete record.appendFloor;
+          delete record.shortWrite;
           await savePlan(env, plan);
         }
       }
