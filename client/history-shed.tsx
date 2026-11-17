@@ -3,23 +3,25 @@ import { SettingsAction, SettingsCard, SettingsSection, SettingsSwitch, useToast
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Text, View } from "react-native";
 
-import { HISTORY_SHED_KIND, HistoryShedNoteSchema, historyShedRestore, historyShedStatus } from "../shared/smart-session";
+import { HISTORY_SHED_KIND, HistoryShedNoteSchema, historyShedPrepare, historyShedRestore, historyShedStatus } from "../shared/smart-session";
 
 const mb = (bytes: number) => (bytes >= 10 * 1024 * 1024 ? `${Math.round(bytes / (1024 * 1024))} MB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`);
 const day = (iso: string | null) => (iso === null ? "" : new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }));
 
 /**
  * Settings → Smart Session → Chat history. Opt-in: off, it says what it would do and nothing else,
- * and nothing here asks anyone to turn it on. On, it lists the agents it moved and offers Restore.
+ * and nothing here asks anyone to turn it on. It lists the agents it moved, with Restore, and the largest
+ * closed agents, each with "Move now" (one agent, whatever the switch says).
  */
 export function HistoryShedSection({ enabled, thresholds, saving, onToggle }: {
   enabled: boolean; thresholds: { minMb: number; minCompactions: number }; saving: boolean; onToggle: (next: boolean) => void;
 }) {
   const read = useRpc(historyShedStatus);
   const restore = useRpc(historyShedRestore);
+  const prepareNow = useRpc(historyShedPrepare);
   const queryClient = useQueryClient();
   const toast = useToast();
-  const status = useQuery({ queryKey: ["smart-session", "history-shed"], queryFn: () => read({}), refetchInterval: 5 * 60_000 });
+  const status = useQuery({ queryKey: ["smart-session", "history-shed"], queryFn: () => read({ candidates: true }), refetchInterval: 5 * 60_000 });
   const plans = (status.data?.plans ?? []).filter((p) => p.state !== "discarded");
   const hint = enabled
     ? `On. When an agent past ${thresholds.minMb} MB or ${thresholds.minCompactions} compactions next loads, its history from before the last compaction moves to a backup in Smart Session's data folder. A full copy comes first and is never deleted, so those transcripts take about twice the disk. The agent keeps its id and everything it knows.`
@@ -42,7 +44,8 @@ export function HistoryShedSection({ enabled, thresholds, saving, onToggle }: {
           const line = plan.state === "committed" || plan.state === "committing" || plan.state === "restoring"
             ? plan.restoreRequested ? "Full history goes back at its next load." : `${mb(plan.from)} → ${mb(plan.to)} on ${day(plan.committedAt)}. Backup: ${plan.backupDir}`
             : plan.state === "restored" ? `Full history restored on ${day(plan.restoredAt)}. Left as it is from now on.`
-              : `Ready: ${mb(plan.from)} → ${mb(plan.to)} at its next load.`;
+              : plan.origin === "requested" || enabled ? `Ready: ${mb(plan.from)} → ${mb(plan.to)} at its next load.`
+                : `Prepared: ${mb(plan.from)} → ${mb(plan.to)}. Waits until this switch is on.`;
           return plan.state === "committed" && !plan.restoreRequested
             ? <SettingsAction key={plan.agentId} label={name} hint={line} actionLabel="Restore" disabled={saving}
               onPress={() => void restore({ agentId: plan.agentId }).then((out) => {
@@ -50,6 +53,15 @@ export function HistoryShedSection({ enabled, thresholds, saving, onToggle }: {
                 void queryClient.invalidateQueries({ queryKey: ["smart-session", "history-shed"] });
               })} />
             : <SettingsAction key={plan.agentId} label={name} hint={line} actionLabel="" disabled onPress={() => undefined} />;
+        })}
+        {(status.data?.candidates ?? []).map((agent) => {
+          const name = agent.title ?? `Agent ${agent.agentId.slice(0, 8)}`;
+          return <SettingsAction key={agent.agentId} label={name} actionLabel="Move now" disabled={saving}
+            hint={`${mb(agent.size)}, closed. Move now backs up the whole transcript, then moves its history from before the last compaction aside at its next load, even with this switch off.`}
+            onPress={() => void prepareNow({ agentId: agent.agentId }).then((out) => {
+              toast.show(out.ok ? `${name}: backed up. Older history moves aside at its next load.` : out.error);
+              void queryClient.invalidateQueries({ queryKey: ["smart-session", "history-shed"] });
+            })} />;
         })}
       </SettingsCard>
     </SettingsSection>

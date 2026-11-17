@@ -359,7 +359,7 @@ export const HistoryShedNoteSchema = z.object({
 /** Every agent whose old history Smart Session moved aside, or is ready to. */
 export const historyShedStatus = defineRpc({
   name: "smart-session.history_shed.status",
-  input: z.object({ agentId: z.string().min(1).optional() }),
+  input: z.object({ agentId: z.string().min(1).optional(), candidates: z.boolean().optional() }),
   output: z.object({
     enabled: z.boolean(),
     /** Plan files that can't be read; those agents are left alone until the file is fixed or removed. */
@@ -383,8 +383,54 @@ export const historyShedStatus = defineRpc({
       restoreRequested: z.boolean(),
       /** A rollback a kill interrupted, finished at the agent's next load. */
       rollbackPending: z.boolean(),
+      /** "requested": asked for with `history_shed.prepare` (commits even with the setting off); "sweep": the setting's own. */
+      origin: z.enum(["requested", "sweep"]),
+      requestedAt: z.string().nullable(),
     })),
+    /** With `candidates`: closed Claude agents with no shed under way, largest first, that a request could move. */
+    candidates: z.array(z.object({ agentId: z.string(), title: z.string().nullable(), size: z.number() })).optional(),
   }),
+});
+
+/**
+ * Prepares one closed Claude agent's shed now, whatever the setting says: the full backup is written and verified,
+ * and its older history moves aside at that agent's next load. The same refusals as the sweep, without its size
+ * thresholds. For a canary, or a "Move now" on one agent.
+ */
+export const historyShedPrepare = defineRpc({
+  name: "smart-session.history_shed.prepare",
+  input: z.object({ agentId: z.string().min(1) }),
+  output: z.discriminatedUnion("ok", [
+    z.object({
+      ok: z.literal(true),
+      note: z.string(),
+      plan: z.object({
+        agentId: z.string(),
+        sessionId: z.string(),
+        planId: z.string(),
+        /** A plan the sweep had already made, now marked requested; no second backup was written. */
+        reused: z.boolean(),
+        transcript: z.string(),
+        /** Transcript bytes now, and after the move. */
+        from: z.number(),
+        to: z.number(),
+        movedBytes: z.number(),
+        movedRecords: z.number(),
+        compactions: z.number(),
+        /** The last compaction boundary's timestamp: everything before it moves. */
+        cutAt: z.string().nullable(),
+        backupDir: z.string(),
+        backupFile: z.string(),
+        /** sha256 of the backup, which is the whole transcript as it is now (verified). */
+        backupSha256: z.string(),
+        /** sha256 the transcript will have right after the move. */
+        afterSha256: z.string(),
+        subagentsMoving: z.number(),
+        preparedAt: z.string(),
+      }),
+    }),
+    z.object({ ok: z.literal(false), why: z.string(), error: z.string() }),
+  ]),
 });
 
 /** Puts an agent's full history back at its next load; it is not moved aside again after that. */

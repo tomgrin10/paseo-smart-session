@@ -1121,7 +1121,8 @@ async function requestShedFn(): Promise<RequestShed> {
 
 test("a requested prepare works with the setting off, and only that plan commits at the next open while it is off", async () => {
   const requestShed = await requestShedFn();
-  const w = await world();
+  // No size thresholds for a request, but still enough to be worth moving (1 MB).
+  const w = await world({ fill: 60_000 });
   const original = await readFile(w.transcript);
   const session = await persistedSession(w.paseoHome, w.agentId);
   const out = await requestShed(w.env, w.agentId, { session, closed: true });
@@ -1156,6 +1157,8 @@ test("a requested prepare refuses what a sweep refuses, and an agent that is not
   assert.deepEqual(await requestShed(w.env, w.agentId, { session: { provider: "codex", sessionId: w.sessionId }, closed: true }), { ok: false, why: "not-claude" });
   const busy = { ...w.env, processes: { holders: async () => ["4242:fd"] } };
   assert.deepEqual(await requestShed(busy, w.agentId, { session, closed: true }), { ok: false, why: "busy" });
+  // No size thresholds, but a cut under 1 MB isn't worth a backup.
+  assert.deepEqual(await requestShed(w.env, w.agentId, { session, closed: true }), { ok: false, why: "due:too-little-to-move" });
   assert.deepEqual(diff(before, await fingerprint(w)), { changed: [], missing: [], added: [] }, "a refusal writes nothing beside the transcript");
   assert.equal(await readPlan(w.env, w.agentId), null);
   await rm(w.root, { recursive: true });

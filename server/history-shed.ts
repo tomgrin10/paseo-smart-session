@@ -33,6 +33,7 @@ import {
   type CutPlan,
   type IndexedRecord,
   indexRecord,
+  isDue,
   isSessionId,
   isSubagentFile,
   planCut,
@@ -97,6 +98,12 @@ export interface ShedPlan {
   migratedFrom?: string;
   /** A rollback under way: saved before its first step, so a settle after a kill finishes it from the files. */
   rollback?: RollbackRecord;
+  /**
+   * The person asked for this one (`requestShed`), rather than the sweep: it commits at the agent's next open even
+   * with the setting off. A sweep plan commits only while the setting is on.
+   */
+  requested?: boolean;
+  requestedAt?: string;
 }
 
 /**
@@ -138,6 +145,8 @@ export type Refusal =
   | "nothing-to-restore"
   | "unreadable-plan"
   | "unused-backups"
+  | "not-closed"
+  | "restore-pending"
   | `cut:${string}`
   | `due:${string}`
   | `error:${string}`;
@@ -355,6 +364,33 @@ export async function resolveTranscript(sessionId: string, configDirs: readonly 
   if (found.size === 0) return { why: "no-transcript" };
   if (found.size > 1) return { why: "ambiguous-transcript" };
   return { path: [...found][0]! };
+}
+
+/** Transcript sizes for these session ids, in one pass over the config folders' projects. Ambiguous ids are left out. */
+export async function transcriptSizes(configDirs: readonly string[], sessionIds: ReadonlySet<string>): Promise<Map<string, number>> {
+  const found = new Map<string, { path: string; size: number }[]>();
+  for (const configDir of new Set(configDirs)) {
+    const projects = join(configDir, "projects");
+    let entries: string[];
+    try { entries = await readdir(projects); } catch { continue; }
+    for (const entry of entries) {
+      let names: string[];
+      try { names = await readdir(join(projects, entry)); } catch { continue; }
+      for (const name of names) {
+        const sessionId = name.endsWith(".jsonl") ? name.slice(0, -6) : "";
+        if (!sessionIds.has(sessionId)) continue;
+        try {
+          const path = await realpath(join(projects, entry, name));
+          const info = await stat(path);
+          if (!info.isFile()) continue;
+          const list = found.get(sessionId) ?? [];
+          if (!list.some((f) => f.path === path)) list.push({ path, size: info.size });
+          found.set(sessionId, list);
+        } catch { /* gone */ }
+      }
+    }
+  }
+  return new Map([...found].filter(([, list]) => list.length === 1).map(([id, list]) => [id, list[0]!.size]));
 }
 
 /** The Paseo agent record's persisted Claude session id, read from Paseo's own files. */
@@ -632,6 +668,7 @@ export async function prepare(
   agentId: string,
   sessionId: string,
   isDueFor: (size: number, plan: CutPlan) => true | string,
+  options: { readonly requested?: boolean } = {},
 ): Promise<Outcome> {
   if (!isSessionId(sessionId)) return { ok: false, why: "no-session" };
   const { plans, unreadable } = await readPlans(env, agentId);
@@ -707,17 +744,62 @@ export async function prepare(
       subagents,
       preparedAt: at(env),
       state: "prepared",
+      ...(options.requested ? { requested: true, requestedAt: at(env) } : {}),
     };
     await writeFile(join(backupDir, "manifest.json"), JSON.stringify({ ...plan, note: "Full copy of the transcript before Smart Session moved its older history aside. Smart Session never deletes this folder." }, null, 2), { flag: "wx", mode: 0o600 });
     await fsyncDir(join(backupDir, "subagents"));
     await fsyncDir(backupDir);
     await fsyncDir(dirname(backupDir));
     await savePlan(env, plan);
-    await logRun(env, { event: "prepared", agentId, sessionId, size: stamp.size, newSize: cut.newSize, movedBytes: cut.movedBytes, compactions: cut.compactions, subagentsMoving: subagents.filter((s) => s.move).length, subagentsKeptAsNamed: [...candidates.keys()].filter((n) => !subagents.find((s) => s.name === n)?.move).length, backupDir });
+    await logRun(env, { event: "prepared", ...(options.requested ? { requested: true } : {}), agentId, sessionId, size: stamp.size, newSize: cut.newSize, movedBytes: cut.movedBytes, compactions: cut.compactions, subagentsMoving: subagents.filter((s) => s.move).length, subagentsKeptAsNamed: [...candidates.keys()].filter((n) => !subagents.find((s) => s.name === n)?.move).length, backupDir });
     return { ok: true, plan };
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * A shed the person asked for, for one closed agent, whatever the setting says. Prepared like the sweep prepares
+ * (the same refusals; the backup written and verified; nothing else touched), without the size thresholds, and
+ * marked requested: it commits at that agent's next open even with the setting off. A plan the sweep already made
+ * for this session is marked instead of writing a second backup. A pending restore is never undone by a request.
+ */
+export async function requestShed(
+  env: ShedEnv,
+  agentId: string,
+  options: { readonly session: { readonly provider: string; readonly sessionId: string } | null; readonly closed: boolean },
+): Promise<{ readonly ok: true; readonly plan: ShedPlan; readonly reused: boolean } | { readonly ok: false; readonly why: Refusal }> {
+  const { session } = options;
+  if (!session) return { ok: false, why: "no-session" };
+  if (session.provider !== "claude") return { ok: false, why: "not-claude" };
+  if (!options.closed) return { ok: false, why: "not-closed" };
+  const { plans, unreadable } = await readPlans(env, agentId);
+  if (unreadable.length > 0) return { ok: false, why: "unreadable-plan" };
+  if (plans.some((p) => p.restoreRequested && (p.state === "committed" || p.state === "committing" || p.state === "restoring"))) return { ok: false, why: "restore-pending" };
+  const existing = plans.find((p) => p.state !== "discarded");
+  if (existing && existing.sessionId === session.sessionId && (existing.state === "prepared" || existing.state === "committing" || existing.rollback)) {
+    // Checked against the transcript first: a plan whose transcript moved on is discarded and a new one made.
+    if ((await settle(env, existing, { moveSubagents: false })) === "kept") return { ok: false, why: "busy" };
+    const again = (await agentPlans(env, agentId)).find((p) => p.id === existing.id);
+    if (again?.state === "prepared") {
+      await updatePlan(env, again, (c) => c.state === "prepared", (c) => { c.requested = true; c.requestedAt ??= at(env); });
+      const marked = (await agentPlans(env, agentId)).find((p) => p.id === existing.id);
+      if (marked?.state === "prepared" && marked.requested) {
+        await logRun(env, { event: "requested", agentId, planId: marked.id, reused: true });
+        return { ok: true, plan: marked, reused: true };
+      }
+    }
+    if (again && (again.state === "committing" || again.rollback)) return { ok: false, why: "busy" };
+  }
+  const out = await prepare(env, agentId, session.sessionId, (size, plan) => {
+    const due = isDue(size, plan, { minMb: 0, minCompactions: 0 });
+    return due.due ? true : due.why;
+  }, { requested: true });
+  if (!out.ok) {
+    await logRun(env, { event: "not-prepared", requested: true, agentId, why: out.why });
+    return { ok: false, why: out.why };
+  }
+  return { ok: true, plan: out.plan, reused: false };
 }
 
 /** sha256 of the given ranges of an open file. */

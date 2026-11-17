@@ -4,6 +4,8 @@
  *
  * - Prepare (read-only, writes the backup) only for an agent that is not loaded: when Paseo closes
  *   it, and in a slow sweep over agents that are already closed. Never wakes an agent.
+ * - `history_shed.prepare` does the same for one closed agent the person names, whatever the setting says
+ *   (a canary, or "Move now"): that plan is marked requested and commits at the agent's next open.
  * - Commit, and a requested restore, only inside `agent.session_open` for a Claude agent opening
  *   with no live runtime (a resume, an import, or a history-only view); see `history-shed-open.ts`.
  *   A requested restore runs whatever the setting says. Never throws there.
@@ -12,7 +14,7 @@ import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isDue } from "../shared/history-shed.ts";
-import { historyShedRestore, historyShedStatus, HISTORY_SHED_KIND } from "../shared/smart-session.ts";
+import { historyShedPrepare, historyShedRestore, historyShedStatus, HISTORY_SHED_KIND } from "../shared/smart-session.ts";
 import { readAgents, withDaemon } from "./daemon.ts";
 import {
   agentPlans,
@@ -25,7 +27,10 @@ import {
   persistedSession,
   prepare,
   readPlan,
+  type Refusal,
   requestRestore,
+  requestShed,
+  transcriptSizes,
   settle,
   type ShedEnv,
   type ShedPlan,
@@ -46,6 +51,27 @@ function shedEnv(extraConfigDirs: readonly (string | undefined)[] = []): ShedEnv
     configDirs: () => claudeConfigDirs(paseoHome(), extraConfigDirs),
     processes: linuxProcesses,
   };
+}
+
+/** What a refused request tells the person. */
+function refusalText(why: Refusal): string {
+  switch (why) {
+    case "not-closed": return "This agent is open or running. Close it first: history only moves while an agent isn't loaded.";
+    case "no-session": return "Paseo has no Claude session saved for this agent.";
+    case "not-claude": return "Only Claude agents' history can be moved.";
+    case "busy": return "A process has this agent's transcript open. Try again once it's closed.";
+    case "no-proc": return "Couldn't check which processes have the transcript open, so nothing was done.";
+    case "no-transcript": return "Couldn't find this agent's transcript.";
+    case "ambiguous-transcript": return "This agent's session id names more than one transcript, so nothing was done.";
+    case "changed": return "The transcript changed while it was read. Try again.";
+    case "unreadable-plan": return "A plan file for this agent can't be read. Fix or remove it under history-shed/plans.";
+    case "unused-backups": return "This agent already has two unused backups. Its transcript kept changing before each move.";
+    case "restore-pending": return "A restore is waiting for this agent's next load. Moving history again would undo it.";
+    default:
+      if (why.startsWith("cut:")) return "There's no compaction to cut at: all of this history is still in use.";
+      if (why === "due:too-little-to-move") return "Less than 1 MB would move, so it isn't worth a backup.";
+      return `Not prepared (${why}).`;
+  }
 }
 
 export function contributeHistoryShed(server: PluginServerContext): () => void {
@@ -155,10 +181,11 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
     setTimeout(() => void prepareAgent(event.agent.id), 5_000).unref?.();
   });
 
-  server.handle(historyShedStatus, async ({ agentId }, context) => {
+  server.handle(historyShedStatus, async ({ agentId, candidates }, context) => {
     runtime = context.paseo;
     const settings = await readSettings();
-    const plans = (await listPlans(shedEnv())).filter((p) => agentId === undefined || p.agentId === agentId);
+    const all = await listPlans(shedEnv());
+    const plans = all.filter((p) => agentId === undefined || p.agentId === agentId);
     return {
       enabled: settings.shedHistory,
       unreadable: (await unreadablePlans(shedEnv())).filter((u) => agentId === undefined || u.agentId === agentId),
@@ -176,8 +203,76 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
         restoredAt: p.restoredAt ?? null,
         restoreRequested: p.restoreRequested === true,
         rollbackPending: p.rollback !== undefined,
+        origin: p.requested === true ? "requested" as const : "sweep" as const,
+        requestedAt: p.requestedAt ?? null,
       }))),
+      ...(candidates === true ? { candidates: await candidateAgents(all) } : {}),
     };
+  });
+
+  /** Closed Claude agents a request could move: no shed under way or restored, at least 5 MB, largest first. */
+  let candidateCache: { at: number; rows: { agentId: string; title: string | null; size: number }[] } | null = null;
+  const candidateAgents = async (plans: readonly ShedPlan[]) => {
+    if (candidateCache && Date.now() - candidateCache.at < 60_000) return candidateCache.rows;
+    const busy = new Set(plans.filter((p) => p.state !== "discarded").map((p) => p.agentId));
+    let rows: Awaited<ReturnType<typeof readAgents>> = [];
+    try { rows = await withDaemon((client) => readAgents(client)); } catch { return []; }
+    const sessions = new Map<string, { agentId: string; title: string | null }>();
+    for (const row of rows) {
+      if (row.provider !== "claude" || row.status !== "closed" || busy.has(row.id)) continue;
+      const session = await persistedSession(paseoHome(), row.id).catch(() => null);
+      if (session?.provider === "claude") sessions.set(session.sessionId, { agentId: row.id, title: row.title ?? session.title });
+    }
+    const sizes = await transcriptSizes(await shedEnv().configDirs(), new Set(sessions.keys()));
+    const out = [...sizes].map(([sessionId, size]) => ({ ...sessions.get(sessionId)!, size }))
+      .filter((c) => c.size >= 5 * 1024 * 1024)
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 10);
+    candidateCache = { at: Date.now(), rows: out };
+    return out;
+  };
+
+  server.handle(historyShedPrepare, async ({ agentId }, context) => {
+    runtime = context.paseo;
+    try {
+      let closed = false;
+      try {
+        const row = (await withDaemon((client) => readAgents(client))).find((r) => r.id === agentId);
+        closed = row?.status === "closed";
+      } catch { /* Unknown: refused as not closed. */ }
+      const session = await persistedSession(paseoHome(), agentId);
+      const out = await requestShed(shedEnv(), agentId, { session, closed });
+      candidateCache = null;
+      if (!out.ok) return { ok: false as const, why: out.why, error: refusalText(out.why) };
+      const p = out.plan;
+      return {
+        ok: true as const,
+        note: "Backup written and verified. The older history moves aside the next time this agent loads or its chat opens, even with the setting off.",
+        plan: {
+          agentId: p.agentId,
+          sessionId: p.sessionId,
+          planId: p.id,
+          reused: out.reused,
+          transcript: p.path,
+          from: p.original.size,
+          to: p.cut.newSize,
+          movedBytes: p.cut.movedBytes,
+          movedRecords: p.cut.movedRecords,
+          compactions: p.cut.compactions,
+          cutAt: p.cut.boundaryTimestamp,
+          backupDir: p.backupDir,
+          backupFile: join(p.backupDir, "transcript.jsonl"),
+          backupSha256: p.original.sha256,
+          afterSha256: p.expectedSha256,
+          subagentsMoving: p.subagents.filter((s) => s.move).length,
+          preparedAt: p.preparedAt,
+        },
+      };
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      await logRun(shedEnv(), { event: "error", stage: "request", agentId, error: text });
+      return { ok: false as const, why: "error", error: `Couldn't prepare it: ${text}` };
+    }
   });
 
   server.handle(historyShedRestore, async ({ agentId }, context) => {
