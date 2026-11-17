@@ -209,8 +209,13 @@ test("a load against another live Paseo home's settings file adds none of its ow
   const real = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS);
   const sandbox = "/tmp/harness/paseo/plugin-data/smart-session/hooks";
   assert.deepEqual(reconcile(real, sandbox, undefined, sandbox, () => true), real, "installHooks on in the sandbox");
-  // The doubled file such a load left behind: once the sandbox home is gone, its entries are stale, and the
-  // real home's next load removes them and keeps its own.
+});
+
+test("a load changes only its own entries: another home's stay, live or gone, and a doubled file never freezes", () => {
+  // 3.8.0-beta.2 review (N3): with beta.1's doubled file neither home changed anything while both shim dirs
+  // existed, and a sandbox load stripped the real entries once the real shim dir was missing.
+  const real = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS);
+  const sandbox = "/tmp/harness/paseo/plugin-data/smart-session/hooks";
   const doubled = JSON.parse(JSON.stringify(real).replaceAll(`${SHIMS}/`, `${sandbox}/`)) as typeof real;
   for (const [event, groups] of Object.entries(real)) {
     for (const group of groups) {
@@ -218,10 +223,25 @@ test("a load against another live Paseo home's settings file adds none of its ow
       twin.hooks = [...(group.hooks ?? []), ...(twin.hooks ?? []).filter((h) => String(h.command).includes(sandbox))];
     }
   }
-  const alive = (dir: string) => dir === SHIMS;
-  assert.deepEqual(reconcile(doubled, SHIMS, undefined, SHIMS, alive), real, "stale sandbox entries go, the real ones stay");
-  // While the sandbox home still exists, neither load changes the other's entries.
-  assert.deepEqual(reconcile(doubled, sandbox, undefined, sandbox, () => true), doubled);
+  const only = (map: typeof real, dir: string) => Object.values(map).flat().flatMap((g) => g.hooks ?? []).filter((h) => String(h.command).includes(`'${dir}/`)).length;
+  const OFF = { compact: false, publish: false };
+  const both = () => true;
+  // Every feature off, both homes alive: each removes its own entries, and only those.
+  const realOff = reconcile(doubled, SHIMS, OFF, SHIMS, both);
+  assert.equal(only(realOff, SHIMS), 0, "the real home's own entries go");
+  assert.equal(only(realOff, sandbox), only(doubled, sandbox), "the sandbox's stay");
+  assert.deepEqual(commandsFor(realOff, "Stop").filter((c) => c === foreign.command), [foreign.command]);
+  const sandboxOff = reconcile(doubled, sandbox, OFF, sandbox, both);
+  assert.equal(only(sandboxOff, sandbox), 0, "the sandbox's own entries go");
+  assert.equal(only(sandboxOff, SHIMS), only(doubled, SHIMS), "the real ones stay");
+  // The real shim dir missing for a moment (a reinstall): a sandbox load still strips nothing and adds nothing.
+  const sandboxOnly = (dir: string) => dir === sandbox;
+  assert.deepEqual(reconcile(real, sandbox, undefined, sandbox, sandboxOnly), real);
+  assert.deepEqual(reconcile(real, null, undefined, sandbox, sandboxOnly), real);
+  // A home that is gone keeps its entries too (guarded by `[ -f ]`, they run nothing): never another home's to remove.
+  const realOnly = (dir: string) => dir === SHIMS;
+  assert.equal(only(reconcile(doubled, SHIMS, undefined, SHIMS, realOnly), sandbox), only(doubled, sandbox));
+  assert.equal(only(reconcile(doubled, SHIMS, undefined, SHIMS, realOnly), SHIMS), only(real, SHIMS), "and its own are not doubled");
 });
 
 test("a matcher group that only ever held our hook is dropped, not left empty", () => {

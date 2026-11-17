@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readdirSync, writeSync } from "node:fs";
-import { appendFile, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -899,3 +899,157 @@ async function agentPlansOf(w: World) {
   return agentPlans(w.env, w.agentId);
 }
 
+
+// ---------------------------------------------------------------------------------------------- 3.8.0-beta.2 review
+
+const LATE = '{"type":"user","message":{"content":"late, into the original"}}\n';
+const INTO_NEW = '{"type":"user","message":{"content":"written into the shed file"}}\n';
+
+/** A commit killed right after its rename while a writer still had the original open, then a line into the shed file. */
+async function swappedWithLateWrite(w: World) {
+  const plan = await prepared(w);
+  const fd = openSync(w.transcript, "a");
+  const killed: ShedEnv = { ...w.env, step: (name) => { if (name === "commit:after-rename") { writeSync(fd, LATE); throw new Error("killed"); } } };
+  assert.equal((await commit(killed, plan, FAR())).ok, false);
+  closeSync(fd);
+  await appendFile(w.transcript, INTO_NEW);
+  return plan;
+}
+
+const storedPlan = async (w: World, id: string) => (await agentPlansOf(w)).find((p) => p.id === id)!;
+
+test("a rollback killed after any of its steps is finished by the next settle, every line exactly once", async (t) => {
+  // N1: killed after linking the replacement, every later settle hit EEXIST, which the lock took for contention.
+  // N2: killed after the rename, settle saw the original grown, discarded the plan, and stranded the shed file's lines.
+  for (const killedAfter of ["nothing", "link", "rename", "append"]) {
+    await t.test(killedAfter, async () => {
+      const w = await world();
+      const original = await readFile(w.transcript);
+      const plan = await swappedWithLateWrite(w);
+      const [orig, spare] = sideNames(plan);
+      if (killedAfter !== "nothing") await link(w.transcript, spare!);
+      if (killedAfter === "rename" || killedAfter === "append") await rename(orig!, w.transcript);
+      if (killedAfter === "append") await appendFile(w.transcript, INTO_NEW);
+      await settle(w.env, await storedPlan(w, plan.id));
+      assert.ok((await readFile(w.transcript)).equals(Buffer.concat([original, Buffer.from(LATE), Buffer.from(INTO_NEW)])),
+        "the original, its late line, then the line written into the shed file, once each");
+      assert.equal((await storedPlan(w, plan.id)).state, "discarded");
+      for (const f of sideFiles(plan)) assert.equal(existsSync(f), false, `no ${f} left`);
+      await rm(w.root, { recursive: true });
+    });
+  }
+});
+
+test("a rollback killed at each of its own steps, in a commit and in a restore, is finished by the next settle", async (t) => {
+  for (const kind of ["commit", "restore"] as const) {
+    for (const step of ["rollback:link", "rollback:rename", "rollback:append", "rollback:drop"]) {
+      await t.test(`${kind} ${step}`, async () => {
+        let busyIno = -1;
+        const w = await world({}, { holders: async (_path, _sid, inode) => (inode?.ino === busyIno ? ["4242:fd"] : []) });
+        if (kind === "restore") assert.ok((await commit(w.env, await prepared(w), FAR())).ok);
+        const before = await readFile(w.transcript);
+        const plan = kind === "commit" ? await prepared(w) : (await readPlan(w.env, w.agentId))!;
+        busyIno = (await stat(w.transcript)).ino;
+        const fd = openSync(w.transcript, "a");
+        const env: ShedEnv = { ...w.env, step: async (name) => {
+          if (name === `${kind}:after-rename`) { writeSync(fd, LATE); await appendFile(w.transcript, INTO_NEW); }
+          if (name === step) throw new Error(`killed at ${name}`);
+        } };
+        const out = kind === "commit" ? await commit(env, plan, FAR()) : await restore(env, plan, FAR());
+        closeSync(fd);
+        assert.equal(out.ok, false);
+        busyIno = -1;
+        await settle(w.env, await storedPlan(w, plan.id));
+        assert.ok((await readFile(w.transcript)).equals(Buffer.concat([before, Buffer.from(LATE), Buffer.from(INTO_NEW)])),
+          "what was there, its late line, then the line written into the replacement, once each");
+        assert.equal((await storedPlan(w, plan.id)).state, kind === "commit" ? "discarded" : "committed");
+        assert.equal((await storedPlan(w, plan.id)).rollback, undefined);
+        for (const f of sideFiles(plan)) assert.equal(existsSync(f), false, `no ${f} left`);
+        await rm(w.root, { recursive: true });
+      });
+    }
+  }
+});
+
+test("a rollback copies whole lines from the shed file, never a torn one", async () => {
+  // N4a: a line half-written into the replacement must not be glued to the lines that follow it.
+  const w = await world();
+  const original = await readFile(w.transcript);
+  const plan = await swappedWithLateWrite(w);
+  const TORN = '{"type":"user","mess';
+  await appendFile(w.transcript, TORN);
+  await settle(w.env, await storedPlan(w, plan.id));
+  assert.ok((await readFile(w.transcript)).equals(Buffer.concat([original, Buffer.from(LATE), Buffer.from(INTO_NEW)])));
+  const spare = sideNames(plan)[1]!;
+  assert.ok(existsSync(spare) && (await readFile(spare)).toString().endsWith(TORN), "the torn bytes are kept, not dropped");
+  await rm(w.root, { recursive: true });
+});
+
+test("a second name a commit failed to drop is recovered by settle: dropped when it is the backup, rolled back when it grew", async (t) => {
+  // N4b: 3.8.0-beta.2 ignored a failed drop, so lines written to the original in that window sat only in `.orig`.
+  for (const grew of [false, true]) {
+    await t.test(grew ? "grew" : "same", async () => {
+      const w = await world();
+      const original = await readFile(w.transcript);
+      const subagentsBefore = await readdir(join(w.sessionDir, "subagents"));
+      const plan = await prepared(w);
+      assert.ok((await commit(w.env, plan, FAR())).ok);
+      const [orig] = sideNames(plan);
+      await writeFile(orig!, grew ? Buffer.concat([original, Buffer.from(LATE)]) : original);
+      await appendFile(w.transcript, INTO_NEW);
+      const shedNow = await readFile(w.transcript);
+      await settle(w.env, await storedPlan(w, plan.id));
+      if (grew) {
+        assert.ok((await readFile(w.transcript)).equals(Buffer.concat([original, Buffer.from(LATE), Buffer.from(INTO_NEW)])));
+        assert.equal((await storedPlan(w, plan.id)).state, "discarded");
+        assert.deepEqual((await readdir(join(w.sessionDir, "subagents"))).sort(), subagentsBefore.sort(), "moved subagents are back");
+      } else {
+        assert.ok((await readFile(w.transcript)).equals(shedNow));
+        assert.equal((await storedPlan(w, plan.id)).state, "committed");
+      }
+      for (const f of sideFiles(plan)) assert.equal(existsSync(f), false, `no ${f} left`);
+      await rm(w.root, { recursive: true });
+    });
+  }
+});
+
+test("off means off: an open reads no transcript and moves no subagent, but still finishes an interrupted commit", async () => {
+  // N4c. A commit whose subagent moves were cut short, and a prepared plan beside it in another agent.
+  const w = await world();
+  const plan = await prepared(w);
+  const moving = plan.subagents.find((s) => s.move);
+  assert.ok(moving, "the fixture has a subagent to move");
+  const killed: ShedEnv = { ...w.env, step: (name) => { if (name === `commit:subagent:${moving.name}`) throw new Error("killed"); } };
+  await commit(killed, plan, FAR());
+  assert.equal((await storedPlan(w, plan.id)).state, "committed");
+  const before = await fingerprint(w);
+  const steps: string[] = [];
+  await (await opener(w, { shedHistory: false }, { step: (name) => { steps.push(name); } })).open();
+  const after = diff(before, await fingerprint(w));
+  assert.deepEqual([after.changed, after.missing, after.added], [[], [], []], "nothing changed");
+  assert.deepEqual(steps, [], "nothing read");
+  // A commit killed after its rename is finished with it off, so no line is stranded; its subagents wait.
+  const w2 = await world();
+  const plan2 = await prepared(w2);
+  await commit({ ...w2.env, step: (name) => { if (name === "commit:after-rename") throw new Error("killed"); } }, plan2, FAR());
+  const subs = await readdir(join(w2.sessionDir, "subagents"));
+  await (await opener(w2, { shedHistory: false })).open();
+  assert.equal((await storedPlan(w2, plan2.id)).state, "committed");
+  assert.deepEqual(await readdir(join(w2.sessionDir, "subagents")), subs, "no subagent moved");
+  for (const f of sideFiles(plan2)) assert.equal(existsSync(f), false, `no ${f} left`);
+  await rm(w.root, { recursive: true });
+  await rm(w2.root, { recursive: true });
+});
+
+test("leftover second names beside a transcript are listed for the status", async () => {
+  const shed = await import("./server/history-shed.ts") as Record<string, unknown>;
+  assert.equal(typeof shed.leftoverFiles, "function");
+  const leftoverFiles = shed.leftoverFiles as (env: ShedEnv) => Promise<{ agentId: string; file: string; size: number }[]>;
+  const w = await world();
+  const plan = await swappedWithLateWrite(w);
+  const list = await leftoverFiles(w.env);
+  assert.deepEqual(list.map((l) => [l.agentId, l.file]), [[w.agentId, sideNames(plan)[0]]]);
+  await settle(w.env, await storedPlan(w, plan.id));
+  assert.deepEqual(await leftoverFiles(w.env), []);
+  await rm(w.root, { recursive: true });
+});
