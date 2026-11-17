@@ -164,8 +164,9 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
     const plans = (await listPlans(shedEnv())).filter((p) => agentId === undefined || p.agentId === agentId);
     return {
       enabled: settings.shedHistory,
-      plans: plans.map((p) => ({
+      plans: await Promise.all(plans.map(async (p) => ({
         agentId: p.agentId,
+        title: (await persistedSession(paseoHome(), p.agentId).catch(() => null))?.title ?? null,
         state: p.state,
         from: p.original.size,
         to: p.cut.newSize,
@@ -175,7 +176,7 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
         committedAt: p.committedAt ?? null,
         restoredAt: p.restoredAt ?? null,
         restoreRequested: p.restoreRequested === true,
-      })),
+      }))),
     };
   });
 

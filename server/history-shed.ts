@@ -272,7 +272,7 @@ export async function resolveTranscript(sessionId: string, configDirs: readonly 
 }
 
 /** The Paseo agent record's persisted Claude session id, read from Paseo's own files. */
-export async function persistedSession(paseoHome: string, agentId: string): Promise<{ provider: string; sessionId: string } | null> {
+export async function persistedSession(paseoHome: string, agentId: string): Promise<{ provider: string; sessionId: string; title: string | null } | null> {
   if (!/^[A-Za-z0-9_-]+$/.test(agentId)) return null;
   const root = join(paseoHome, "agents");
   let dirs: string[];
@@ -289,7 +289,8 @@ export async function persistedSession(paseoHome: string, agentId: string): Prom
     const persistence = record?.persistence;
     const provider = typeof persistence?.provider === "string" ? persistence.provider : record?.provider;
     const sessionId = persistence?.sessionId;
-    return typeof provider === "string" && isSessionId(sessionId) ? { provider, sessionId } : null;
+    const title = typeof record?.title === "string" && record.title.trim() ? record.title.trim() : null;
+    return typeof provider === "string" && isSessionId(sessionId) ? { provider, sessionId, title } : null;
   } catch {
     return null;
   }

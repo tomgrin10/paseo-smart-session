@@ -364,6 +364,7 @@ export const historyShedStatus = defineRpc({
     enabled: z.boolean(),
     plans: z.array(z.object({
       agentId: z.string(),
+      title: z.string().nullable(),
       state: z.enum(["prepared", "committing", "committed", "restored", "discarded"]),
       from: z.number(),
       to: z.number(),

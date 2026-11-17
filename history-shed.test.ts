@@ -467,7 +467,7 @@ test("the transcript is found by its session id across config folders, once, by 
 
 test("the session id comes from the agent's own Paseo record, and only one", async () => {
   const w = await world();
-  assert.deepEqual(await persistedSession(w.paseoHome, w.agentId), { provider: "claude", sessionId: w.sessionId });
+  assert.deepEqual(await persistedSession(w.paseoHome, w.agentId), { provider: "claude", sessionId: w.sessionId, title: null });
   await mkdir(join(w.paseoHome, "agents", "other"), { recursive: true });
   await writeFile(join(w.paseoHome, "agents", "other", `${w.agentId}.json`), "{}");
   assert.equal(await persistedSession(w.paseoHome, w.agentId), null, "two records: refuse");
