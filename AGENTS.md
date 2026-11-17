@@ -552,10 +552,17 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
   owns the Claude settings it naturally uses. Any other home writes only a settings file named inside its own `HOME`
   or `CLAUDE_CONFIG_DIR`, and never one whose real path is in the person's `~/.claude` (a link included). The owner
   manages its own entries whatever else is there, keeps a live home's, and removes a gone home's (shim folder
-  missing): it never defers to another home. A non-owner adds nothing and only takes its own entries back out
-  (the report says `managedBy`). 3.8.0-beta.3 deferred to any other home's entries, so a file holding only a
-  sandbox's got none of the real home's, and with both, features off then on left the real home with none.
+  missing): it never defers to another home. 3.8.0-beta.3 deferred to any other home's entries, so a file holding
+  only a sandbox's got none of the real home's, and with both, features off then on left the real home with none.
   `install.test.ts` checks the three cases and 400 random sequences of loads, sandbox loads and feature toggles.
+- **Invariant: a load never removes working hooks it doesn't own, its own included; a single custom home is the
+  owner.** A non-owner changes nothing in the file (the report says `managedBy`). When `~/.paseo` has no Smart
+  Session (no `plugin-data/smart-session/hooks`), any home owns the person's settings: a custom `PASEO_HOME` such as
+  `/data/paseo` is then the only home there is. A sandbox on such a machine may add guarded entries (a missing shim is a
+  no-op) that the owner removes once their shim folder is gone. Real paths are resolved by hand through a link whose
+  target doesn't exist yet (`realOr`), so a sandbox's `settings.json` linked to the person's not-yet-written file is
+  still the person's. 3.8.0-beta.4 made a custom home a non-owner that took its own entries out: an upgrade from 3.7.0
+  went from 7 hooks to 0. `install.test.ts` runs that upgrade with and without Smart Session in `~/.paseo`.
 - Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.
 - A seat session reads its ZeroSub home's `settings.json`, which ZeroSub links to the main one. Never write into
   those homes: per-home copies are how a hook silently stops reaching seat sessions (2026-11-10).
@@ -594,9 +601,17 @@ records before that point move into a backup and the transcript keeps the rest, 
   working aborts it, waits, and changes nothing. After a canceled open (`overranAt`), the next open leaves the files
   alone. It never throws.
 - **Invariant: off means off.** With `shedHistory` false an open reads no transcript and moves no subagent. It only
-  runs a restore the person asked for, or finishes a commit, restore or rollback a kill interrupted (`needsRecovery`:
-  the plan's state, its rollback record, or a stat of its second names), so no line is stranded. Even then no subagent
-  moves (`settle(..., { moveSubagents: false })`). The sweep and `prepare` don't run at all.
+  runs what the person asked for (a restore, or a shed requested for that agent), or finishes a commit, restore or
+  rollback a kill interrupted (`needsRecovery`: the plan's state, its rollback record, or a stat of its second
+  names), so no line is stranded. For those no subagent moves (`settle(..., { moveSubagents: false })`). The sweep
+  doesn't run at all.
+- **Invariant: only a requested plan commits while the setting is off.** `history_shed.prepare { agentId }`
+  (`requestShed`) prepares one closed Claude agent whatever the setting says: the same refusals as the sweep, plus
+  `not-closed` (Paseo's row) and `restore-pending`, and no size thresholds (still 1 MB moved at least). Its plan is
+  marked `requested`; a plan the sweep already made for that session is marked instead of a second backup. At the
+  agent's next safe open a requested plan commits like a sweep plan with the setting on; a sweep plan with it off
+  never does. The status gives each plan's `origin` (`requested` or `sweep`). Pinned by the beta.4 review tests in
+  `history-shed.test.ts`.
 - **Commit checks, under a lock file beside the plan**: no unreadable plan for the agent; the resolved path is the
   planned one; no process holds the file open or carries the session id on its command line (Linux `/proc`; elsewhere
   it refuses); the open file matches the original stamp (size, mtime, inode, sha256); the backup and every moved
@@ -613,10 +628,15 @@ records before that point move into a backup and the transcript keeps the rest, 
   or reuses a `.new` that has the transcript's inode; renames the original back; appends the replacement's whole
   lines past its planned size in one `O_APPEND` write (not interleaved with another writer's), exactly once
   (`appendOnce`): the record notes the transcript's size before each write (`appendFloor`); the next pass finds an
-  earlier write by the chunk's first line, compares byte by byte and appends only the rest, and cuts a torn earlier
-  write back to its last whole line only when it starts past `appendFloor` and is the file's tail. It never cuts
-  bytes it can't prove it wrote. 3.8.0-beta.3 looked for the whole chunk, so a replacement that grew after a kill
-  between write and record got its first lines twice. Then it drops `.new` once
+  earlier write by the chunk's first line, compares byte by byte and appends only the rest. 3.8.0-beta.3 looked for
+  the whole chunk, so a replacement that grew after a kill between write and record got its first lines twice.
+- **Invariant: a torn tail is cut only with proof it is the rollback's own short write.** A torn tail is waited on
+  first (half a second: another writer may be mid-line). It is cut back to its last whole line only when the pass
+  whose write came back short recorded where its bytes landed (`shortWrite`: start, length, offset in the chunk;
+  recorded only when the file then ended exactly there) and those bytes are still exactly the file's end. Anything
+  else torn (another writer's line that looks like the chunk's start, a write a kill interrupted) is never cut: the
+  rollback stays pending, the log says why and `.new` keeps every line. 3.8.0-beta.4 took `appendFloor` as proof, so
+  after a kill before the write it cut another writer's torn line. Then it drops `.new` once
   no process holds it. A torn last line stays in `.new` and the log says so. Only then is a shed discarded or a
   restore committed again. Before 3.8.0-beta.3, a rollback killed after its link made every later settle fail on
   `link()` with EEXIST, which the lock took for contention (stuck in `committing`), and one killed after its rename
