@@ -305,7 +305,7 @@ test("an fd opened before the shed is seen, and the shed waits (Linux /proc)", {
 test("a process naming the session on its command line blocks the shed (Linux /proc)", { skip: process.platform !== "linux" }, async () => {
   const w = await world({}, linuxProcesses);
   const plan = await prepared(w);
-  const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},3000)", "--", "--resume", w.sessionId], { stdio: "ignore" });
+  const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},30000)", "--", "--resume", w.sessionId], { stdio: "ignore" });
   await new Promise((r) => setTimeout(r, 200));
   const out = await commit(w.env, plan, FAR());
   child.kill();
@@ -510,4 +510,35 @@ test("a fresh install leaves moving history off, and so does an upgrade from 3.7
   assert.deepEqual((await settingsIn(upgraded)).shedThresholds, { minMb: 50, minCompactions: 10 });
   await rm(fresh, { recursive: true });
   await rm(upgraded, { recursive: true });
+});
+
+test("only an open with no live runtime may commit: never a create or a reload", async () => {
+  const { openIsSafe } = await import("./server/history-shed.ts");
+  assert.equal(openIsSafe({ reason: "resume", purpose: "interactive" }), true);
+  assert.equal(openIsSafe({ reason: "resume", purpose: "history" }), true);
+  assert.equal(openIsSafe({ reason: "import", purpose: "interactive" }), true);
+  assert.equal(openIsSafe({ reason: "refresh", purpose: "interactive" }), false, "a reload opens before the old runtime closes");
+  assert.equal(openIsSafe({ reason: "create", purpose: "interactive" }), false);
+});
+
+test("restore walks back through every shed, newest first, to the very first original", async () => {
+  const { requestRestore, restoreRequested, agentPlans } = await import("./server/history-shed.ts");
+  const w = await world({ compactions: 3 });
+  const first = await readFile(w.transcript);
+  assert.ok((await commit(w.env, await prepared(w), FAR())).ok);
+  const leaf = liveChain(indexText((await readFile(w.transcript)).toString())).uuids[0]!;
+  const more = buildFixture({ sessionId: w.sessionId, compactions: 2, fill: 3000, start: Date.parse("2026-11-01T00:00:00Z") }).text.trimEnd().split("\n");
+  const at = more.findIndex((l) => l.includes('"parentUuid":null') && !l.includes("compact_boundary") && !l.includes('isSidechain":true'));
+  more[at] = more[at]!.replace('"parentUuid":null', `"parentUuid":"${leaf}"`);
+  await appendFile(w.transcript, `${more.join("\n")}\n`);
+  const appendedBetween = Buffer.from(`${more.join("\n")}\n`);
+  assert.ok((await commit(w.env, await prepared(w), FAR())).ok);
+  const tail = '{"type":"user","message":{"content":"latest"}}\n';
+  await appendFile(w.transcript, tail);
+  assert.equal((await requestRestore(w.env, w.agentId))?.length, 2);
+  const results = await restoreRequested(w.env, w.agentId, FAR());
+  assert.deepEqual(results.map((r) => r.ok), [true, true]);
+  assert.ok((await readFile(w.transcript)).equals(Buffer.concat([first, appendedBetween, Buffer.from(tail)])), "the very first original, then everything since");
+  assert.ok((await agentPlans(w.env, w.agentId)).every((p) => p.state === "restored"));
+  await rm(w.root, { recursive: true });
 });
