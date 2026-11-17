@@ -1,3 +1,3 @@
-- **Move now** for one agent: Settings → Smart Session → Chat history lists your largest closed Claude agents, and **Move now** backs one up right away and moves its older history aside at its next load, even with the setting off. Scripts can call `smart-session.history_shed.prepare`. The list says which moves you asked for.
+- **Move now** for one agent: Chat history settings list your largest closed Claude agents. It backs one up now; its older history moves aside at its next load, even with the setting off.
 - A custom `PASEO_HOME` (when `~/.paseo` has no Smart Session) keeps its Claude Code hooks after upgrading. Before, it took its own hooks out of your settings.
 - Undoing a stopped move never cuts a half-written line it can't prove it wrote itself.
