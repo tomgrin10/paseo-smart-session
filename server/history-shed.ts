@@ -74,6 +74,8 @@ export interface ShedPlan {
   /** Subagent transcripts already removed from `subagents/` after their backup was re-verified. */
   movedSubagents?: string[];
   restoredAt?: string;
+  /** When the chat row saying where the history went was added. A commit that outlived its process gets it later. */
+  notedAt?: string;
   /** The person asked for the full history back; done at the agent's next safe open. */
   restoreRequested?: boolean;
 }
@@ -367,6 +369,22 @@ async function savePlan(env: ShedEnv, plan: ShedPlan): Promise<void> {
   const temp = `${target}.${randomUUID()}.tmp`;
   await writeFile(temp, JSON.stringify(plan, null, 2), { mode: 0o600 });
   await rename(temp, target);
+}
+
+/** The newest committed shed of this agent whose chat row was never added, if any. */
+export async function unnoted(env: ShedEnv, agentId: string): Promise<ShedPlan | null> {
+  const newest = (await agentPlans(env, agentId)).find((p) => p.state !== "discarded");
+  return newest && newest.state === "committed" && !newest.notedAt && !newest.restoreRequested ? newest : null;
+}
+
+/** Records that the chat row was added. Under the plan's lock, and only while it is still committed. */
+export async function markNoted(env: ShedEnv, plan: ShedPlan): Promise<void> {
+  await withLock(plan, async () => {
+    const current = (await agentPlans(env, plan.agentId)).find((p) => p.id === plan.id);
+    if (!current || current.state !== "committed" || current.notedAt) return;
+    current.notedAt = at(env);
+    await savePlan(env, current);
+  }, () => undefined);
 }
 
 /** Marks every shed of this agent for restoring at its next safe open. Null when there is none. */

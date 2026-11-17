@@ -30,7 +30,9 @@ import {
   type ShedPlan,
   agentPlans,
   listPlans,
+  markNoted,
   requestRestore,
+  unnoted,
 } from "./history-shed.ts";
 import { readSettings } from "./settings.ts";
 import { dataDir } from "./store.ts";
@@ -117,7 +119,12 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
         }
         return;
       }
-      if (plan.state !== "prepared") return;
+      if (plan.state !== "prepared") {
+        // A commit whose process died before its chat row: add the row now.
+        const missing = await unnoted(env, request.agentId);
+        if (missing) noteLater(missing);
+        return;
+      }
       const out = await commit(env, plan, deadline);
       if (out.ok) noteLater(out.plan);
       else await logRun(env, { event: "refused", agentId: plan.agentId, why: out.why });
@@ -152,6 +159,7 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
           version: 1,
           data: { at: plan.committedAt ?? new Date().toISOString(), from: plan.original.size, to: plan.cut.newSize, backupDir: plan.backupDir },
         });
+        await markNoted(shedEnv(), plan);
         await logRun(shedEnv(), { event: "noted", agentId: plan.agentId, tries });
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);

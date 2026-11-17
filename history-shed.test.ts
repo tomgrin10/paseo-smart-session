@@ -49,6 +49,9 @@ import {
   settle,
   type ShedEnv,
   tempNames,
+  markNoted,
+  requestRestore as requestRestoreFor,
+  unnoted,
 } from "./server/history-shed.ts";
 
 const sha = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
@@ -541,4 +544,25 @@ test("restore walks back through every shed, newest first, to the very first ori
   assert.ok((await readFile(w.transcript)).equals(Buffer.concat([first, appendedBetween, Buffer.from(tail)])), "the very first original, then everything since");
   assert.ok((await agentPlans(w.env, w.agentId)).every((p) => p.state === "restored"));
   await rm(w.root, { recursive: true });
+});
+
+test("a commit whose process died before its chat row gets the row at the next open, once", async () => {
+  const w = await world();
+  assert.equal(await unnoted(w.env, w.agentId), null, "nothing committed yet");
+  const plan = await prepared(w);
+  assert.equal(await unnoted(w.env, w.agentId), null, "prepared is not committed");
+  assert.ok((await commit(w.env, plan, FAR())).ok);
+  const missing = await unnoted(w.env, w.agentId);
+  assert.equal(missing?.id, plan.id, "committed without a row");
+  await markNoted(w.env, missing!);
+  assert.ok((await readPlan(w.env, w.agentId))?.notedAt, "the row is recorded");
+  assert.equal(await unnoted(w.env, w.agentId), null, "never a second row");
+  // A shed waiting for its restore gets no row.
+  const w2 = await world();
+  const p2 = await prepared(w2);
+  assert.ok((await commit(w2.env, p2, FAR())).ok);
+  await requestRestoreFor(w2.env, w2.agentId);
+  assert.equal(await unnoted(w2.env, w2.agentId), null);
+  await rm(w.root, { recursive: true });
+  await rm(w2.root, { recursive: true });
 });
