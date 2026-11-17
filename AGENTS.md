@@ -526,6 +526,9 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
   on (except `Stop`, which also names killed background jobs and rides any feature), `PreToolUse(Artifact)` while publishing as the main account is on, and each is removed when its feature is turned
   off. So "Register the hooks" stays usable with Smart Compact off, and a fresh install with Smart Compact off still gets
   the Artifact hook (`install.test.ts`).
+- A hook is ours only when it runs a shim in this load's own data directory (or an old install's `hooks/`). Another
+  Paseo home's shims are that home's: a sandbox load (temp `PASEO_HOME`, real `HOME`) once stripped the real
+  install's hooks from `~/.claude/settings.json` with `installHooks` off (2026-11-17). `install.test.ts` pins it.
 - Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.
 - A seat session reads its ZeroSub home's `settings.json`, which ZeroSub links to the main one. Never write into
   those homes: per-home copies are how a hook silently stops reaching seat sessions (2026-11-10).

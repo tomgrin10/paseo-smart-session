@@ -2,3 +2,4 @@
 - What moves is the history from before an agent's last compaction, into a full backup beside its transcript. The agent keeps its id, its session and everything it knows.
 - The backup is checked before anything changes and is never deleted, so those transcripts take about twice the disk.
 - Each moved agent is listed under Chat history with Restore, which puts the full history back at its next load. Its chat gets one row saying where the older history went.
+- A second Smart Session loaded against another Paseo home (a test setup sharing your Claude settings) no longer removes the main install's Claude Code hooks.

@@ -40,7 +40,7 @@ import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { PLUGIN_VERSION } from "../shared/version.ts";
-import { complete, pointerHealthy, pointShimsAt } from "./hook-path.ts";
+import { complete, pointerHealthy, pointShimsAt, shimDir } from "./hook-path.ts";
 import { readSettings } from "./settings.ts";
 import { brokenHomeLinks, describeHomeLinks } from "./settings-links.ts";
 
@@ -211,10 +211,22 @@ export async function resolvePluginDir(options: { version?: string } = {}): Prom
   return fallback;
 }
 
-/** Whether a hook command is one of ours, wherever it was installed from. */
-function isOurs(command: unknown): boolean {
+/** The marker of a command that runs a Smart Session shim in some Paseo home's data directory. */
+const SHIM_MARKER = "/plugin-data/smart-session/hooks/";
+
+/**
+ * Whether a hook command is one of ours, wherever it was installed from. With `own` (this load's
+ * shim directory), a shim in another Paseo home's data directory is that home's, not ours: a second
+ * install against a sandbox PASEO_HOME shares `~/.claude/settings.json` with the real one, and once
+ * stripped the real install's hooks as its own (2026-11-17, a harness load with `installHooks` off).
+ */
+function isOurs(command: unknown, own?: string | null): boolean {
   if (typeof command !== "string") return false;
-  return OUR_SCRIPTS.some((script) => command.includes(`hooks/${script}`));
+  if (!OUR_SCRIPTS.some((script) => command.includes(`hooks/${script}`))) return false;
+  if (typeof own !== "string" || !command.includes(SHIM_MARKER)) return true;
+  // The whole path, from its opening quote or space: one home's path can end another's ("/a/paseo" in "/b/a/paseo").
+  const dir = `${own.replace(/\/+$/, "")}/`;
+  return command.startsWith(dir) || ["'", '"', " "].some((before) => command.includes(`${before}${dir}`));
 }
 
 /** A shell word, single-quoted. */
@@ -238,14 +250,14 @@ export function commandFor(shims: string, script: string): string {
  * directory or renamed a script leaves nothing stale behind — and so the manual
  * entries an early adopter added by hand are adopted rather than duplicated.
  */
-export function reconcile(existing: HookMap, shims: string | null, features: HookFeatures = ALL_FEATURES): HookMap {
+export function reconcile(existing: HookMap, shims: string | null, features: HookFeatures = ALL_FEATURES, own?: string | null): HookMap {
   const next: HookMap = {};
 
   for (const [event, groups] of Object.entries(existing)) {
     const kept = (Array.isArray(groups) ? groups : [])
       .map((group) => ({
         ...group,
-        hooks: (group.hooks ?? []).filter((hook) => !isOurs(hook.command)),
+        hooks: (group.hooks ?? []).filter((hook) => !isOurs(hook.command, own)),
       }))
       // A matcher group we emptied was only ever there for us.
       .filter((group) => (group.hooks ?? []).length > 0);
@@ -408,7 +420,7 @@ async function reconcileFile(path: string, shims: string | null, features: HookF
   }
 
   const before = (parsed.hooks ?? {}) as HookMap;
-  const after = reconcile(before, shims, features);
+  const after = reconcile(before, shims, features, shimDir());
   const merged = { ...parsed, hooks: after };
   if (Object.keys(after).length === 0) delete (merged as { hooks?: unknown }).hooks;
 
