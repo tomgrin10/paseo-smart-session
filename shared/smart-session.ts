@@ -364,6 +364,11 @@ export const historyShedStatus = defineRpc({
     enabled: z.boolean(),
     /** Plan files that can't be read; those agents are left alone until the file is fixed or removed. */
     unreadable: z.array(z.object({ agentId: z.string(), file: z.string() })),
+    /**
+     * Second names beside a transcript (`.shed-*.orig` / `.new`, `.restore-*`) a stopped move or a writer still
+     * holding a file left. The next load of that agent finishes them; a canary checks this list is empty first.
+     */
+    leftovers: z.array(z.object({ agentId: z.string().nullable(), planId: z.string(), file: z.string(), size: z.number() })),
     plans: z.array(z.object({
       agentId: z.string(),
       title: z.string().nullable(),
@@ -376,6 +381,8 @@ export const historyShedStatus = defineRpc({
       committedAt: z.string().nullable(),
       restoredAt: z.string().nullable(),
       restoreRequested: z.boolean(),
+      /** A rollback a kill interrupted, finished at the agent's next load. */
+      rollbackPending: z.boolean(),
     })),
   }),
 });

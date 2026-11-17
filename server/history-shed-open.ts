@@ -7,7 +7,9 @@
  * - One piece of work per agent at a time. An open that arrives while an earlier one for the same agent
  *   is still working (Paseo gave up on it) stops that one, waits for it, and changes nothing itself.
  * - After an open Paseo canceled, the next open leaves the files alone; the one after may commit.
- * - A restore the person asked for runs whatever the setting says; only a commit needs it on.
+ * - Off means off: with the setting off an open reads no transcript and moves no subagent. It only runs a
+ *   restore the person asked for, and finishes a commit, restore or rollback a kill interrupted (stat of
+ *   its second names says so), so no line is stranded; even then no subagent moves.
  * - Never throws: a failing open hook fails the agent's open.
  */
 import {
@@ -15,6 +17,7 @@ import {
   commit,
   logRun,
   markOverrun,
+  needsRecovery,
   type OpenKind,
   openIsSafe,
   readPlans,
@@ -65,7 +68,9 @@ export function openHandler(deps: OpenDeps) {
       return;
     }
     if (signal.aborted || now() > deadline) return;
-    await settle(env, newest);
+    const on = (await deps.settings()).shedHistory;
+    if (!on && !needsRecovery(newest) && !newest.restoreRequested) return;
+    if (on || needsRecovery(newest)) await settle(env, newest, { moveSubagents: on });
     const fresh = await readPlans(env, request.agentId);
     const plan = fresh.plans.find((p) => p.state !== "discarded");
     if (!plan) return;
@@ -77,7 +82,7 @@ export function openHandler(deps: OpenDeps) {
       }
       return;
     }
-    if (!(await deps.settings()).shedHistory) return;
+    if (!on) return;
     if (plan.state !== "prepared") {
       // A commit whose process died before its chat row: add the row now.
       const missing = await unnoted(env, request.agentId);
