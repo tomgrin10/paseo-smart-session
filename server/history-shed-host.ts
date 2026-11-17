@@ -140,9 +140,10 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
   /** One chat row once the agent is open: "Older history moved to <folder>". Best effort, retried for a minute. */
   const noteLater = (plan: ShedPlan) => {
     let tries = 0;
+    let lastError = "";
     const attempt = async () => {
       if (stopped) return;
-      if (++tries > 30) { await logRun(shedEnv(), { event: "note-failed", agentId: plan.agentId }); return; }
+      if (++tries > 30) { await logRun(shedEnv(), { event: "note-failed", agentId: plan.agentId, error: lastError }); return; }
       try {
         await (await hostApi()).agents.ref(plan.agentId).timeline.append({
           type: "plugin",
@@ -151,7 +152,10 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
           version: 1,
           data: { at: plan.committedAt ?? new Date().toISOString(), from: plan.original.size, to: plan.cut.newSize, backupDir: plan.backupDir },
         });
-      } catch {
+        await logRun(shedEnv(), { event: "noted", agentId: plan.agentId, tries });
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        if (tries === 1) await logRun(shedEnv(), { event: "note-retry", agentId: plan.agentId, error: lastError });
         setTimeout(() => void attempt(), 2_000).unref?.();
       }
     };
