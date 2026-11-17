@@ -1,4 +1,3 @@
 - Moving old history aside finishes an undo that was stopped partway at the agent's next load, so a line written during the change is never left in a hidden file.
 - With Move old history aside off, opening an agent no longer reads its transcript or moves subagent files, apart from a restore you asked for or finishing a change that was stopped.
 - Settings → Smart Session → Chat history lists leftover files beside a transcript, if a stopped change left any.
-- A second Smart Session sharing the same Claude Code settings file only ever changes its own hook entries there.
