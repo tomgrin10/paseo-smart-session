@@ -1214,9 +1214,9 @@ async function restoreLocked(env: ShedEnv, plan: ShedPlan, deadline: number, sig
       return { ok: false, why: "late-write", plan };
     }
     await dropSecondName(kept!, current);
-    const after = await stampFile(plan.path);
-    if (after.sha256 !== restoredSha) return { ok: false, why: "error:restored file differs", plan };
-    await finishRestore(env, plan, { size: after.size, appended, keptCurrentAs: basename(before) });
+    // By prefix: Claude may already have appended to the restored file.
+    if ((await prefixSha(plan.path, restored.size)) !== restoredSha) return { ok: false, why: "error:restored file differs", plan };
+    await finishRestore(env, plan, { size: restored.size, appended, keptCurrentAs: basename(before) });
     return { ok: true, plan };
   } catch (error) {
     await logRun(env, { event: "error", stage: "restore", agentId: plan.agentId, error: message(error) });
