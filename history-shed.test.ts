@@ -879,3 +879,23 @@ test("a requested restore runs at the next open even with moving history turned 
   await rm(w.root, { recursive: true });
   await rm(w2.root, { recursive: true });
 });
+
+test("a line Claude appends to the restored file right after the rename is fine: the restore still completes", async () => {
+  const w = await world();
+  const original = await readFile(w.transcript);
+  assert.ok((await commit(w.env, await prepared(w), FAR())).ok);
+  const shedNow = await readFile(w.transcript);
+  // Written through the path after the rename, so into the restored file (found by the real-process race check).
+  const env: ShedEnv = { ...w.env, step: async (name) => { if (name === "restore:after-rename") await appendFile(w.transcript, LINE); } };
+  const out = await restore(env, (await readPlan(w.env, w.agentId))!, FAR());
+  assert.ok(out.ok, out.ok ? "" : out.why);
+  assert.ok((await readFile(w.transcript)).equals(Buffer.concat([original, shedNow.subarray((await agentPlansOf(w))[0]!.cut.newSize), Buffer.from(LINE)])));
+  assert.equal((await readPlan(w.env, w.agentId))?.state, "restored");
+  await rm(w.root, { recursive: true });
+});
+
+async function agentPlansOf(w: World) {
+  const { agentPlans } = await import("./server/history-shed.ts");
+  return agentPlans(w.env, w.agentId);
+}
+
