@@ -79,7 +79,7 @@ export function buildFixture(options: FixtureOptions = {}): Fixture {
         sub.push(JSON.stringify({ parentUuid: p, ...base, isSidechain: true, agentId, type: k % 2 ? "assistant" : "user", message: { role: k % 2 ? "assistant" : "user", content: filler(80) }, uuid, timestamp: ts() }));
         p = uuid;
       }
-      subagents[`agent-${agentId}.jsonl`] = { lines: sub, meta: JSON.stringify({ agentType: "general-purpose", description: `Subagent ${++subagentCount}` }) };
+      subagents[`agent-${agentId}.jsonl`] = { lines: sub, meta: JSON.stringify({ agentType: "general-purpose", description: `Subagent ${++subagentCount}`, toolUseId: toolId }) };
       // Old-style sidechain record in the main file too.
       push({ parentUuid: null, ...base, isSidechain: true, agentId, type: "user", message: { role: "user", content: "subagent prompt" }, uuid: randomUUID(), timestamp: ts() });
     }

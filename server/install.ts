@@ -33,6 +33,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, copyFile, mkdir, readFile, readdir, readlink, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -114,6 +115,8 @@ export interface InstallReport {
   readonly error: string | null;
   /** ZeroSub account homes whose settings.json no longer links to this one (read-only check). */
   readonly homes?: { accountId: string; problem: "copy" | "elsewhere" | "missing"; line: string }[];
+  /** Another Paseo home's shim directory whose hooks this settings file holds: left to that home, untouched. */
+  readonly managedBy?: string;
 }
 
 const claudeDir = (): string => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
@@ -229,6 +232,28 @@ function isOurs(command: unknown, own?: string | null): boolean {
   return command.startsWith(dir) || ["'", '"', " "].some((before) => command.includes(`${before}${dir}`));
 }
 
+/** The shim directory a Smart Session hook command runs from, when it names one in a Paseo home's data directory. */
+function shimDirOf(command: unknown): string | null {
+  if (typeof command !== "string" || !OUR_SCRIPTS.some((script) => command.includes(`hooks/${script}`))) return null;
+  const match = /'([^']*?\/plugin-data\/smart-session\/hooks)\//.exec(command) ?? /(?:^|[\s"])(\/[^\s'"]*\/plugin-data\/smart-session\/hooks)\//.exec(command);
+  return match ? match[1]! : null;
+}
+
+/** The other, still existing Paseo home whose Smart Session hooks this settings file holds, if any. */
+export function otherHome(existing: HookMap, own: string | null | undefined, alive: (shimDir: string) => boolean): string | null {
+  const ownDir = typeof own === "string" ? own.replace(/\/+$/, "") : null;
+  if (ownDir === null) return null;
+  for (const groups of Object.values(existing)) {
+    for (const group of Array.isArray(groups) ? groups : []) {
+      for (const hook of group.hooks ?? []) {
+        const dir = shimDirOf(hook.command);
+        if (dir !== null && dir !== ownDir && alive(dir)) return dir;
+      }
+    }
+  }
+  return null;
+}
+
 /** A shell word, single-quoted. */
 function quote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
@@ -250,14 +275,29 @@ export function commandFor(shims: string, script: string): string {
  * directory or renamed a script leaves nothing stale behind — and so the manual
  * entries an early adopter added by hand are adopted rather than duplicated.
  */
-export function reconcile(existing: HookMap, shims: string | null, features: HookFeatures = ALL_FEATURES, own?: string | null): HookMap {
+export function reconcile(
+  existing: HookMap,
+  shims: string | null,
+  features: HookFeatures = ALL_FEATURES,
+  own?: string | null,
+  alive: (shimDir: string) => boolean = () => true,
+): HookMap {
   const next: HookMap = {};
+  // Another Paseo home's hooks are in this file, and that home still exists: the file is that home's to manage.
+  // A load against it (a sandbox sharing ~/.claude) neither adds its own entries nor removes any. Entries of a
+  // home that no longer exists are stale, and the load that owns the file replaces them with its own.
+  if (otherHome(existing, own, alive) !== null) return existing;
+  const ownDir = typeof own === "string" ? own.replace(/\/+$/, "") : null;
+  const stale = (command: unknown) => {
+    const dir = shimDirOf(command);
+    return dir !== null && ownDir !== null && dir !== ownDir;
+  };
 
   for (const [event, groups] of Object.entries(existing)) {
     const kept = (Array.isArray(groups) ? groups : [])
       .map((group) => ({
         ...group,
-        hooks: (group.hooks ?? []).filter((hook) => !isOurs(hook.command, own)),
+        hooks: (group.hooks ?? []).filter((hook) => !isOurs(hook.command, own) && !stale(hook.command)),
       }))
       // A matcher group we emptied was only ever there for us.
       .filter((group) => (group.hooks ?? []).length > 0);
@@ -403,7 +443,7 @@ async function ensureMcp(pluginDir: string): Promise<InstallReport["mcp"]> {
  * Reconciles one Claude Code settings file: only our entries change, a malformed file is left
  * alone, and an unchanged file is not written. `create`: write the file when it doesn't exist.
  */
-async function reconcileFile(path: string, shims: string | null, features: HookFeatures, create: boolean): Promise<{ changed: boolean; error: string | null }> {
+async function reconcileFile(path: string, shims: string | null, features: HookFeatures, create: boolean): Promise<{ changed: boolean; error: string | null; managedBy?: string }> {
   let raw = "";
   let parsed: Record<string, unknown> = {};
   try {
@@ -420,7 +460,10 @@ async function reconcileFile(path: string, shims: string | null, features: HookF
   }
 
   const before = (parsed.hooks ?? {}) as HookMap;
-  const after = reconcile(before, shims, features, shimDir());
+  const alive = (dir: string) => existsSync(dir);
+  const managedBy = otherHome(before, shimDir(), alive);
+  if (managedBy !== null) return { changed: false, error: null, managedBy };
+  const after = reconcile(before, shims, features, shimDir(), alive);
   const merged = { ...parsed, hooks: after };
   if (Object.keys(after).length === 0) delete (merged as { hooks?: unknown }).hooks;
 
@@ -494,6 +537,10 @@ export function install(options: { registerMcp?: boolean } = {}): Promise<Instal
       return { pluginDir, settingsPath: path, changed: false, hooks: [], mcp: "skipped", error: main.error };
     }
     const changed = main.changed;
+    if (main.managedBy !== undefined) {
+      // Another Paseo home installed these hooks and still exists (this load is a sandbox sharing the file).
+      return { pluginDir, settingsPath: path, changed: false, hooks: [], mcp: "skipped", error: null, managedBy: main.managedBy };
+    }
 
     const lines = pluginDir === null
       ? []

@@ -20,10 +20,18 @@
 ## The data is the point
 
 - **Invariant: Smart Session never loses session data, and changes only the files it means to.** Before it changes a
-  Claude transcript it writes a full copy, checks the copy's sha256, and never deletes a copy of a change that happened;
-  only the user removes one. The only files that may change are the transcript resolved from the agent's persisted
-  session id and the subagent files that were backed up with it. Ambiguity (two records, two transcripts) means no
-  change, and nothing is ever deleted by pattern. `history-shed.test.ts` fingerprints every file around each step.
+  Claude transcript it writes a full copy, checks the copy's sha256, and never deletes a backup, used or not; only the
+  user removes one (a source scan in `history-shed.test.ts` holds every `unlink` to temp names, the lock, second
+  names of one file, and subagent files verified in the backup; there is no `rm`). The only files that may change are
+  the transcript resolved from the agent's persisted session id and the subagent files that were backed up with it.
+  Ambiguity (two records, two transcripts, an unreadable plan) means no change, and nothing is ever deleted by pattern.
+  `history-shed.test.ts` fingerprints every file around each step.
+- **Invariant: a line written at any moment of a shed or a restore is in the result, or the change is undone with the
+  line in place.** A writer the holder scan can't see (a terminal `claude -c`, which opens the file only while it
+  writes) may append at any point. The original stays open and keeps a second name until the swap proves quiet; the
+  size, mtime and inode check is the last thing before the rename, with no `await` between them; after the rename the
+  old file must have no holder and no new byte, or it goes back under its name and anything written to the new file is
+  appended after it. Tested by writing through an fd opened before the commit at every step.
 - `$PASEO_HOME/plugin-data/smart-session/` holds the only copy of plan-utilization history that
   exists anywhere. `/usage` is a snapshot, Paseo's quota fetcher keeps no store, and Claude Code
   overwrites its cache in place — a percentage of a plan limit cannot be reconstructed after the
@@ -373,6 +381,16 @@ with `RELOAD_GATE_BYPASS="<Tom's words>, <when>"`. Harness daemons (temp `PASEO_
 
 Clean logs means no `[paseo]` error lines and no stack traces around the reload.
 
+**A harness run never shares a live login: no symlink, hard link, copy or env var.** Claude keeps its refresh lock
+in its config dir, so two processes with different `CLAUDE_CONFIG_DIR`s that share one login can refresh at the same
+time. The refresh token is single-use, so one of them burns it and the live session is signed out. This happened on
+2026-11-17. A temp config dir with `.credentials.json` symlinked in: the harness Claude refreshed, wrote its own file
+over the link, and the real file was left with a dead token. A live run (real Claude or Codex agents) waits for a
+harness-only login that Tom makes (e.g. `claude setup-token`) and approves first.
+`~/paseo-harness/tools/no-shared-login.mjs` refuses a run whose temp dirs hold a link to, a hard link of, or a
+possible copy of a real login file, or whose env carries a login. It uses stat only and never opens a login file.
+Never read a login file's contents, not even to check this.
+
 ### 3. Backend, over the protocol
 
 `probe.mjs` calls any plugin RPC without a UI, against the running daemon:
@@ -529,6 +547,10 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
 - A hook is ours only when it runs a shim in this load's own data directory (or an old install's `hooks/`). Another
   Paseo home's shims are that home's: a sandbox load (temp `PASEO_HOME`, real `HOME`) once stripped the real
   install's hooks from `~/.claude/settings.json` with `installHooks` off (2026-11-17). `install.test.ts` pins it.
+- **Invariant: a settings file holding another, still existing Paseo home's Smart Session hooks is that home's.** A
+  load against it adds nothing and removes nothing (`otherHome`; the report says `managedBy`); 3.8.0-beta.1 left a
+  sandbox's 7 entries beside the real 7. Entries whose shim folder no longer exists are stale, and the owning load
+  replaces them with its own.
 - Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.
 - A seat session reads its ZeroSub home's `settings.json`, which ZeroSub links to the main one. Never write into
   those homes: per-home copies are how a hook silently stops reaching seat sessions (2026-11-10).
@@ -552,21 +574,41 @@ records before that point move into a backup and the transcript keeps the rest, 
   `preservedMessages`. Only chain and per-request types move (`MOVABLE_TYPES`); metadata records before the cut stay.
   Refuses with no boundary, a boundary as the last line, a broken chain, or less than 1 MB to move.
 - **Two phases.** `prepare` (agent closed, 5 s after `agent.closed` and in a 15 min sweep over closed agents; never
-  wakes one) indexes, plans, and writes `<project>/<sid>/shed/<stamp>/transcript.jsonl` with a verified sha256, plus
-  subagent files older than the boundary. `commit` runs only in `agent.session_open` for a resume, import or
-  history view (`openIsSafe`; never on create or refresh, where the old runtime is still alive), within 15 s of the
-  30 s hook budget, and never throws (a throwing open hook fails the open).
-- **Commit checks, under a lock file in the backup folder**: the resolved path is the planned one; no process holds the
-  file open or carries the session id on its command line (Linux `/proc`; elsewhere it refuses); the file still
-  matches the original stamp (size, mtime, inode, sha256); the backup and every moved subagent's backup still verify;
-  no subagent file changed or appeared. It writes a temp file, checks its sha256, stats and checks holders again,
-  renames, and checks the new file. Subagent sources are removed one by one, each after re-verifying its copy.
-- **Crash recovery** (`settle`) reads the file to decide: the planned result means finish; the original means try again
-  later; the original plus new lines means the plan is stale and its unused copy is removed by exact name (never when a
-  commit happened). Anything else is left alone. `env.step` is the crash seam the tests use at every step.
-- **Restore** (settings, per agent) runs at the agent's next safe open: it copies the current file aside first, writes
-  backup plus everything appended since, verifies, renames, and copies moved subagents back. A restored agent is not
-  shed again.
+  wakes one; refuses while anything holds the file) indexes, plans, and writes a verified full copy to
+  `$PASEO_HOME/plugin-data/smart-session/history-shed/backups/<project folder>-<hash>/<sid>/<plan>/`, plus subagent
+  files older than the boundary. Backups never go under `~/.claude/projects`: Claude Code's `cleanupPeriodDays`, a
+  removed ZeroSub account home and recursive `.jsonl` scanners all reach there. 3.8.0-beta.1 kept them at
+  `<project>/<sid>/shed/`; `migrateBackups` copies those over, verifies each file, repoints the plan, and leaves the old
+  folder as it was. `commit` runs only in `agent.session_open` for a resume, import or history view (`openIsSafe`;
+  never on create or refresh, where the old runtime is still alive).
+- **Invariant: a subagent the kept history names stays.** A subagent file leaves `subagents/` only when its newest
+  record predates the boundary and neither its agent id nor its `.meta.json` `toolUseId` occurs in the kept bytes.
+- **The open hook** (`server/history-shed-open.ts`): Paseo gives a hook 30 s, then sends `hook.cancel` (the hook's
+  `signal` aborts) and fails the open. The budget (12 s before any rename) counts from the hook's entry, and the
+  signal is checked up to the rename. One piece of work per agent: an open that arrives while an earlier one is still
+  working aborts it, waits, and changes nothing. After a canceled open (`overranAt`), the next open leaves the files
+  alone. A requested restore runs whatever `shedHistory` says; only a commit needs it on. It never throws.
+- **Commit checks, under a lock file beside the plan**: no unreadable plan for the agent; the resolved path is the
+  planned one; no process holds the file open or carries the session id on its command line (Linux `/proc`; elsewhere
+  it refuses); the open file matches the original stamp (size, mtime, inode, sha256); the backup and every moved
+  subagent's backup still verify; no subagent file changed or appeared. It writes a temp file with the transcript's
+  mode from the open file, checks its sha256, checks holders again, saves the plan as `committing`, links the
+  original to `.<sid>.jsonl.shed-<plan>.orig`, then does the last look and the rename synchronously (`swapNow`).
+  After the rename, holders of the old inode (matched by inode through `/proc/*/fd`) and its size decide: quiet
+  drops the second name, otherwise `rollBack`. Subagent sources go one by one, each after re-verifying its copy.
+- **Crash recovery** (`settle`) reads the files to decide: two names of one file lose the second; the planned result
+  (by prefix: Claude may have appended since) means finish, or roll back if the old file was written to; the original
+  means try again later; the original plus new lines discards the plan and keeps its backup. Anything else is left
+  alone. A restore interrupted after its rename is finished the same way. `env.step` is the crash seam at every step.
+- **Bounded, since nothing is deleted:** an agent with two unused backups (plans its transcript moved past before the
+  commit) is not prepared again (`unused-backups`) until the user removes one.
+- **Restore** (settings, per agent; also a `committing` plan) runs at the agent's next safe open: it copies the current
+  file aside first, writes backup plus everything appended since, and swaps it in exactly as a commit does, last look
+  and rollback included. Moved subagents are copied back. A restored agent is not shed again. Every check after a
+  rename is by prefix: Claude, or a stray writer, may append to the new file at once (`race-check.mjs` in the harness
+  found restore comparing the whole file).
+- Plans are written to a temp name, synced, renamed, and the folder synced; backup folders are synced too. A plan file
+  that doesn't parse is logged (`plan-unreadable`), listed in the status RPC, and its agent is left alone.
 - The gain is load time and chat length. Disk use goes up by the moved part, because the copy stays.
 - Runs log to `history-shed/runs-YYYY-MM.jsonl`, plans live in `history-shed/plans/<agentId>/`.
 - The chat row goes through the host API only an RPC handler receives (the plugin calls its own status RPC once, as the

@@ -121,9 +121,9 @@ On a phone, the pill opens as a sheet and every screen fits one column.
 A Claude agent's chat loads its whole transcript, so an agent that has run for weeks opens slower after every compaction and scrolls back through history Claude itself no longer reads. **Move old history aside** (**off by default**) fixes that for Claude agents past 50 MB or 10 compactions:
 
 - **What moves.** Everything before the agent's last compaction. Claude only reads what comes after it, so the agent keeps its id, its session and everything it currently knows.
-- **A full copy first.** Before the transcript changes, a full copy goes to a `shed` folder beside it and is checked byte for byte. Smart Session never deletes it, so those transcripts take about twice the disk. Remove a copy yourself once you're sure.
-- **When.** The copy is made while the agent is closed. The change happens the next time the agent loads or its chat opens, and only if nothing has the transcript open and nothing changed since. Otherwise it's left as it is and tried later.
-- **Restore.** **Settings → Smart Session → Chat history** lists each agent it moved, with **Restore**. The full history, plus anything said since, goes back at the agent's next load, and that agent is left alone from then on.
+- **A full copy first.** Before the transcript changes, a full copy goes to Smart Session's data folder (`~/.paseo/plugin-data/smart-session/history-shed/backups/`) and is checked byte for byte. Smart Session never deletes a copy, even one it ended up not needing, so those transcripts take about twice the disk. Remove a copy yourself once you're sure. An agent with two unused copies isn't copied again until you remove one.
+- **When.** The copy is made while the agent is closed. The change happens the next time the agent loads or its chat opens, and only if nothing has the transcript open and nothing changed since. Anything written to the transcript while it changes is kept: if the old file was written to after the last check, it's put back as it was. Otherwise it's left as it is and tried later.
+- **Restore.** **Settings → Smart Session → Chat history** lists each agent it moved, with **Restore**. The full history, plus anything said since, goes back at the agent's next load, even if you've turned the setting off, and that agent is left alone from then on.
 - **What you get.** A shorter chat that opens faster. In a test, a 61 MB transcript's chat went from 315 rows and 1.8 s to load to 9 rows in 0.1 s. It doesn't cut the daemon's memory much.
 - **In the chat.** One row says where the older history went. Paseo keeps rows like it only until the daemon restarts; the list under **Chat history** stays.
 
@@ -149,7 +149,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | Artifacts | Publish artifacts as the main account | On | With ZeroSub: pages from sessions on other Claude accounts are published on the main one |
 | | Publish as | Main account | Shown with more than one Claude account |
 | | Use the main account's Extra usage when it's out | Off | While the account pages are published as is out of usage, publish on its Extra usage (billed). Off, publishing stops with the reason |
-| Chat history | Move old history aside | Off | Claude agents past 50 MB or 10 compactions: history from before the last compaction moves to a full backup beside the transcript at the agent's next load. Each moved agent has **Restore** |
+| Chat history | Move old history aside | Off | Claude agents past 50 MB or 10 compactions: history from before the last compaction moves to a full backup in Smart Session's data folder at the agent's next load. Each moved agent has **Restore** |
 | Display | Sidebar row | On | |
 | | Pill on every session | On | A paused session keeps its pill either way |
 | | Replace Paseo's Claude usage card | On | Paseo 0.16+, web and desktop |

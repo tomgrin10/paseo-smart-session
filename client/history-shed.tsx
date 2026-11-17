@@ -22,16 +22,20 @@ export function HistoryShedSection({ enabled, thresholds, saving, onToggle }: {
   const status = useQuery({ queryKey: ["smart-session", "history-shed"], queryFn: () => read({}), refetchInterval: 5 * 60_000 });
   const plans = (status.data?.plans ?? []).filter((p) => p.state !== "discarded");
   const hint = enabled
-    ? `On. When an agent past ${thresholds.minMb} MB or ${thresholds.minCompactions} compactions next loads, its history from before the last compaction moves to a backup beside its transcript. A full copy comes first and is never deleted, so those transcripts take about twice the disk. The agent keeps its id and everything it knows.`
+    ? `On. When an agent past ${thresholds.minMb} MB or ${thresholds.minCompactions} compactions next loads, its history from before the last compaction moves to a backup in Smart Session's data folder. A full copy comes first and is never deleted, so those transcripts take about twice the disk. The agent keeps its id and everything it knows.`
     : "Off. Transcripts stay as they are.";
   return (
     <SettingsSection title="Chat history" info="A Claude agent's chat loads its whole transcript, so a long-running agent opens slower after every compaction. Claude no longer reads what came before the last compaction.">
       <SettingsCard>
         <SettingsSwitch label="Move old history aside" hint={hint} value={enabled} disabled={saving}
           onValueChange={(next) => onToggle(next)} />
+        {(status.data?.unreadable ?? []).length > 0
+          ? <SettingsAction label="Unreadable plans" actionLabel="" disabled onPress={() => undefined}
+            hint={`${status.data!.unreadable.length === 1 ? "A plan file" : `${status.data!.unreadable.length} plan files`} in Smart Session's data folder can't be read, so ${status.data!.unreadable.length === 1 ? "that agent is" : "those agents are"} left as they are. Fix or remove ${status.data!.unreadable.length === 1 ? "it" : "them"} under history-shed/plans.`} />
+          : null}
         {plans.map((plan) => {
           const name = plan.title ?? `Agent ${plan.agentId.slice(0, 8)}`;
-          const line = plan.state === "committed"
+          const line = plan.state === "committed" || plan.state === "committing" || plan.state === "restoring"
             ? plan.restoreRequested ? "Full history goes back at its next load." : `${mb(plan.from)} → ${mb(plan.to)} on ${day(plan.committedAt)}. Backup: ${plan.backupDir}`
             : plan.state === "restored" ? `Full history restored on ${day(plan.restoredAt)}. Left as it is from now on.`
               : `Ready: ${mb(plan.from)} → ${mb(plan.to)} at its next load.`;
