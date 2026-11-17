@@ -594,7 +594,9 @@ records before that point move into a backup and the transcript keeps the rest, 
   commit) is not prepared again (`unused-backups`) until the user removes one.
 - **Restore** (settings, per agent; also a `committing` plan) runs at the agent's next safe open: it copies the current
   file aside first, writes backup plus everything appended since, and swaps it in exactly as a commit does, last look
-  and rollback included. Moved subagents are copied back. A restored agent is not shed again.
+  and rollback included. Moved subagents are copied back. A restored agent is not shed again. Every check after a
+  rename is by prefix: Claude, or a stray writer, may append to the new file at once (`race-check.mjs` in the harness
+  found restore comparing the whole file).
 - Plans are written to a temp name, synced, renamed, and the folder synced; backup folders are synced too. A plan file
   that doesn't parse is logged (`plan-unreadable`), listed in the status RPC, and its agent is left alone.
 - The gain is load time and chat length. Disk use goes up by the moved part, because the copy stays.
