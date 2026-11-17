@@ -33,11 +33,11 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, copyFile, mkdir, readFile, readdir, readlink, realpath, rename, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { PLUGIN_VERSION } from "../shared/version.ts";
@@ -115,10 +115,11 @@ export interface InstallReport {
   readonly error: string | null;
   /** ZeroSub account homes whose settings.json no longer links to this one (read-only check). */
   readonly homes?: { accountId: string; problem: "copy" | "elsewhere" | "missing"; line: string }[];
-  /** Another Paseo home's shim directory whose hooks this settings file holds: left to that home, untouched. */
+  /** This load isn't the default Paseo home and the file isn't in its own HOME or config dir: nothing of its was added. */
   readonly managedBy?: string;
 }
 
+const paseoHomeDir = (): string => process.env.PASEO_HOME ?? join(homedir(), ".paseo");
 const claudeDir = (): string => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 const settingsPath = (): string => join(claudeDir(), "settings.json");
 
@@ -239,36 +240,26 @@ function shimDirOf(command: unknown): string | null {
   return match ? match[1]! : null;
 }
 
-/** The shim directories of other Paseo homes whose Smart Session hooks this settings file holds. */
-function foreignDirs(existing: HookMap, ownDir: string): string[] {
-  const dirs = new Set<string>();
-  for (const groups of Object.values(existing)) {
-    for (const group of Array.isArray(groups) ? groups : []) {
-      for (const hook of group.hooks ?? []) {
-        const dir = shimDirOf(hook.command);
-        if (dir !== null && dir !== ownDir) dirs.add(dir);
-      }
-    }
-  }
-  return [...dirs];
-}
+const realOr = (path: string): string => { try { return realpathSync(path); } catch { return resolve(path); } };
+const inside = (path: string, dir: string): boolean => path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 
-/** Whether this settings file holds any hook entry of this home's own shims. */
-function holdsOwn(existing: HookMap, ownDir: string): boolean {
-  return Object.values(existing).some((groups) => (Array.isArray(groups) ? groups : []).some((group) => (group.hooks ?? []).some((hook) => shimDirOf(hook.command) === ownDir)));
+/** The person's own home from the account database, not `$HOME` (a sandbox may point that elsewhere). */
+function userHome(): string {
+  try { return userInfo().homedir; } catch { return homedir(); }
 }
 
 /**
- * The other Paseo home this settings file belongs to, if any: it holds that home's Smart Session hooks and
- * none of this one's. Such a file gets nothing added and nothing removed by this home. `alive` only says, in
- * the report, whether that home still exists; a home that is gone keeps its entries too (guarded by
- * `[ -f ]`, they run nothing) because they are never another home's to remove.
+ * Whether this load may write `settingsPath`. The default Paseo home (the person's `~/.paseo`) always manages
+ * its own entries in the Claude settings it naturally uses. Any other home (a sandbox) writes only a settings
+ * file inside its own `HOME` or `CLAUDE_CONFIG_DIR`, and never the person's real `~/.claude`, through a link or not.
  */
-export function otherHome(existing: HookMap, own: string | null | undefined, alive: (shimDir: string) => boolean = () => true): string | null {
-  const ownDir = typeof own === "string" ? own.replace(/\/+$/, "") : null;
-  if (ownDir === null || holdsOwn(existing, ownDir)) return null;
-  const dirs = foreignDirs(existing, ownDir);
-  return dirs.find(alive) ?? dirs[0] ?? null;
+export function ownsSettings(settingsPath: string, where: { paseoHome: string; home?: string; configDir?: string; userHome?: string }): boolean {
+  const person = where.userHome ?? userHome();
+  if (realOr(where.paseoHome) === realOr(join(person, ".paseo"))) return true;
+  // Where the file is named (a dotfiles link may point elsewhere), and where it really is (never the person's own).
+  if (inside(realOr(settingsPath), realOr(join(person, ".claude")))) return false;
+  const named = join(realOr(dirname(settingsPath)), basename(settingsPath));
+  return [where.home, where.configDir].some((dir) => typeof dir === "string" && dir.length > 0 && inside(named, realOr(dir)));
 }
 
 /** A shell word, single-quoted. */
@@ -298,24 +289,29 @@ export function reconcile(
   features: HookFeatures = ALL_FEATURES,
   own?: string | null,
   alive: (shimDir: string) => boolean = () => true,
+  owner = true,
 ): HookMap {
   const next: HookMap = {};
-  // Only this home's own entries ever change. Another home's entries, live or gone, are never removed, and a
-  // file holding another home's entries and none of this one's is that home's: nothing is added there either
-  // (a sandbox sharing ~/.claude). A file holding both (3.8.0-beta.1 left some) is managed by each home for its
-  // own entries only, so neither freezes the other.
-  if (otherHome(existing, own, alive) !== null) return existing;
   const ownDir = typeof own === "string" ? own.replace(/\/+$/, "") : null;
-  const foreign = (command: unknown) => {
+  // A load that doesn't own the file (a sandbox sharing the person's settings) adds nothing and only takes its
+  // own entries back out. The owner manages its own entries whatever else is there, keeps a live home's, and
+  // removes a gone home's (its shim folder no longer exists): it never defers to one.
+  if (!owner) {
+    if (ownDir === null) return existing;
+    shims = null;
+  }
+  const keep = (command: unknown) => {
     const dir = shimDirOf(command);
-    return dir !== null && ownDir !== null && dir !== ownDir;
+    if (dir !== null && ownDir !== null && dir !== ownDir) return !owner || alive(dir);
+    if (!owner) return dir !== ownDir;
+    return !isOurs(command, own);
   };
 
   for (const [event, groups] of Object.entries(existing)) {
     const kept = (Array.isArray(groups) ? groups : [])
       .map((group) => ({
         ...group,
-        hooks: (group.hooks ?? []).filter((hook) => foreign(hook.command) || !isOurs(hook.command, own)),
+        hooks: (group.hooks ?? []).filter((hook) => keep(hook.command)),
       }))
       // A matcher group we emptied was only ever there for us.
       .filter((group) => (group.hooks ?? []).length > 0);
@@ -479,9 +475,8 @@ async function reconcileFile(path: string, shims: string | null, features: HookF
 
   const before = (parsed.hooks ?? {}) as HookMap;
   const alive = (dir: string) => existsSync(dir);
-  const managedBy = otherHome(before, shimDir(), alive);
-  if (managedBy !== null) return { changed: false, error: null, managedBy };
-  const after = reconcile(before, shims, features, shimDir(), alive);
+  const owner = ownsSettings(path, { paseoHome: paseoHomeDir(), home: process.env.HOME, configDir: process.env.CLAUDE_CONFIG_DIR });
+  const after = reconcile(before, shims, features, shimDir(), alive, owner);
   const merged = { ...parsed, hooks: after };
   if (Object.keys(after).length === 0) delete (merged as { hooks?: unknown }).hooks;
 
@@ -491,7 +486,7 @@ async function reconcileFile(path: string, shims: string | null, features: HookF
     if (raw !== "") await backupOnce(path);
     await writeAtomic(path, text);
   }
-  return { changed, error: null };
+  return { changed, error: null, ...(owner ? {} : { managedBy: "the default Paseo home (~/.paseo)" }) };
 }
 
 let tail: Promise<unknown> = Promise.resolve();
@@ -556,7 +551,7 @@ export function install(options: { registerMcp?: boolean } = {}): Promise<Instal
     }
     const changed = main.changed;
     if (main.managedBy !== undefined) {
-      // Another Paseo home installed these hooks and still exists (this load is a sandbox sharing the file).
+      // A sandbox sharing the person's settings: its own entries were taken back out, nothing else changed.
       return { pluginDir, settingsPath: path, changed: false, hooks: [], mcp: "skipped", error: null, managedBy: main.managedBy };
     }
 
