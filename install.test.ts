@@ -234,8 +234,9 @@ test("the default home always manages its own entries; a sandbox never writes th
   // 2. A first-ever sandbox load on a clean file: it isn't the sandbox's file, so nothing is added.
   const clean = { Stop: [{ matcher: "", hooks: [foreign] }] };
   assert.deepEqual(reconcile(clean, sandbox, undefined, sandbox, live, false), clean);
-  // ...and it never touches the real entries, only takes its own back out.
-  assert.deepEqual(reconcile(doubled, sandbox, undefined, sandbox, live, false), real);
+  // ...and it never touches anything: not the real entries, and not its own (3.8.0-beta.4 review: they may be the
+  // working hooks of a custom-home install).
+  assert.deepEqual(reconcile(doubled, sandbox, undefined, sandbox, live, false), doubled);
   assert.deepEqual(reconcile(real, sandbox, undefined, sandbox, gone, false), real);
   // 3. Both: features off removes the real 7, features on brings them back.
   const OFF = { compact: false, publish: false };
@@ -286,7 +287,7 @@ test("which settings file a load may write: the default home its own, a sandbox 
   assert.equal(typeof install.ownsSettings, "function");
   const ownsSettings = install.ownsSettings as (path: string, where: { paseoHome: string; home?: string; configDir?: string; userHome: string }) => boolean;
   const user = mkdtempSync(join(tmpdir(), "owner-user-"));
-  mkdirSync(join(user, ".claude")); mkdirSync(join(user, ".paseo"));
+  mkdirSync(join(user, ".claude")); mkdirSync(join(user, ".paseo", "plugin-data", "smart-session", "hooks"), { recursive: true });
   const real = join(user, ".claude", "settings.json");
   writeFileSync(real, "{}");
   const sandbox = mkdtempSync(join(tmpdir(), "owner-sandbox-"));
@@ -525,4 +526,72 @@ test("turning Smart Compact off removes its hooks and keeps the Artifact hook", 
   const none = await installer.install({ registerMcp: false });
   assert.deepEqual(none.hooks, []);
   assert.deepEqual(events(path), []);
+});
+
+/* -------------------------------------------------------------------------- *
+ * 3.8.0-beta.4 review: a custom PASEO_HOME, and a link to a file not there yet.
+ * -------------------------------------------------------------------------- */
+
+type OwnsSettings = (path: string, where: { paseoHome: string; home?: string; configDir?: string; userHome: string }) => boolean;
+
+test("a custom PASEO_HOME owns the person's settings when the default home has no Smart Session; a link to a missing file is still the real one", async () => {
+  const install = await import("./server/install.ts") as Record<string, unknown>;
+  const ownsSettings = install.ownsSettings as OwnsSettings;
+  const user = mkdtempSync(join(tmpdir(), "owner-user-"));
+  mkdirSync(join(user, ".claude"));
+  const real = join(user, ".claude", "settings.json");
+  writeFileSync(real, "{}");
+  const custom = mkdtempSync(join(tmpdir(), "owner-custom-"));
+  // 1. The single custom-home user: ~/.paseo holds no Smart Session, so the custom home is the owner.
+  assert.equal(ownsSettings(real, { paseoHome: custom, home: user, userHome: user }), true, "the only Smart Session home");
+  mkdirSync(join(user, ".paseo"));
+  assert.equal(ownsSettings(real, { paseoHome: custom, home: user, userHome: user }), true, "an empty ~/.paseo is no Smart Session install");
+  // 2. With Smart Session in the default home, that one owns it.
+  mkdirSync(join(user, ".paseo", "plugin-data", "smart-session", "hooks"), { recursive: true });
+  assert.equal(ownsSettings(real, { paseoHome: custom, home: user, userHome: user }), false, "the default home's");
+  // 3. A sandbox config dir whose settings.json links to the person's, before that file exists.
+  const sandbox = mkdtempSync(join(tmpdir(), "owner-sandbox-"));
+  const config = join(sandbox, "claude");
+  mkdirSync(config);
+  const missing = join(user, ".claude", "not-yet.json");
+  symlinkSync(missing, join(config, "settings.json"));
+  assert.equal(ownsSettings(join(config, "settings.json"), { paseoHome: join(sandbox, "paseo"), home: sandbox, configDir: config, userHome: user }), false, "a dangling link into ~/.claude is the person's file");
+  const relTarget = join(config, "rel-abs.json");
+  symlinkSync(join(user, ".claude", "chain.json"), join(config, "hop.json"));
+  symlinkSync(join(config, "hop.json"), relTarget);
+  assert.equal(ownsSettings(relTarget, { paseoHome: join(sandbox, "paseo"), home: sandbox, configDir: config, userHome: user }), false, "a chain of links ending in ~/.claude");
+});
+
+test("upgrading from 3.7.0 with a custom PASEO_HOME keeps its seven hooks, with or without Smart Session in ~/.paseo", async () => {
+  for (const defaultInUse of [false, true]) {
+    const { paseoHome, pluginDir } = fakeInstall();
+    const user = mkdtempSync(join(tmpdir(), "upgrade-user-"));
+    mkdirSync(join(user, ".claude"));
+    if (defaultInUse) mkdirSync(join(user, ".paseo", "plugin-data", "smart-session", "hooks"), { recursive: true });
+    const shims = join(paseoHome, "plugin-data", "smart-session", "hooks");
+    // What 3.7.0 wrote: the same guarded shim commands, all seven, beside someone else's hook.
+    const v370 = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, shims);
+    const file = join(user, ".claude", "settings.json");
+    writeFileSync(file, JSON.stringify({ model: "opus[1m]", hooks: v370 }, null, 2));
+    const saved = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+    process.env.HOME = user;
+    delete process.env.CLAUDE_CONFIG_DIR;
+    try {
+      process.env.PASEO_HOME = paseoHome;
+      clearSettingsCache();
+      const installer = (await import(`./server/install.ts?upgrade=${user}`)) as Record<string, unknown>;
+      assert.equal(typeof installer.setUserHomeForTest, "function", "a test seam for the person's home");
+      (installer.setUserHomeForTest as (dir: string | null) => void)(user);
+      const report = await (installer.install as (o: { registerMcp: boolean }) => Promise<{ error: string | null; pluginDir: string | null }>)({ registerMcp: false });
+      assert.equal(report.error, null);
+      assert.equal(report.pluginDir, pluginDir);
+      const after = JSON.parse(readFileSync(file, "utf8"));
+      const ours = Object.values(after.hooks as ReturnType<typeof reconcile>).flat().flatMap((g) => g.hooks ?? []).filter((h) => String(h.command).includes(`'${shims}/`));
+      assert.equal(ours.length, 7, `default home in use: ${defaultInUse}`);
+      assert.equal(commandsFor(after.hooks, "Stop").filter((c) => c === foreign.command).length, 1);
+    } finally {
+      process.env.HOME = saved.HOME;
+      if (saved.CLAUDE_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved.CLAUDE_CONFIG_DIR;
+    }
+  }
 });

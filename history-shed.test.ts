@@ -1096,23 +1096,6 @@ test("a rollback killed after its append, before saving it, never appends a line
   await rm(w.root, { recursive: true });
 });
 
-test("a short append (no space left) is cut back to its last whole line, only as far as the rollback's record proves its own", async () => {
-  const w = await world();
-  const stored = await rollbackAtAppend(w);
-  const { savePlanForTest } = await import("./server/history-shed.ts");
-  // The record says where this rollback's append began; half a line of it reached the file.
-  const floor = (await stat(w.transcript)).size;
-  stored.rollback = { ...stored.rollback!, appendFloor: floor } as typeof stored.rollback;
-  await savePlanForTest(w.env, stored);
-  await appendFile(w.transcript, INTO_NEW.slice(0, 20));
-  await settle(w.env, await storedPlan(w, stored.id));
-  const text = (await readFile(w.transcript)).toString();
-  assert.equal(text.split(INTO_NEW).length - 1, 1, "the line once, whole");
-  assert.ok(!text.includes(INTO_NEW.slice(0, 20) + INTO_NEW.slice(0, 20)), "no torn copy left");
-  assert.ok(text.endsWith(INTO_NEW));
-  await rm(w.root, { recursive: true });
-});
-
 test("a torn tail the rollback can't prove its own is never cut: the rollback waits and says so", async () => {
   const w = await world();
   const stored = await rollbackAtAppend(w);
@@ -1121,5 +1104,123 @@ test("a torn tail the rollback can't prove its own is never cut: the rollback wa
   await settle(w.env, await storedPlan(w, stored.id));
   assert.equal((await stat(w.transcript)).size, size, "nothing cut, nothing appended after a torn line");
   assert.ok((await storedPlan(w, stored.id)).rollback, "still under way");
+  await rm(w.root, { recursive: true });
+});
+
+// ---------------------------------------------------------------------------------------------- 3.8.0-beta.4 review
+
+type RequestShed = (env: ShedEnv, agentId: string, options: { session: { provider: string; sessionId: string } | null; closed: boolean }) =>
+  Promise<{ ok: true; plan: ShedPlanLike; reused: boolean } | { ok: false; why: string }>;
+type ShedPlanLike = { id: string; state: string; requested?: boolean; original: { size: number; sha256: string }; cut: { newSize: number }; backupDir: string };
+
+async function requestShedFn(): Promise<RequestShed> {
+  const shed = await import("./server/history-shed.ts") as Record<string, unknown>;
+  assert.equal(typeof shed.requestShed, "function", "requestShed exists");
+  return shed.requestShed as RequestShed;
+}
+
+test("a requested prepare works with the setting off, and only that plan commits at the next open while it is off", async () => {
+  const requestShed = await requestShedFn();
+  const w = await world();
+  const original = await readFile(w.transcript);
+  const session = await persistedSession(w.paseoHome, w.agentId);
+  const out = await requestShed(w.env, w.agentId, { session, closed: true });
+  assert.ok(out.ok, out.ok ? "" : out.why);
+  assert.equal(out.plan.requested, true);
+  assert.equal(out.plan.state, "prepared");
+  assert.equal(out.plan.original.sha256, sha(original));
+  assert.equal(sha(await readFile(join(out.plan.backupDir, "transcript.jsonl"))), sha(original), "the backup is written and verified");
+  const { open, noted } = await opener(w, { shedHistory: false });
+  await open();
+  assert.equal((await readPlan(w.env, w.agentId))?.state, "committed", "a requested plan commits with the setting off");
+  assert.equal((await stat(w.transcript)).size, out.plan.cut.newSize);
+  assert.deepEqual(noted, [out.plan.id]);
+  // A sweep plan, with the setting off, still never commits.
+  const w2 = await world();
+  const before = await readFile(w2.transcript);
+  const sweepPlan = await prepared(w2);
+  assert.notEqual(sweepPlan.requested, true);
+  await (await opener(w2, { shedHistory: false })).open();
+  assert.ok((await readFile(w2.transcript)).equals(before));
+  await rm(w.root, { recursive: true });
+  await rm(w2.root, { recursive: true });
+});
+
+test("a requested prepare refuses what a sweep refuses, and an agent that is not closed", async () => {
+  const requestShed = await requestShedFn();
+  const w = await world();
+  const before = await fingerprint(w);
+  const session = await persistedSession(w.paseoHome, w.agentId);
+  assert.deepEqual(await requestShed(w.env, w.agentId, { session, closed: false }), { ok: false, why: "not-closed" });
+  assert.deepEqual(await requestShed(w.env, w.agentId, { session: null, closed: true }), { ok: false, why: "no-session" });
+  assert.deepEqual(await requestShed(w.env, w.agentId, { session: { provider: "codex", sessionId: w.sessionId }, closed: true }), { ok: false, why: "not-claude" });
+  const busy = { ...w.env, processes: { holders: async () => ["4242:fd"] } };
+  assert.deepEqual(await requestShed(busy, w.agentId, { session, closed: true }), { ok: false, why: "busy" });
+  assert.deepEqual(diff(before, await fingerprint(w)), { changed: [], missing: [], added: [] }, "a refusal writes nothing beside the transcript");
+  assert.equal(await readPlan(w.env, w.agentId), null);
+  await rm(w.root, { recursive: true });
+});
+
+test("asking for a plan the sweep already made marks that plan requested instead of writing a second backup", async () => {
+  const requestShed = await requestShedFn();
+  const w = await world();
+  const sweepPlan = await prepared(w);
+  const out = await requestShed(w.env, w.agentId, { session: await persistedSession(w.paseoHome, w.agentId), closed: true });
+  assert.ok(out.ok, out.ok ? "" : out.why);
+  assert.equal(out.reused, true);
+  assert.equal(out.plan.id, sweepPlan.id);
+  assert.equal((await readPlan(w.env, w.agentId))?.requested, true);
+  assert.equal((await agentPlansOf(w)).length, 1);
+  // With a restore pending, a new request is refused rather than undoing it.
+  assert.ok((await commit(w.env, (await readPlan(w.env, w.agentId))!, FAR())).ok);
+  await requestRestoreFor(w.env, w.agentId);
+  const again = await requestShed(w.env, w.agentId, { session: await persistedSession(w.paseoHome, w.agentId), closed: true });
+  assert.deepEqual(again, { ok: false, why: "restore-pending" });
+  await rm(w.root, { recursive: true });
+});
+
+test("another writer's torn line that looks like the start of the rollback's chunk is never cut (a kill before the write)", async () => {
+  // beta.4 review item 3: appendFloor saved, killed before the write landed; then another writer's torn line, a
+  // prefix of the chunk's first line, ends the file. Without proof the bytes are this rollback's own, nothing is cut.
+  const w = await world();
+  const stored = await rollbackAtAppend(w);
+  const { savePlanForTest } = await import("./server/history-shed.ts");
+  const floor = (await stat(w.transcript)).size;
+  stored.rollback = { ...stored.rollback!, appendFloor: floor } as typeof stored.rollback;
+  await savePlanForTest(w.env, stored);
+  await appendFile(w.transcript, INTO_NEW.slice(0, 20));
+  const size = (await stat(w.transcript)).size;
+  await settle(w.env, await storedPlan(w, stored.id));
+  assert.equal((await stat(w.transcript)).size, size, "nothing cut, nothing appended after the torn line");
+  assert.ok((await readFile(w.transcript)).toString().endsWith(INTO_NEW.slice(0, 20)));
+  assert.ok((await storedPlan(w, stored.id)).rollback, "still under way");
+  const log = (await readdir(join(w.env.dataDir, "history-shed"))).filter((f) => f.startsWith("runs-"));
+  const lines = (await Promise.all(log.map((f) => readFile(join(w.env.dataDir, "history-shed", f), "utf8")))).join("");
+  assert.match(lines, /"event":"rollback-pending"/);
+  await rm(w.root, { recursive: true });
+});
+
+test("a short append (no space left) is cut back to its last whole line, by the record of what that write wrote", async () => {
+  const w = await world();
+  const stored = await rollbackAtAppend(w);
+  // The append's one write reaches the file only in part, then the pass stops.
+  let short = true;
+  const env: ShedEnv = {
+    ...w.env,
+    appendWrite: async (fd: number, data: Buffer) => {
+      if (!short) return writeSync(fd, data);
+      short = false;
+      return writeSync(fd, data.subarray(0, 20));
+    },
+  } as ShedEnv;
+  await settle(env, await storedPlan(w, stored.id)).catch(() => "threw");
+  assert.ok((await storedPlan(w, stored.id)).rollback, "still under way after the short write");
+  assert.ok((await readFile(w.transcript)).toString().endsWith(INTO_NEW.slice(0, 20)), "the torn bytes are there");
+  await settle(env, await storedPlan(w, stored.id));
+  const text = (await readFile(w.transcript)).toString();
+  assert.equal(text.split(INTO_NEW).length - 1, 1, "the line once, whole");
+  assert.ok(!text.includes(INTO_NEW.slice(0, 20) + INTO_NEW.slice(0, 20)), "no torn copy left");
+  assert.ok(text.endsWith(INTO_NEW));
+  assert.equal((await storedPlan(w, stored.id)).rollback, undefined);
   await rm(w.root, { recursive: true });
 });
