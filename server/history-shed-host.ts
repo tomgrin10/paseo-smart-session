@@ -98,7 +98,9 @@ export function contributeHistoryShed(server: PluginServerContext): () => void {
     } catch { /* Daemon unreachable: the next sweep tries again. */ }
   };
 
-  const removeOpen = server.before("agent.session_open", async ({ request }) => {
+  const removeOpen = server.before("agent.session_open", async ({ request }, context) => {
+    // The open is the first event after a daemon start: without this the chat row waited for a turn to end.
+    runtime = context?.paseo ?? runtime;
     try {
       if (request.provider !== "claude") return;
       if (!openIsSafe({ reason: request.reason, purpose: request.purpose } as OpenKind)) return;
