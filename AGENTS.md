@@ -547,12 +547,15 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
 - A hook is ours only when it runs a shim in this load's own data directory (or an old install's `hooks/`). Another
   Paseo home's shims are that home's: a sandbox load (temp `PASEO_HOME`, real `HOME`) once stripped the real
   install's hooks from `~/.claude/settings.json` with `installHooks` off (2026-11-17). `install.test.ts` pins it.
-- **Invariant: a load changes only its own entries.** Another home's Smart Session entries, live or gone, are never
-  removed (guarded by `[ -f ]`, a gone home's entries run nothing). A settings file holding another home's entries
-  and none of this one's is that home's: nothing is added (`otherHome`; the report says `managedBy`). A file holding
-  both, as 3.8.0-beta.1 left the real one (7 + 7), is managed by each home for its own entries only. Before
-  3.8.0-beta.3 neither home changed anything there, even with every feature off, and a sandbox load stripped the
-  real entries once the real shim folder was missing (`install.test.ts`).
+- **Invariant: the default home always ends with exactly its own hook set; a sandbox never writes the person's
+  settings.** `ownsSettings`: the default Paseo home (the account's `~/.paseo`, from the passwd entry, not `$HOME`)
+  owns the Claude settings it naturally uses. Any other home writes only a settings file named inside its own `HOME`
+  or `CLAUDE_CONFIG_DIR`, and never one whose real path is in the person's `~/.claude` (a link included). The owner
+  manages its own entries whatever else is there, keeps a live home's, and removes a gone home's (shim folder
+  missing): it never defers to another home. A non-owner adds nothing and only takes its own entries back out
+  (the report says `managedBy`). 3.8.0-beta.3 deferred to any other home's entries, so a file holding only a
+  sandbox's got none of the real home's, and with both, features off then on left the real home with none.
+  `install.test.ts` checks the three cases and 400 random sequences of loads, sandbox loads and feature toggles.
 - Owner names come from `ownerName`: the person's own label or a neutral name, never an email or a generated label.
 - A seat session reads its ZeroSub home's `settings.json`, which ZeroSub links to the main one. Never write into
   those homes: per-home copies are how a hook silently stops reaching seat sessions (2026-11-10).
@@ -608,8 +611,12 @@ records before that point move into a backup and the transcript keeps the rest, 
   plan (`rollback`: kind, the replacement's size, the original's verified size, bytes copied) before its first step.
   `finishRollback` works from the files and the record, each step safe to repeat: it links the replacement as `.new`,
   or reuses a `.new` that has the transcript's inode; renames the original back; appends the replacement's whole
-  lines past its planned size in one `O_APPEND` write (not interleaved with another writer's), skipped when those
-  bytes already occur past the original's size (killed after the write, before the record); then drops `.new` once
+  lines past its planned size in one `O_APPEND` write (not interleaved with another writer's), exactly once
+  (`appendOnce`): the record notes the transcript's size before each write (`appendFloor`); the next pass finds an
+  earlier write by the chunk's first line, compares byte by byte and appends only the rest, and cuts a torn earlier
+  write back to its last whole line only when it starts past `appendFloor` and is the file's tail. It never cuts
+  bytes it can't prove it wrote. 3.8.0-beta.3 looked for the whole chunk, so a replacement that grew after a kill
+  between write and record got its first lines twice. Then it drops `.new` once
   no process holds it. A torn last line stays in `.new` and the log says so. Only then is a shed discarded or a
   restore committed again. Before 3.8.0-beta.3, a rollback killed after its link made every later settle fail on
   `link()` with EEXIST, which the lock took for contention (stuck in `committing`), and one killed after its rename

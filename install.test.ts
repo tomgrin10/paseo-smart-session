@@ -208,40 +208,98 @@ test("a load against another live Paseo home's settings file adds none of its ow
   // 3.8.0-beta.1 review: a sandbox load kept the real home's 7 entries and added its own 7 beside them.
   const real = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS);
   const sandbox = "/tmp/harness/paseo/plugin-data/smart-session/hooks";
-  assert.deepEqual(reconcile(real, sandbox, undefined, sandbox, () => true), real, "installHooks on in the sandbox");
+  assert.deepEqual(reconcile(real, sandbox, undefined, sandbox, () => true, false), real, "installHooks on in the sandbox");
 });
 
-test("a load changes only its own entries: another home's stay, live or gone, and a doubled file never freezes", () => {
-  // 3.8.0-beta.2 review (N3): with beta.1's doubled file neither home changed anything while both shim dirs
-  // existed, and a sandbox load stripped the real entries once the real shim dir was missing.
+test("the default home always manages its own entries; a sandbox never writes the person's settings", () => {
+  // 3.8.0-beta.3 review (R1): a file holding only a sandbox's entries got none of the real home's, and with both,
+  // features off removed the real 7 and features on added none back.
   const real = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS);
   const sandbox = "/tmp/harness/paseo/plugin-data/smart-session/hooks";
-  const doubled = JSON.parse(JSON.stringify(real).replaceAll(`${SHIMS}/`, `${sandbox}/`)) as typeof real;
-  for (const [event, groups] of Object.entries(real)) {
-    for (const group of groups) {
-      const twin = doubled[event]!.find((g) => (g.matcher ?? "") === (group.matcher ?? ""))!;
-      twin.hooks = [...(group.hooks ?? []), ...(twin.hooks ?? []).filter((h) => String(h.command).includes(sandbox))];
-    }
+  const sandboxOnly = JSON.parse(JSON.stringify(real).replaceAll(`${SHIMS}/`, `${sandbox}/`)) as typeof real;
+  const doubled = JSON.parse(JSON.stringify(real)) as typeof real;
+  for (const [event, groups] of Object.entries(doubled)) {
+    for (const group of groups) group.hooks = [...(group.hooks ?? []), ...(group.hooks ?? []).filter((h) => String(h.command).includes(`'${SHIMS}/`)).map((h) => ({ ...h, command: String(h.command).replaceAll(`${SHIMS}/`, `${sandbox}/`) }))];
+    doubled[event] = groups;
   }
-  const only = (map: typeof real, dir: string) => Object.values(map).flat().flatMap((g) => g.hooks ?? []).filter((h) => String(h.command).includes(`'${dir}/`)).length;
+  const count = (map: typeof real, dir: string) => Object.values(map).flat().flatMap((g) => g.hooks ?? []).filter((h) => String(h.command).includes(`'${dir}/`)).length;
+  const own = count(real, SHIMS);
+  assert.ok(own > 0);
+  const live = () => true;
+  const gone = (dir: string) => dir === SHIMS;
+  // 1. Only a sandbox's entries (the 3.8.0-beta.1 incident state): the real home adds its own; a gone sandbox's go.
+  assert.equal(count(reconcile(sandboxOnly, SHIMS, undefined, SHIMS, live, true), SHIMS), own);
+  assert.equal(count(reconcile(sandboxOnly, SHIMS, undefined, SHIMS, gone, true), sandbox), 0);
+  assert.equal(count(reconcile(sandboxOnly, SHIMS, undefined, SHIMS, gone, true), SHIMS), own);
+  // 2. A first-ever sandbox load on a clean file: it isn't the sandbox's file, so nothing is added.
+  const clean = { Stop: [{ matcher: "", hooks: [foreign] }] };
+  assert.deepEqual(reconcile(clean, sandbox, undefined, sandbox, live, false), clean);
+  // ...and it never touches the real entries, only takes its own back out.
+  assert.deepEqual(reconcile(doubled, sandbox, undefined, sandbox, live, false), real);
+  assert.deepEqual(reconcile(real, sandbox, undefined, sandbox, gone, false), real);
+  // 3. Both: features off removes the real 7, features on brings them back.
   const OFF = { compact: false, publish: false };
-  const both = () => true;
-  // Every feature off, both homes alive: each removes its own entries, and only those.
-  const realOff = reconcile(doubled, SHIMS, OFF, SHIMS, both);
-  assert.equal(only(realOff, SHIMS), 0, "the real home's own entries go");
-  assert.equal(only(realOff, sandbox), only(doubled, sandbox), "the sandbox's stay");
-  assert.deepEqual(commandsFor(realOff, "Stop").filter((c) => c === foreign.command), [foreign.command]);
-  const sandboxOff = reconcile(doubled, sandbox, OFF, sandbox, both);
-  assert.equal(only(sandboxOff, sandbox), 0, "the sandbox's own entries go");
-  assert.equal(only(sandboxOff, SHIMS), only(doubled, SHIMS), "the real ones stay");
-  // The real shim dir missing for a moment (a reinstall): a sandbox load still strips nothing and adds nothing.
-  const sandboxOnly = (dir: string) => dir === sandbox;
-  assert.deepEqual(reconcile(real, sandbox, undefined, sandbox, sandboxOnly), real);
-  assert.deepEqual(reconcile(real, null, undefined, sandbox, sandboxOnly), real);
-  // A home that is gone keeps its entries too (guarded by `[ -f ]`, they run nothing): never another home's to remove.
-  const realOnly = (dir: string) => dir === SHIMS;
-  assert.equal(only(reconcile(doubled, SHIMS, undefined, SHIMS, realOnly), sandbox), only(doubled, sandbox));
-  assert.equal(only(reconcile(doubled, SHIMS, undefined, SHIMS, realOnly), SHIMS), only(real, SHIMS), "and its own are not doubled");
+  const off = reconcile(doubled, SHIMS, OFF, SHIMS, live, true);
+  assert.equal(count(off, SHIMS), 0);
+  assert.equal(count(reconcile(off, SHIMS, undefined, SHIMS, live, true), SHIMS), own);
+});
+
+test("whatever the sequence of loads, sandbox loads and feature toggles, the real home ends with exactly its own hooks", () => {
+  let seed = 20261117;
+  const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const pick = <T,>(items: readonly T[]) => items[Math.floor(random() * items.length)]!;
+  const sandbox = "/tmp/harness/paseo/plugin-data/smart-session/hooks";
+  const entries = (map: ReturnType<typeof reconcile>, dir: string) => Object.entries(map)
+    .flatMap(([event, groups]) => groups.flatMap((g) => (g.hooks ?? []).filter((h) => String(h.command).includes(`'${dir}/`)).map((h) => `${event}|${g.matcher ?? ""}|${h.command}`))).sort();
+  const FEATURES = [{ compact: true, publish: true }, { compact: true, publish: false }, { compact: false, publish: true }, { compact: false, publish: false }];
+  const expected = (features: (typeof FEATURES)[number]) => entries(reconcile({}, SHIMS, features), SHIMS);
+  const base = reconcile({ Stop: [{ matcher: "", hooks: [foreign] }] }, SHIMS);
+  const starts = [{}, { Stop: [{ matcher: "", hooks: [foreign] }] }, base, reconcile(base, sandbox, undefined, sandbox, () => true, true), JSON.parse(JSON.stringify(base).replaceAll(`${SHIMS}/`, `${sandbox}/`))];
+  for (let run = 0; run < 400; run++) {
+    let map = JSON.parse(JSON.stringify(pick(starts))) as ReturnType<typeof reconcile>;
+    let sandboxAlive = random() < 0.5;
+    const alive = (dir: string) => dir === SHIMS || (dir === sandbox && sandboxAlive);
+    let realFeatures = pick(FEATURES);
+    for (let step = 0; step < 12; step++) {
+      const op = pick(["real", "sandbox", "sandbox", "die", "revive"] as const);
+      if (op === "die") { sandboxAlive = false; continue; }
+      if (op === "revive") { sandboxAlive = true; continue; }
+      if (op === "real") {
+        realFeatures = pick(FEATURES);
+        map = reconcile(map, random() < 0.9 ? SHIMS : null, realFeatures, SHIMS, alive, true);
+        if (Object.keys(map).length === 0) map = {};
+        continue;
+      }
+      const before = entries(map, SHIMS);
+      map = reconcile(map, random() < 0.7 ? sandbox : null, pick(FEATURES), sandbox, alive, false);
+      assert.deepEqual(entries(map, SHIMS), before, `run ${run} step ${step}: a sandbox load never changes the real entries`);
+    }
+    map = reconcile(map, SHIMS, realFeatures, SHIMS, alive, true);
+    assert.deepEqual(entries(map, SHIMS), expected(realFeatures), `run ${run}: the real home's own set, exactly`);
+    if (!sandboxAlive) assert.deepEqual(entries(map, sandbox), [], `run ${run}: a gone sandbox's entries are removed`);
+    assert.equal(commandsFor(map, "Stop").filter((c) => c === foreign.command).length, JSON.stringify(map).includes(foreign.command) ? 1 : 0);
+  }
+});
+
+test("which settings file a load may write: the default home its own, a sandbox only one inside its own HOME or config dir", async () => {
+  const install = await import("./server/install.ts") as Record<string, unknown>;
+  assert.equal(typeof install.ownsSettings, "function");
+  const ownsSettings = install.ownsSettings as (path: string, where: { paseoHome: string; home?: string; configDir?: string; userHome: string }) => boolean;
+  const user = mkdtempSync(join(tmpdir(), "owner-user-"));
+  mkdirSync(join(user, ".claude")); mkdirSync(join(user, ".paseo"));
+  const real = join(user, ".claude", "settings.json");
+  writeFileSync(real, "{}");
+  const sandbox = mkdtempSync(join(tmpdir(), "owner-sandbox-"));
+  mkdirSync(join(sandbox, "home", ".claude"), { recursive: true });
+  const own = join(sandbox, "home", ".claude", "settings.json");
+  writeFileSync(own, "{}");
+  const linked = join(sandbox, "home", ".claude", "linked.json");
+  symlinkSync(real, linked);
+  assert.equal(ownsSettings(real, { paseoHome: join(user, ".paseo"), home: user, userHome: user }), true, "the default home");
+  assert.equal(ownsSettings(real, { paseoHome: join(sandbox, "paseo"), home: user, userHome: user }), false, "a sandbox with the real HOME (3.8.0-beta.1)");
+  assert.equal(ownsSettings(own, { paseoHome: join(sandbox, "paseo"), home: join(sandbox, "home"), userHome: user }), true, "a sandbox's own temp HOME");
+  assert.equal(ownsSettings(own, { paseoHome: join(sandbox, "paseo"), home: user, configDir: join(sandbox, "home", ".claude"), userHome: user }), true, "a sandbox's own CLAUDE_CONFIG_DIR");
+  assert.equal(ownsSettings(linked, { paseoHome: join(sandbox, "paseo"), home: join(sandbox, "home"), userHome: user }), false, "never the real file through a link");
 });
 
 test("a matcher group that only ever held our hook is dropped, not left empty", () => {

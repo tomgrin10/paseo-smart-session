@@ -942,7 +942,7 @@ test("a rollback killed after any of its steps is finished by the next settle, e
 
 test("a rollback killed at each of its own steps, in a commit and in a restore, is finished by the next settle", async (t) => {
   for (const kind of ["commit", "restore"] as const) {
-    for (const step of ["rollback:link", "rollback:rename", "rollback:append", "rollback:drop"]) {
+    for (const step of ["rollback:link", "rollback:rename", "rollback:append", "rollback:appended", "rollback:drop"]) {
       await t.test(`${kind} ${step}`, async () => {
         let busyIno = -1;
         const w = await world({}, { holders: async (_path, _sid, inode) => (inode?.ino === busyIno ? ["4242:fd"] : []) });
@@ -1051,5 +1051,75 @@ test("leftover second names beside a transcript are listed for the status", asyn
   assert.deepEqual(list.map((l) => [l.agentId, l.file]), [[w.agentId, sideNames(plan)[0]]]);
   await settle(w.env, await storedPlan(w, plan.id));
   assert.deepEqual(await leftoverFiles(w.env), []);
+  await rm(w.root, { recursive: true });
+});
+
+// ---------------------------------------------------------------------------------------------- 3.8.0-beta.3 review
+
+const NEW_B = '{"type":"user","message":{"content":"a second line into the shed file"}}\n';
+
+/** A commit's rollback killed at `rollback:append` (before its write), with the plan as stored. */
+async function rollbackAtAppend(w: World) {
+  const plan = await prepared(w);
+  let busyIno = (await stat(w.transcript)).ino;
+  const fd = openSync(w.transcript, "a");
+  const env: ShedEnv = {
+    ...w.env,
+    processes: { holders: async (_p, _s, inode) => (inode?.ino === busyIno ? ["4242:fd"] : []) },
+    step: async (name) => {
+      if (name === "commit:after-rename") { writeSync(fd, LATE); await appendFile(w.transcript, INTO_NEW); }
+      if (name === "rollback:append") throw new Error("killed before the append");
+    },
+  };
+  assert.equal((await commit(env, plan, FAR())).ok, false);
+  closeSync(fd);
+  busyIno = -1;
+  return storedPlan(w, plan.id);
+}
+
+test("a rollback killed after its append, before saving it, never appends a line twice, even once the replacement grew", async () => {
+  // R2: the next pass looked for the whole, now bigger, chunk, didn't find it, and appended all of it again.
+  const w = await world();
+  const before = (await stat(w.transcript)).size;
+  const stored = await rollbackAtAppend(w);
+  assert.ok(stored.rollback, "a rollback is under way");
+  const spare = sideNames(stored)[1]!;
+  // The write happened; then the kill; then a writer still on the replacement adds a line.
+  await appendFile(w.transcript, INTO_NEW);
+  await appendFile(spare, NEW_B);
+  await settle(w.env, await storedPlan(w, stored.id));
+  const text = (await readFile(w.transcript)).toString();
+  assert.equal(text.split(INTO_NEW).length - 1, 1, "the first line once");
+  assert.equal(text.split(NEW_B).length - 1, 1, "the second line once");
+  assert.ok(text.endsWith(INTO_NEW + NEW_B));
+  assert.ok((await stat(w.transcript)).size > before);
+  await rm(w.root, { recursive: true });
+});
+
+test("a short append (no space left) is cut back to its last whole line, only as far as the rollback's record proves its own", async () => {
+  const w = await world();
+  const stored = await rollbackAtAppend(w);
+  const { savePlanForTest } = await import("./server/history-shed.ts");
+  // The record says where this rollback's append began; half a line of it reached the file.
+  const floor = (await stat(w.transcript)).size;
+  stored.rollback = { ...stored.rollback!, appendFloor: floor } as typeof stored.rollback;
+  await savePlanForTest(w.env, stored);
+  await appendFile(w.transcript, INTO_NEW.slice(0, 20));
+  await settle(w.env, await storedPlan(w, stored.id));
+  const text = (await readFile(w.transcript)).toString();
+  assert.equal(text.split(INTO_NEW).length - 1, 1, "the line once, whole");
+  assert.ok(!text.includes(INTO_NEW.slice(0, 20) + INTO_NEW.slice(0, 20)), "no torn copy left");
+  assert.ok(text.endsWith(INTO_NEW));
+  await rm(w.root, { recursive: true });
+});
+
+test("a torn tail the rollback can't prove its own is never cut: the rollback waits and says so", async () => {
+  const w = await world();
+  const stored = await rollbackAtAppend(w);
+  await appendFile(w.transcript, INTO_NEW.slice(0, 20));
+  const size = (await stat(w.transcript)).size;
+  await settle(w.env, await storedPlan(w, stored.id));
+  assert.equal((await stat(w.transcript)).size, size, "nothing cut, nothing appended after a torn line");
+  assert.ok((await storedPlan(w, stored.id)).rollback, "still under way");
   await rm(w.root, { recursive: true });
 });
