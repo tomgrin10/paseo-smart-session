@@ -8,7 +8,7 @@ import { displayPreferences } from "./shared/display";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import type { Invoke } from "./server/native-tools.ts";
 
-import { readAgents, withDaemon } from "./server/daemon.ts";
+import { closeDaemon, readAgents, withDaemon } from "./server/daemon.ts";
 import { contextGrowth, projectFull } from "./server/growth.ts";
 import { install } from "./server/install.ts";
 import { describeResult, startPublish, waitPublish } from "./server/publish-as.ts";
@@ -276,5 +276,6 @@ export default function contribute(host: PluginServerContext) {
 
   // The recorder and governor register their timers in this shared lifecycle.
   // Paseo waits for this cleanup before stopping the plugin subprocess.
-  return () => runTeardowns([removeSessionMcp, removeGuard, removeHistoryShed, ...lifecycle.teardowns.splice(0)]);
+  // The held daemon connection closes last, after every feature that might still be using it.
+  return () => runTeardowns([removeSessionMcp, removeGuard, removeHistoryShed, ...lifecycle.teardowns.splice(0), closeDaemon]);
 }

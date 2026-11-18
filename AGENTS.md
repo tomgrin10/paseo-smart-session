@@ -73,10 +73,16 @@
   `server/install.ts` registers `mcp.mjs` on that same executable (`$APPIMAGE` for an AppImage)
   with `ELECTRON_RUN_AS_NODE=1`, and `mcp.mjs` resolves the client through `process.resourcesPath`.
   This broke on macOS after an app update; `check-mcp-resolve.mjs` covers that layout too.
-- Keep daemon connections short-lived. A long-lived socket in the plugin subprocess keeps the event
-  loop alive and hangs Paseo's "Stopping plugin" step, which wedges reload for the life of the
-  daemon. Every timer and resource must be released through `shared/lifecycle.ts`;
-  `check-teardown.mjs` enforces it.
+- **Invariant: one held daemon connection per process, closed in teardown (one-held-daemon-connection).** Every
+  daemon call goes through `withDaemon`, which runs on `sharedDaemon`'s one connection (`server/daemon.ts`;
+  `openDaemon` is the only place a `DaemonClient` is built). It reopens only after a real drop (the client's
+  connection status, or a failed call on a socket no longer `connected`), with backoff after a failed open, and is
+  replaced after `SHARED_CLIENT_MAX_MS`. Session Guard holds its own (opened on its first call, never while it is
+  off), so its teardown can't cut a governor delivery. A held socket keeps the event loop alive, so `closeDaemon` runs
+  last in `index.server.ts`'s teardown; otherwise "Stopping plugin" hangs and reload wedges for the life of the
+  daemon. Every other timer and resource is released through `shared/lifecycle.ts`; `check-teardown.mjs` enforces
+  both. 2026-11-18 live: a WebSocket per call meant about 13-17 hellos a minute; `daemon-connection.test.ts` pins 20
+  calls to one connection.
 - `server/install.ts` writes to `~/.claude/settings.json`, which the plugin does not own. It may only
   add, update or remove entries whose command points at one of our `hooks/*.mjs`; it must never
   write a path it has not confirmed exists, must not write at all when reconciling changes nothing,
