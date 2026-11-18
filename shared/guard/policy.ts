@@ -34,6 +34,8 @@ export const PolicySchema = z.object({
   resetGraceSeconds: z.number().int().min(0).max(600).default(30),
   resumeSpacingSeconds: z.number().int().min(0).max(300).default(5),
   autoResume: z.boolean().default(true),
+  /** Independent of quota pausing; only observed failed working turns qualify. */
+  retryTransientErrors: z.boolean().default(true),
   includeNativeSubagents: z.boolean().default(true),
   workspaceLabels: z.boolean().default(true),
   providerIds: z.array(z.string().min(1)).default([]),

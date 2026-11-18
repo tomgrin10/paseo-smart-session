@@ -4,7 +4,7 @@ Pause at the limit (Session Guard) (the standalone Session Guard plugin, now par
 
 ## Turning it on
 
-It is **off by default**. Turn it on with the **Pause at the limit** switch on the Smart Session overview, or in **Settings → Plugins → Smart Session**. Off, it holds no lock, writes nothing and adds nothing to the pill.
+It is **off by default**. Turn it on with the **Pause at the limit** switch on the Smart Session overview, or in **Settings → Plugins → Smart Session**. With quota pausing off, it holds no quota lock and adds nothing to the pill. **Retry transient API errors** is a separate default-on switch in the same settings section.
 
 ### Moving from the standalone plugin
 
@@ -16,6 +16,16 @@ Smart Session never runs Session Guard while the standalone plugin is configured
 - If the standalone plugin is enabled again while Smart Session is protecting the host, Smart Session releases the sessions it suspended, keeps their confirmed waits, gives up the lock and stops. The standalone plugin does not retry its lock, so reload it to let it take over, or disable it again to hand back to Smart Session. Between enabling it and Smart Session's next check (up to the check interval) both are loaded; avoid disabling it again within that window.
 
 Turning Session Guard off releases suspended workers immediately. A message continuation that is still waiting keeps the lock until you cancel it or turn Session Guard back on. With nothing left waiting, Smart Session releases the lock.
+
+## Retrying transient API errors
+
+**Retry transient API errors** is on by default, independently of **Pause at the limit**. When a working turn fails on a Cloudflare block page, HTTP 5xx, an overloaded response, a connection reset or a timeout, Session Guard sends a short continuation in the same conversation after one minute. If that retry fails transiently too, it waits three minutes, then ten minutes. After three retries, it leaves the session in error for you to inspect. Sends are spaced at least five seconds apart across sessions.
+
+Only turns observed starting while this plugin is loaded qualify. Idle, closed, archived and pre-existing errored sessions are never started. A new turn, a new user message, a permission request, or a quota hold cancels pending transient recovery. Real authentication failures and usage limits do not qualify. Check interrupted operations before repeating them; an unconfirmed continuation is never sent again automatically.
+
+Turn the switch off to cancel pending retries. Reloading the plugin also clears pending retries; it does not sweep old errors or wake sessions after loading. The agent's read-only `budget_status` tool reports whether recovery is on. Like the existing quota controls, this switch has no agent-facing setter.
+
+Recovery uses its own lazy lock under `session-guard/transient-recovery/`, so duplicate Smart Session installs cannot retry together. No timer or lock is created until an observed working turn fails transiently. Each send is recorded in the existing Guard trace as `transient-resume`, with agent id, timestamp, error class, try number and delivery result, never the error body. Guard currently has no direct reporting path to Follow-up.
 
 ## Holding until the reset
 

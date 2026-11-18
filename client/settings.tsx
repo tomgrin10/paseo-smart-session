@@ -220,6 +220,8 @@ export function makeSettings(client: PluginClientContext) {
                 value={guard.values.includeNativeSubagents} disabled={guardBusy || !guard.values.enabled} onValueChange={(includeNativeSubagents) => changeGuard({ includeNativeSubagents }, includeNativeSubagents ? "Subagents pause too" : "Only the foreground turn pauses")} />
               <SettingsSwitch label="Label held workspaces" hint="An amber Held label in the sidebar until every session in the workspace continues."
                 value={guard.values.workspaceLabels} disabled={guardBusy || !guard.values.enabled} onValueChange={(workspaceLabels) => changeGuard({ workspaceLabels }, workspaceLabels ? "Paused workspaces are labelled" : "No workspace labels")} />
+              <SettingsSwitch label="Retry transient API errors" hint="On by default, even with quota pausing off. Retries interrupted work after 1, 3, then 10 minutes, at most three times. Idle and closed sessions stay asleep."
+                value={guard.values.retryTransientErrors} disabled={guardBusy} onValueChange={(retryTransientErrors) => changeGuard({ retryTransientErrors }, retryTransientErrors ? "Transient API errors retry automatically" : "Transient API errors wait for you")} />
               <SettingsAction label="Held sessions and exceptions" hint={listHint} actionLabel="Open" onPress={openPaused} />
             </SettingsCard>}
       </SettingsSection>

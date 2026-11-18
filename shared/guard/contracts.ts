@@ -37,7 +37,7 @@ export const agentStatusRpc = defineRpc({
   output: z.object({
     governor: GovernorSchema,
     enabled: z.boolean(), protected: z.boolean(), override: z.boolean().nullable(),
-    thresholdPct: z.number(), autoResume: z.boolean(),
+    thresholdPct: z.number(), autoResume: z.boolean(), retryTransientErrors: z.boolean(),
     pauses: z.array(z.object({ id: z.string(), phase: PauseSchema.shape.phase, provider: z.string(), resetsAt: z.string().nullable(), movesTo: z.string().optional() })),
     providers: z.array(ProviderSchema),
     summary: z.array(z.string()),
