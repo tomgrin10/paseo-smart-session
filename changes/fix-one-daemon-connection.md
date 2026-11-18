@@ -1,0 +1,1 @@
+- Smart Session now keeps one connection to the Paseo daemon and reuses it, instead of opening a new one for every usage, context and guard read (about 15 a minute before). It reconnects only when the connection drops.
