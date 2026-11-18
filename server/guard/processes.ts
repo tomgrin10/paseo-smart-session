@@ -72,8 +72,44 @@ export class LinuxProcessControl implements ProcessControl {
       throw new Error("Provider process signal failed.");
     }
   }
+  private async resourceHolder(pid: number): Promise<boolean> {
+    try {
+      // Inspect only the opt-in marker; never decode or log the environment.
+      const environment = await readFile(`/proc/${pid}/environ`);
+      const key = Buffer.from("HARNESS_SLOT_HELD=");
+      for (let start = 0; start < environment.length;) {
+        const end = environment.indexOf(0, start);
+        const stop = end < 0 ? environment.length : end;
+        if (stop > start + key.length && environment.subarray(start, start + key.length).equals(key)) return true;
+        start = stop + 1;
+      }
+      // The shell wrapper owns the flock before its command inherits the marker.
+      // Match an executable or interpreter's script, never an arbitrary argument.
+      const argv = (await readFile(`/proc/${pid}/cmdline`)).toString().split("\0");
+      const basename = (value: string) => value.slice(value.lastIndexOf("/") + 1);
+      return basename(argv[0] ?? "") === "harness-slot" ||
+        (["bash", "sh", "dash"].includes(basename(argv[0] ?? "")) && basename(argv[1] ?? "") === "harness-slot");
+    } catch (error) {
+      if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+      // If we cannot rule out a shared-resource holder, leave it running.
+      return true;
+    }
+  }
+  private async protectedTree(table: Snapshot[]): Promise<Set<number>> {
+    const protectedPids = new Set<number>();
+    for (const p of table) if (await this.resourceHolder(p.pid)) protectedPids.add(p.pid);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const p of table) if (protectedPids.has(p.ppid) && !protectedPids.has(p.pid)) {
+        protectedPids.add(p.pid); grew = true;
+      }
+    }
+    return protectedPids;
+  }
   async freeze(suspension: Suspension, journal: () => Promise<void>): Promise<void> {
     const root = suspension.processes.find(p => p.pid === suspension.rootPid);
+    if (root && await this.resourceHolder(root.pid)) throw new Error("Provider holds a shared resource and cannot be suspended.");
     if (!root || !await this.signal(root, "SIGSTOP")) throw new Error("Provider process exited before suspension.");
     // Stop the root before traversing. Descendants are then stopped as discovered;
     // repeat to catch a tool worker that forked during the previous scan.
@@ -89,7 +125,8 @@ export class LinuxProcessControl implements ProcessControl {
         grew = false;
         for (const p of table) if (owned.has(p.ppid) && !owned.has(p.pid)) { owned.add(p.pid); grew = true; }
       }
-      const additions = table.filter(p => owned.has(p.pid) && !seen.has(`${p.pid}:${p.startTime}`) && !["Z", "X"].includes(p.state));
+      const protectedPids = await this.protectedTree(table.filter(p => owned.has(p.pid)));
+      const additions = table.filter(p => owned.has(p.pid) && !protectedPids.has(p.pid) && !seen.has(`${p.pid}:${p.startTime}`) && !["Z", "X"].includes(p.state));
       if (!additions.length) {
         if (!await this.stopped(suspension)) throw new Error("Provider suspension was externally changed.");
         return;
