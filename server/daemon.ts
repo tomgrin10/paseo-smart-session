@@ -1,11 +1,16 @@
 /**
- * Short-lived connections to Paseo's own daemon.
+ * Smart Session's connection to Paseo's own daemon.
  *
  * The plugin SDK exposes neither provider usage nor per-agent context usage, so
- * this borrows the host's daemon client the way paseo-defer does. Each call opens
- * and closes its own connection: a long-lived socket in this subprocess keeps the
- * event loop alive and hangs Paseo's "Stopping plugin" step, which wedges reload
- * for the life of the daemon.
+ * this borrows the host's daemon client the way paseo-defer does.
+ *
+ * Invariant: one daemon connection per process, held and reused
+ * (one-held-daemon-connection). It reopens only after a real drop or a failed
+ * call on a dead socket, with backoff after a failed open, and closes in
+ * the plugin's teardown (`closeDaemon`, run last by `index.server.ts`), so the subprocess still exits and
+ * reload never wedges (`check-teardown.mjs`). 2026-11-18 live: `withDaemon`
+ * opened a WebSocket per call (governor and guard ticks, the recorder's minute,
+ * usage reads), about 13-17 hellos a minute in the daemon log.
  */
 
 import { readFile } from "node:fs/promises";
@@ -101,11 +106,10 @@ async function resolveUrl(): Promise<string> {
   return cachedUrl;
 }
 
-/** Runs `work` against a connection that is always closed before returning. */
-export async function withDaemon<T>(work: (client: DaemonClient) => Promise<T>): Promise<T> {
-  const { DaemonClient } = loadDaemonClientModule();
+/** The connection options, without the password. */
+async function clientOptions() {
   const password = await resolveDaemonPassword();
-  const client = new DaemonClient({
+  return {
     url: await resolveUrl(),
     clientId: "paseo-smart-session",
     clientType: "cli",
@@ -113,17 +117,146 @@ export async function withDaemon<T>(work: (client: DaemonClient) => Promise<T>):
     connectTimeoutMs: CONNECT_TIMEOUT_MS,
     suppressSendErrors: true,
     ...(password === undefined ? {} : { password }),
-  });
+  };
+}
+
+/** Builds and connects one client. The only place a DaemonClient is constructed. */
+export async function openDaemon(): Promise<DaemonClient> {
+  const { DaemonClient } = loadDaemonClientModule();
+  const client = new DaemonClient(await clientOptions());
   try {
     await client.connect();
-    return await work(client);
-  } finally {
-    try {
-      await client.close();
-    } catch {
-      // Teardown must not mask the original result or error.
-    }
+    return client;
+  } catch (error) {
+    await client.close().catch(() => undefined);
+    throw error;
   }
+}
+
+/** A long-lived connection is replaced after this long, so one never ages past daemon-side limits. */
+export const SHARED_CLIENT_MAX_MS = 30 * 60_000;
+/** Backoff after a failed open: 1 s, doubling, capped at 30 s. Calls in the window fail fast. */
+export const OPEN_BACKOFF_MS = 1_000;
+export const OPEN_BACKOFF_MAX_MS = 30_000;
+
+export interface SharedDaemon {
+  /** Runs `work` on the held connection, opening it if there is none. */
+  run<T>(work: (client: DaemonClient) => Promise<T>): Promise<T>;
+  /** Closes the connection; nothing opens afterwards. */
+  close(): Promise<void>;
+}
+
+type Entry = { client: Promise<DaemonClient>; opened: number; users: number; retired: boolean; unsubscribe?: () => void };
+type StatusSource = { getConnectionState?(): { status: string }; subscribeConnectionStatus?(listener: (state: { status: string }) => void): () => void };
+
+const live = (client: DaemonClient) => {
+  const status = (client as unknown as StatusSource).getConnectionState?.().status;
+  return status === undefined || status === "connected";
+};
+
+/**
+ * One held connection, shared by every caller (one-held-daemon-connection). Concurrent
+ * callers join the open in flight; a dropped socket is retired at once and the next
+ * call opens a fresh one; a retired socket closes after its last call finishes.
+ */
+export function sharedDaemon(
+  open: () => Promise<DaemonClient> = openDaemon,
+  options: { maxMs?: number; now?: () => number; backoffMs?: number; backoffMaxMs?: number; name?: string } = {},
+): SharedDaemon {
+  const maxMs = options.maxMs ?? SHARED_CLIENT_MAX_MS;
+  const now = options.now ?? Date.now;
+  const backoffMs = options.backoffMs ?? OPEN_BACKOFF_MS;
+  const backoffMaxMs = options.backoffMaxMs ?? OPEN_BACKOFF_MAX_MS;
+  const name = options.name ?? "Smart Session";
+  let current: Entry | null = null;
+  let stopped = false;
+  let failures = 0;
+  let retryAt = 0;
+  let lastError: unknown = null;
+  const all = new Set<Entry>();
+
+  const shut = async (entry: Entry) => {
+    all.delete(entry);
+    if (current === entry) current = null;
+    entry.unsubscribe?.();
+    const client = await entry.client.catch(() => null);
+    if (client) await client.close().catch(() => undefined);
+  };
+  const retire = (entry: Entry) => {
+    entry.retired = true;
+    if (current === entry) current = null;
+    if (entry.users === 0) void shut(entry);
+  };
+
+  const run = async <T>(work: (client: DaemonClient) => Promise<T>): Promise<T> => {
+    if (stopped) throw new Error(`${name} is stopping.`);
+    if (current && now() - current.opened >= maxMs) retire(current);
+    if (!current) {
+      if (failures > 0 && now() < retryAt) throw lastError instanceof Error ? lastError : new Error(String(lastError));
+      const entry: Entry = { client: Promise.resolve(null as unknown as DaemonClient), opened: now(), users: 0, retired: false };
+      entry.client = open().then(
+        (client) => {
+          failures = 0;
+          if (stopped) {
+            void client.close().catch(() => undefined);
+            throw new Error(`${name} is stopping.`);
+          }
+          // A real drop retires it at once (reconnect is off on the client itself).
+          entry.unsubscribe = (client as unknown as StatusSource).subscribeConnectionStatus?.((state) => {
+            if (state.status === "disconnected" || state.status === "disposed") retire(entry);
+          });
+          return client;
+        },
+        (error: unknown) => {
+          failures++;
+          lastError = error;
+          retryAt = now() + Math.min(backoffMs * 2 ** (failures - 1), backoffMaxMs);
+          all.delete(entry);
+          if (current === entry) current = null;
+          throw error;
+        },
+      );
+      current = entry;
+      all.add(entry);
+    }
+    const entry = current;
+    entry.users++;
+    try {
+      const client = await entry.client;
+      try {
+        return await work(client);
+      } catch (error) {
+        // A dead socket is not reused: the next call opens a fresh one.
+        if (!live(client)) retire(entry);
+        throw error;
+      }
+    } finally {
+      entry.users--;
+      if (entry.retired && entry.users === 0 && all.has(entry)) void shut(entry);
+    }
+  };
+
+  const close = async () => {
+    stopped = true;
+    await Promise.allSettled([...all].map((entry) => shut(entry)));
+  };
+  return { run, close };
+}
+
+/** The process's one held connection. */
+const shared = sharedDaemon();
+
+/**
+ * Closes the held connection. `index.server.ts` runs it after every other teardown, so a
+ * feature stopping mid-call finishes on a live socket, and then the subprocess can exit.
+ */
+export function closeDaemon(): Promise<void> {
+  return shared.close();
+}
+
+/** Runs `work` on the process's one held daemon connection. */
+export function withDaemon<T>(work: (client: DaemonClient) => Promise<T>): Promise<T> {
+  return shared.run(work);
 }
 
 /**

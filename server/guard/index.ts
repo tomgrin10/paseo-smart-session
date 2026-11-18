@@ -34,7 +34,7 @@ import {
 } from "../../shared/guard/contracts.ts";
 import { isPending, PolicySchema, sessionWindow, usedPct, type Policy, type State, type Usage } from "../../shared/guard/policy.ts";
 import { agentGuardSummary, callerProtection, heldUntil } from "../../shared/guard/presentation.ts";
-import { withDaemon } from "../daemon.ts";
+import { sharedDaemon } from "../daemon.ts";
 import { freshestUsage } from "../store.ts";
 import type { Connect, GuardClient } from "./client.ts";
 import { Engine, type ReadAccounts } from "./engine.ts";
@@ -93,11 +93,13 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     return PolicySchema.parse(result.values);
   };
 
-  // The guard's own connections, so teardown can close one that is mid-call without
-  // touching a delivery the compaction governor has in flight on another socket.
+  // The guard's own held connection (one-held-daemon-connection), opened on its first call
+  // (never while it is off), so teardown can close it mid-call without touching a delivery
+  // the compaction governor has in flight on the process's shared socket.
+  const own = options.connect ? null : sharedDaemon(undefined, { name: "Session Guard" });
   const open = new Set<{ close(): Promise<void> }>();
   let disposed = false;
-  const daemon: Connect = options.connect ?? ((work) => withDaemon((client) => work(client as unknown as GuardClient)));
+  const daemon: Connect = options.connect ?? ((work) => own!.run((client) => work(client as unknown as GuardClient)));
   const connect: Connect = (work) => {
     if (disposed) return Promise.reject(new Error("Session Guard is stopping."));
     return daemon(async (client) => {
@@ -432,6 +434,7 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     await Promise.allSettled([...open].map((client) => client.close()));
     await recoveryStopped.catch(() => undefined);
     await current?.catch(() => undefined);
+    await own?.close();
     try {
       // Only the owner may touch suspended workers: a deferring process must leave the
       // other governor's pauses exactly as they are.
