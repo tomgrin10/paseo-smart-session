@@ -1,0 +1,1 @@
+- Session Guard lets running harness-slot commands finish during a quota pause, so they release shared slots while the rest of the session waits.
