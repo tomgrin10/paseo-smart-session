@@ -249,8 +249,8 @@
 - Code lives in `server/guard/`, `client/guard/` and `shared/guard/`; `server/guard/index.ts` is its
   wiring, `server/guard/engine.ts` decides what to pause and when to continue. The behaviour guide
   for users is `docs/session-guard.md`.
-- It is **off by default** (`shared/guard/policy.ts`). Off, it holds no lock, creates no directory,
-  draws no pill and touches no session. Do not change that default: an upgrade must never start
+- Quota pausing is **off by default** (`shared/guard/policy.ts`). Off, it holds no quota lock, creates no quota directory,
+  draws no quota pill and touches no session for quota protection. Do not change that default: an upgrade must never start
   freezing processes.
 - Its state deliberately stays in `$PASEO_HOME/plugin-data/session-guard/`, the standalone plugin's
   directory, not under `plugin-data/smart-session/`. Both plugins take the same `governor.lock` there,
@@ -276,8 +276,9 @@
   teardown through `runTeardowns`.
 - Session Guard does speak to agents, separately from Smart Compact: it interrupts a turn
   (`cancelAgent`), suspends and resumes provider process trees with `SIGSTOP`/`SIGCONT` on Linux, and
-  sends exactly two kinds of message — the configured continuation after a confirmed reset, and the
-  **Resume now** message a person asked for. It never compacts, never retries an unconfirmed send,
+  sends the configured continuation after a confirmed reset, the **Resume now** message a person
+  asked for, and a short continuation after a confirmed transient API failure of an observed working
+  turn. It never compacts, never retries an unconfirmed send,
   and never sends into a session whose user message or turn changed.
 - **Invariant: while a protected session's account is at or over the pause threshold, no turn runs
   in it unless a person explicitly resumes it** (Resume now, Release, Release and turn off, the
@@ -296,6 +297,15 @@
 - A shared-resource run marked by `HARNESS_SLOT_HELD` or a `harness-slot` ancestor,
   including descendants that clear the marker, must stay runnable during a quota pause so it
   can finish and release its lock. Never journal excluded workers as suspended or resume them.
+- **Invariant: a transient API error never strands a working agent; nothing dormant is woken.**
+  `retryTransientErrors` is on by default and independent of quota pausing. Only a matching live
+  turn-start/failed-turn pair establishes unfinished work. `shared/guard/transient.ts` owns ordered
+  classification (real auth and usage limits excluded), delays of 1, 3 and 10 minutes, and the
+  three-send cap per incident. `server/guard/transient.ts` rechecks error status, user-message
+  identity, permissions and quota holds before sending, spaces sends by 5 seconds, never retries
+  unconfirmed delivery, and cancels timers on disable/unload. A separate lazy lock under
+  `session-guard/transient-recovery/` prevents duplicate installs from retrying together. Pending
+  incidents live only in this process; a reload never scans or wakes old errored agents.
 - Process signals are identity-checked by PID birth time and limited to direct children of this
   daemon carrying the agent's `PASEO_AGENT_ID`. Never widen that.
 - Usage comes from Paseo's `provider.usage.list`, merged for Claude with the recorder's freshest

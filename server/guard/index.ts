@@ -16,6 +16,8 @@
  *   pass, and gives the lock back once no pause is left waiting on it.
  */
 
+import { join } from "node:path";
+import { TransientRecovery, type RecoveryOptions } from "./transient.ts";
 import type { PluginHandlerContext, PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
 
 import {
@@ -79,6 +81,7 @@ export interface GuardDependencies {
   connect?: Connect;
   processes?: ProcessControl;
   readAccounts?: ReadAccounts;
+  transient?: Pick<RecoveryOptions, "now" | "schedule" | "log">;
 }
 
 export function contributeGuard(server: PluginServerContext, options: GuardDependencies = {}): () => Promise<void> {
@@ -137,6 +140,14 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
   const engine = new Engine(store, readPolicy, connect, Date.now, options.processes ?? new LinuxProcessControl(), publish, readUsage, readAccounts);
   // Seam C: the guard asks ZeroSub to move a session at its threshold (`Engine.askMove`).
   engine.zerosubPluginId = () => zerosubInstallId();
+  const recovery = new TransientRecovery({
+    ...options.transient,
+    policy: async () => (await readPolicy()).retryTransientErrors,
+    connect,
+    blocked: async agentId => (await store.read()).pauses.some(p => p.agentId === agentId && isPending(p)),
+    // Independent ownership keeps quota pausing off by default, with no idle timer.
+    claim: () => new Store(join(store.directory, "transient-recovery")).lock(),
+  });
   const labels = new WorkspaceLabels(store, (work) => engine.exclusive(work), connect, readPolicy);
 
   let governor: Governor = "off";
@@ -333,9 +344,15 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
       ...protection,
       thresholdPct: policy.thresholdPct,
       autoResume: policy.autoResume,
+      retryTransientErrors: policy.retryTransientErrors,
       pauses,
       providers: providerRows(policy, agentId),
-      summary: agentGuardSummary({ governor, protected: protection.protected, thresholdPct: policy.thresholdPct, autoResume: policy.autoResume, pauses }),
+      summary: [
+        ...agentGuardSummary({ governor, protected: protection.protected, thresholdPct: policy.thresholdPct, autoResume: policy.autoResume, pauses }),
+        policy.retryTransientErrors
+          ? "Transient API error recovery is on: failed working turns retry after 1, 3 and 10 minutes, at most three times. Idle and closed sessions are never started."
+          : "Transient API error recovery is off; failed turns wait for a person.",
+      ],
     };
   });
 
@@ -372,12 +389,15 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
   });
 
   const removeSettings = settings.subscribe(() => {
+    void recovery.settingsChanged().catch(() => undefined);
     void refresh();
   });
-  const removeTurnStarted = server.on("agent.turn_started", () => {
+  const removeTurnStarted = server.on("agent.turn_started", (event) => {
+    if (event.agent?.id) recovery.started(event.agent.id, event.turnId);
     if (governor !== "off") void refresh();
   });
   const removeTurnEnded = server.on("agent.turn_ended", (event, context) => {
+    void recovery.ended(event.agent.id, event.turnId, event.outcome).catch(() => undefined);
     if (governor !== "active") return;
     // Never await a governor tick inside a lifecycle hook: cancelAgent itself causes
     // turn_ended, and awaiting both would deadlock.
@@ -407,8 +427,10 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     removeSettings();
     removeTurnStarted();
     removeTurnEnded();
+    const recoveryStopped = recovery.stop();
     disposed = true;
     await Promise.allSettled([...open].map((client) => client.close()));
+    await recoveryStopped.catch(() => undefined);
     await current?.catch(() => undefined);
     try {
       // Only the owner may touch suspended workers: a deferring process must leave the
