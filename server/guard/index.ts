@@ -94,8 +94,8 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
   };
 
   // The guard's own held connection (one-held-daemon-connection), opened on its first call
-  // (never while it is off), so teardown can close it mid-call without touching a delivery
-  // the compaction governor has in flight on the process's shared socket.
+  // for quota protection or transient recovery. Teardown can close it mid-call without
+  // touching a delivery the compaction governor has in flight on the shared socket.
   const own = options.connect ? null : sharedDaemon(undefined, { name: "Session Guard" });
   const open = new Set<{ close(): Promise<void> }>();
   let disposed = false;

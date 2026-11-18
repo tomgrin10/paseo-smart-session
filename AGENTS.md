@@ -77,9 +77,9 @@
   daemon call goes through `withDaemon`, which runs on `sharedDaemon`'s one connection (`server/daemon.ts`;
   `openDaemon` is the only place a `DaemonClient` is built). It reopens only after a real drop (the client's
   connection status, or a failed call on a socket no longer `connected`), with backoff after a failed open, and is
-  replaced after `SHARED_CLIENT_MAX_MS`. Session Guard holds its own (opened on its first call, never while it is
-  off), so its teardown can't cut a governor delivery. A held socket keeps the event loop alive, so `closeDaemon` runs
-  last in `index.server.ts`'s teardown; otherwise "Stopping plugin" hangs and reload wedges for the life of the
+  replaced after `SHARED_CLIENT_MAX_MS`. Session Guard holds its own (opened on its first call for quota
+  protection or an observed turn eligible for transient recovery), so its teardown can't cut a governor delivery.
+  A held socket keeps the event loop alive, so `closeDaemon` runs last in `index.server.ts`'s teardown; otherwise "Stopping plugin" hangs and reload wedges for the life of the
   daemon. Every other timer and resource is released through `shared/lifecycle.ts`; `check-teardown.mjs` enforces
   both. 2026-11-18 live: a WebSocket per call meant about 13-17 hellos a minute; `daemon-connection.test.ts` pins 20
   calls to one connection.
