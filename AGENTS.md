@@ -299,6 +299,9 @@
   `docs/session-guard.md` "Trace"), and a protection change names the control that sent it (`source`
   on `smart-session.guard.protection`): the daemon doesn't tell a plugin who called. Keep new paths
   that change a hold or an override traced, with ids only.
+- A shared-resource run marked by `HARNESS_SLOT_HELD` or a `harness-slot` ancestor,
+  including descendants that clear the marker, must stay runnable during a quota pause so it
+  can finish and release its lock. Never journal excluded workers as suspended or resume them.
 - Process signals are identity-checked by PID birth time and limited to direct children of this
   daemon carrying the agent's `PASEO_AGENT_ID`. Never widen that.
 - Usage comes from Paseo's `provider.usage.list`, merged for Claude with the recorder's freshest
