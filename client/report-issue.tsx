@@ -105,8 +105,8 @@ export function ReportSheet({ request, theme, layout, openAgent, onClose }: { re
       </View>
     </View>
     <Footer compact={compact} theme={theme}>
-      <Button title="Close" kind="ghost" theme={theme} compact={compact} onPress={onClose} />
-      {openAgent && <Button title="Open the chat" kind="primary" theme={theme} compact={compact} onPress={() => { openAgent(phase.agentId); onClose(); }} />}
+      <Button title="Close" kind="ghost" theme={theme} compact={compact} grow={compact} onPress={onClose} />
+      {openAgent && <Button title="Open the chat" kind="primary" theme={theme} compact={compact} grow={compact} onPress={() => { openAgent(phase.agentId); onClose(); }} />}
     </Footer>
   </Modal.Content>;
 
@@ -153,9 +153,9 @@ export function ReportSheet({ request, theme, layout, openAgent, onClose }: { re
       {phase.kind === "failed" && <Text accessibilityRole="alert" style={{ color: c.statusDanger, fontSize: 12, lineHeight: 17 }}>Not sent: {phase.message}</Text>}
     </View>
     <Footer compact={compact} theme={theme}>
-      <Button title="Cancel" kind="ghost" theme={theme} compact={compact} onPress={onClose} />
-      {nowhere ? <Button title="Open on GitHub" icon="ExternalLink" kind="primary" theme={theme} compact={compact} disabled={empty} onPress={() => void openGithub()} />
-        : <Button title={chosen === NEW_WORKSPACE ? "Start workspace and send" : chosen === NEW_AGENT ? "Start agent and send" : "Send to agent"} kind="primary" theme={theme} compact={compact} disabled={empty || !chosen} loading={phase.kind === "sending"} onPress={() => void submit()} />}
+      <Button title="Cancel" kind="ghost" theme={theme} compact={compact} grow={compact} onPress={onClose} />
+      {nowhere ? <Button title="Open on GitHub" icon="ExternalLink" kind="primary" theme={theme} compact={compact} grow={compact} disabled={empty} onPress={() => void openGithub()} />
+        : <Button title={chosen === NEW_WORKSPACE ? "Start workspace and send" : chosen === NEW_AGENT ? "Start agent and send" : "Send to agent"} kind="primary" theme={theme} compact={compact} grow={compact} disabled={empty || !chosen} loading={phase.kind === "sending"} onPress={() => void submit()} />}
     </Footer>
   </Modal.Content>;
 }

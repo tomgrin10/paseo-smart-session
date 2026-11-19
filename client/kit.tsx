@@ -38,15 +38,15 @@ export const text = (colors: Colors) => ({
 
 type ButtonKind = "primary" | "secondary" | "ghost" | "danger";
 /** 28–32px with a hit slop on desktop, 44px on touch layouts. */
-export function Button({ title, onPress, theme, kind = "secondary", disabled = false, loading = false, icon, iconColor, compact = false, small = false, accessibilityLabel, accessibilityHint }: {
-  title: string; onPress: () => void; theme: Theme; kind?: ButtonKind; disabled?: boolean; loading?: boolean; icon?: string; iconColor?: string; compact?: boolean; small?: boolean; accessibilityLabel?: string; accessibilityHint?: string;
+export function Button({ title, onPress, theme, kind = "secondary", disabled = false, loading = false, icon, iconColor, compact = false, small = false, grow = false, accessibilityLabel, accessibilityHint }: {
+  title: string; onPress: () => void; theme: Theme; kind?: ButtonKind; disabled?: boolean; loading?: boolean; icon?: string; iconColor?: string; compact?: boolean; small?: boolean; /** Fill the row's width (a phone sheet's footer). */ grow?: boolean; accessibilityLabel?: string; accessibilityHint?: string;
 }) {
   const c = theme.colors;
   const fg = kind === "primary" ? c.accentForeground : kind === "danger" ? c.statusDanger : c.foreground;
   const inactive = disabled || loading;
   const height = compact ? 44 : small ? 28 : 32;
   return <PressScale accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? title} accessibilityHint={accessibilityHint} accessibilityState={{ disabled: inactive, busy: loading }}
-    disabled={inactive} onPress={onPress} hitSlop={compact ? 0 : 4} outerStyle={{ alignSelf: "flex-start" }}
+    disabled={inactive} onPress={onPress} hitSlop={compact ? 0 : 4} outerStyle={{ alignSelf: grow ? "stretch" : "flex-start" }}
     style={({ pressed, hovered }) => ({
       minHeight: height, paddingHorizontal: compact ? 14 : small ? 9 : 11, borderRadius: compact ? 8 : 6, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
       opacity: disabled ? 0.45 : 1,
