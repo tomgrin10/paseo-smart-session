@@ -369,6 +369,24 @@ export const publishAsRecord = defineRpc({
   output: z.object({ recorded: z.boolean() }),
 });
 
+/** The newest publish-as helper runs (`publish-as/runs-YYYY-MM.jsonl`), newest first: for Settings → Artifacts. */
+export const publishAsRuns = defineRpc({
+  name: "smart-session.publish_as.runs",
+  input: z.object({ limit: z.number().int().min(1).max(50).optional() }),
+  output: z.object({
+    runs: z.array(z.object({
+      at: z.string(),
+      outcome: z.string(),
+      /** `hook` or `tool`. */
+      via: z.string().nullable(),
+      tool: z.string().nullable(),
+      ms: z.number().nullable(),
+      /** The ZeroSub account the helper ran on (an id, never an email). */
+      account: z.string().nullable(),
+    })),
+  }),
+});
+
 // ---------------------------------------------------------------------------------------------- moving old history aside
 
 /** The chat row a shed leaves: "Older history moved to <folder>". */

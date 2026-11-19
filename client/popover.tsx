@@ -10,7 +10,7 @@ import { contextOutlook } from "../shared/forecast";
 import { compactionLine, listCompactions, setEnrolment } from "../shared/governor";
 import { cancelResumeRpc, dismissPauseRpc, resumeNowRpc, setProtectionRpc, statusRpc } from "../shared/guard/contracts";
 import { PAUSE_ACTIONS, THEN, THERE, actionNote, governorNotice, heldOn, heldUntil, heldWhere, heldWork, pausePresentation } from "../shared/guard/presentation";
-import { contextStatus } from "../shared/smart-session";
+import { contextStatus, getSettings } from "../shared/smart-session";
 import { profileFor } from "../shared/thresholds";
 import type { AgentDirectory } from "./agents";
 import { Meter, Ring, toneFill } from "./charts";
@@ -20,7 +20,7 @@ import { noteEnrolment, pillSnapshot, subscribePills } from "./pill-store";
 import { tabular, toneColor } from "./theme";
 import { SETTINGS_SCREEN } from "./screens";
 import { hasSubscriptions, subscribeSubscriptions, subscriptionsSnapshot } from "./subscriptions";
-import { atTheLimit, sessionWindow, subscriptionState, weeklyWindow } from "../shared/subscriptions";
+import { atTheLimit, sessionWindow, showsMainChip, subscriptionState, weeklyWindow } from "../shared/subscriptions";
 
 /** The pill's popover: a pause when there is one, this session's context and both of its switches. */
 export function makeContextPopover(client: PluginClientContext, agents: AgentDirectory) {
@@ -44,6 +44,9 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
     const [saving, setSaving] = useState<"compact" | "protect" | "release" | "resume" | "dismiss" | null>(null);
     const [problem, setProblem] = useState<string | null>(null);
     const detail = useQuery({ queryKey: ["smart-session", "context", agentId], queryFn: () => readContext({ agentId }), refetchInterval: 30_000 });
+    const readSettings = useRpc(getSettings);
+    // Shared with the overview's query: one read serves both.
+    const settingsQuery = useQuery({ queryKey: ["smart-session", "settings"], queryFn: () => readSettings({}), staleTime: 60_000 });
     const compactions = useQuery({ queryKey: ["smart-session", "compactions", agentId], queryFn: () => readCompactions({ agentId }), refetchInterval: 30_000 });
 
     const agent = agents.current().get(agentId);
@@ -119,11 +122,19 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
       const week = pct(weeklyWindow(own));
       const state = subscriptionState(own, now);
       const windows = [s5 === null ? null : `5h ${s5}%`, week === null ? null : `week ${week}%`].filter(Boolean).join(" · ");
-      const value = [own.name, state.kind === "room" ? windows : state.label].filter(Boolean).join(" · ");
+      // The main account is always named as such: "Main", or "Alice (Main)" when it has a name of its own.
+      const name = showsMainChip(own) ? `${own.name} (Main)` : own.name;
+      const value = [name, state.kind === "room" ? windows : state.label].filter(Boolean).join(" · ");
       const next = atTheLimit(subs.accounts, own.id, now, { autoSwitch: subs.autoSwitch, protectedHere: protection.kind === "on" && protection.protected });
-      return { value, next, tone: state.kind === "limit" ? "danger" as const : null };
+      // A session off the publish target: its pages still go out as the target (publishing as the main account).
+      const settings = settingsQuery.data?.settings;
+      const claude = subs.accounts.filter((a) => a.family === "claude");
+      const target = own.family === "claude" && settings?.publishAsMain ? claude.find((a) => a.id === settings.publishAsAccount) ?? claude.find((a) => a.kind === "main") : undefined;
+      const publish = target && target.id !== own.id ? `Publish as ${showsMainChip(target) ? `${target.name} (Main)` : target.name}` : null;
+      return { value, next, publish, tone: state.kind === "limit" ? "danger" as const : null };
     })();
     if (account) facts.push(["Subscription", account.value]);
+    if (account?.publish) facts.push(["Artifacts", account.publish]);
     const ringColor = head === null ? c.foregroundMuted : head.outlook.tone !== "default" ? toneFill(c, head.outlook.tone) : enrolled ? c.foreground : c.foregroundMuted;
     const part = { gap: 6, paddingTop: 10, borderTopWidth: 1, borderTopColor: c.border } as const;
 
@@ -217,11 +228,14 @@ export function makeContextPopover(client: PluginClientContext, agents: AgentDir
         {pausePart !== null ? null : <Text style={{ ...t.body, color: sentence.tone === "default" ? c.foreground : toneColor(c, sentence.tone) }}>{sentence.line}</Text>}
       </View>
       {pausePart !== null ? null : <View style={part}>
-        {facts.map(([label, value]) => <View key={label} style={{ flexDirection: "row", gap: 12 }}>
-          <Text style={{ ...t.meta, width: 112 }}>{label}</Text>
-          <Text style={{ ...t.meta, flex: 1, color: label === "Subscription" && account?.tone ? toneColor(c, account.tone) : c.foreground, ...tabular }}>{value}</Text>
+        {facts.map(([label, value]) => <View key={label} style={{ gap: 6 }}>
+          <View style={{ flexDirection: "row", gap: 12 }}>
+            <Text style={{ ...t.meta, width: 112 }}>{label}</Text>
+            <Text style={{ ...t.meta, flex: 1, color: label === "Subscription" && account?.tone ? toneColor(c, account.tone) : c.foreground, ...tabular }}>{value}</Text>
+          </View>
+          {/* What happens at this subscription's limit, right under it. */}
+          {label === "Subscription" && account && account.next.text ? <Text style={{ ...t.meta, paddingLeft: 124, color: account.next.tone === "default" ? c.foregroundMuted : toneColor(c, account.next.tone) }}>{account.next.text}</Text> : null}
         </View>)}
-        {account && account.next.text ? <Text style={{ ...t.meta, paddingLeft: 124, color: account.next.tone === "default" ? c.foregroundMuted : toneColor(c, account.next.tone) }}>{account.next.text}</Text> : null}
       </View>}
       <View style={{ ...part, gap: 12 }}>
         {compactOn ? <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>

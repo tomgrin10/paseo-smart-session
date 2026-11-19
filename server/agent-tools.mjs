@@ -533,7 +533,7 @@ export function agentTools(context) {
         const changed = Object.keys(patch).length > 0;
         const { settings } = changed ? await callPlugin("smart-session.settings.set", patch) : await callPlugin("smart-session.settings.get", {});
         const target = settings.publishAsAccount === null
-          ? "the main Claude account (CLI login)"
+          ? "Main (the main Claude account)"
           : (claude.find((account) => account.id === settings.publishAsAccount)?.name ?? settings.publishAsAccount);
         const lines = [
           `${changed ? "Saved. " : ""}Publish artifacts as the main account: ${settings.publishAsMain ? "on" : "off"}. Target: ${target}.`,
@@ -542,6 +542,20 @@ export function agentTools(context) {
             : "Use the main account's Extra usage when it's out: off. While the target is out of usage, a publish is refused with the reason.",
           claude.length < 2 ? "ZeroSub has fewer than two Claude accounts here, so this changes nothing yet." : `Claude accounts: ${claude.map((account) => account.name).join(", ")}.`,
         ];
+        // The same status and recent runs Settings → Artifacts shows.
+        const targetAccount = settings.publishAsAccount === null ? claude.find((account) => account.kind === "main") : claude.find((account) => account.id === settings.publishAsAccount);
+        if (targetAccount && claude.length > 1) {
+          const until = targetAccount.outUntil ?? targetAccount.limitedUntil;
+          const state = !targetAccount.signedIn ? "signed out in ZeroSub; publishing is refused until it signs in"
+            : targetAccount.disabled ? "set aside in ZeroSub; publishing is refused until it is back"
+              : until && Date.parse(until) > Date.now() ? `out of usage until ${until}` : "ready";
+          const extra = targetAccount.extraUsage;
+          const money = (minor) => `$${(minor / 100).toFixed(2)}`;
+          const extraLine = extra ? (extra.enabled ? `Extra usage on${extra.limit !== null ? `, ${money(extra.spend ?? 0)} of ${money(extra.limit)} spent this month` : ""}` : "Extra usage off") : null;
+          lines.push(`Target status: ${state}.${extraLine ? ` ${extraLine}.` : ""}`);
+        }
+        const runs = (await callPlugin("smart-session.publish_as.runs", { limit: 5 }).catch(() => null))?.runs ?? [];
+        if (runs.length > 0) lines.push(`Recent publishes (newest first): ${runs.map((run) => `${run.at} ${run.outcome}${run.ms !== null ? ` in ${Math.round(run.ms / 1000)}s` : ""}`).join("; ")}.`);
         // The publishing hook only reaches a seat session whose ZeroSub home links the main settings.
         const install = await callPlugin("smart-session.install.status", {}).catch(() => null);
         for (const home of install?.report?.homes ?? []) lines.push(home.line);
