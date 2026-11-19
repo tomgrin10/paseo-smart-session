@@ -43,7 +43,8 @@ import { LinuxProcessControl, type ProcessControl } from "./processes.ts";
 import { standaloneEnabled } from "./standalone.ts";
 import { guardDataDir, LockHeldError, Store } from "./store.ts";
 import { timelinePublisher } from "./timeline.ts";
-import { withRecordedUsage } from "./usage.ts";
+import { cliOnlyUsage, withRecordedUsage } from "./usage.ts";
+import { cliLoginHash, sha256 } from "../recorder.ts";
 import { logHolds } from "../account-log.ts";
 import { readZeroSub, zerosubInstallId } from "./zerosub.ts";
 import { accountView } from "../../shared/guard/zerosub.ts";
@@ -134,8 +135,9 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
 
   // Every hold that starts or ends is logged for account use (`holds-YYYY-MM.jsonl`).
   const store = new Store(guardDataDir(), (previous, next) => void logHolds(previous, next));
+  // Only the CLI login's Claude report: Paseo 0.16 lists every login's as `claude` (`cliOnlyUsage`).
   const readUsage = async (client: GuardClient): Promise<Usage> =>
-    withRecordedUsage(await client.listProviderUsage(), await freshestUsage().catch(() => null));
+    withRecordedUsage(cliOnlyUsage(await client.listProviderUsage(), await cliLoginHash().catch(() => null), sha256), await freshestUsage().catch(() => null));
   // With ZeroSub enabled, agents are measured on their own accounts (`shared/guard/zerosub.ts`).
   const readAccounts = options.readAccounts ?? (async (usage: Usage, policy: Policy) => {
     const snapshot = await readZeroSub();

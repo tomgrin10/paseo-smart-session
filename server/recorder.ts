@@ -210,13 +210,17 @@ async function pollAccounts(snapshot: ZeroSubSnapshot | null): Promise<void> {
   }
 }
 
-const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+export const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
-/** The CLI login's email hash, to find its report among every login's (ZeroSub knows the email). */
-async function cliLoginHash(): Promise<string | null> {
-  if (cliAccountId === null) return null;
+/**
+ * The CLI login's email hash, to find its report among every login's (ZeroSub knows the
+ * email). Session Guard asks too (`cliOnlyUsage`), possibly before the recorder's first tick.
+ */
+export async function cliLoginHash(): Promise<string | null> {
+  const id = cliAccountId ?? (await readZeroSub().catch(() => null))?.accounts.find((a) => a.family === "claude" && a.kind === "main")?.id ?? null;
+  if (id === null) return null;
   const state = await sourceState().catch(() => null);
-  return state?.zerosub?.extras[cliAccountId]?.emailHash ?? null;
+  return state?.zerosub?.extras[id]?.emailHash ?? null;
 }
 
 async function pollDaemon(snapshot: ZeroSubSnapshot | null): Promise<void> {
