@@ -12,6 +12,8 @@ const ICONS: Record<ToolRow["tool"], string> = {
   checkpoint: "Save",
   request_compaction: "FoldVertical",
   defer_compaction: "Clock",
+  report_issue: "Bug",
+  report_send: "Send",
   publish_as: "Upload",
   publish_as_settings: "Settings",
 };
