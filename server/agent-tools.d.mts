@@ -3,6 +3,8 @@ export type AgentToolsContext = {
   call: (method: string, input: unknown) => Promise<any>;
   home?: string;
   stateFile?: string;
+  /** Served natively (`smart_` names); the stdio fallback leaves it unset. */
+  native?: boolean;
 };
 export type AgentTool = {
   description: string;
@@ -10,6 +12,7 @@ export type AgentTool = {
   run(args: Record<string, unknown>): Promise<string>;
 };
 export declare const AGENT_SCOPED: Set<string>;
-export declare function agentTools(context: AgentToolsContext): Record<"context_status" | "budget_status" | "checkpoint" | "request_compaction" | "defer_compaction", AgentTool>;
+export declare const REPORT_DESCRIPTION: string;
+export declare function agentTools(context: AgentToolsContext): Record<"context_status" | "budget_status" | "checkpoint" | "request_compaction" | "defer_compaction" | "report_issue" | "report_send", AgentTool>;
 export declare const TOOL_SHAPES: { name: string; description: string; inputSchema: Record<string, unknown> }[];
 export declare function named(text: string, native?: boolean): string;

@@ -3,6 +3,10 @@ import { zerosubBudgetAccount } from "./server/guard/zerosub.ts";
 import { contributeSessionMcp } from "./server/session-mcp.ts";
 import { contributeHistoryShed } from "./server/history-shed-host.ts";
 import { contributeUsageSource, usageCards } from "./server/usage-source.ts";
+import { LogRing } from "./server/report-issue/diagnostics.ts";
+import { smartSessionReporter } from "./server/report-issue-adapter.ts";
+import { reportTargets, sendReport, type ReportPaseo } from "./server/report-send.ts";
+import { reportIssueRpc, reportLinkRpc, reportSendRpc, reportTargetsRpc } from "./shared/report-issue.ts";
 import { budgetPool, subscriptionsView } from "./server/subscriptions.ts";
 import { displayPreferences } from "./shared/display";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
@@ -85,6 +89,7 @@ export default function contribute(host: PluginServerContext) {
   const removeHistoryShed = contributeHistoryShed(server);
   // Paseo 0.16+: Smart Session's forecast and every ZeroSub account in Paseo's own usage card.
   contributeUsageSource(server);
+  const removeReport = contributeReport(server, invoke);
   server.handle(usageCardsStatus, async () => {
     try {
       return await usageCards();
@@ -277,5 +282,34 @@ export default function contribute(host: PluginServerContext) {
   // The recorder and governor register their timers in this shared lifecycle.
   // Paseo waits for this cleanup before stopping the plugin subprocess.
   // The held daemon connection closes last, after every feature that might still be using it.
-  return () => runTeardowns([removeSessionMcp, removeGuard, removeHistoryShed, ...lifecycle.teardowns.splice(0), closeDaemon]);
+  return () => runTeardowns([removeSessionMcp, removeGuard, removeHistoryShed, removeReport, ...lifecycle.teardowns.splice(0), closeDaemon]);
+}
+
+/**
+ * Report a bug (docs/report-issue.md; the module in server/report-issue/ is vendored from paseo-plugin-kit). Reads
+ * only while a report is being prepared; the one standing cost is the in-memory ring of recent `[smart-session]`
+ * warnings and errors, which teardown takes off `console` again.
+ */
+function contributeReport(server: PluginServerContext, invoke: Invoke): () => void {
+  const logs = new LogRing();
+  const restoreConsole = logs.capture("[smart-session]");
+  // The host's API from the latest call: the reporter outlives one call (its plans), the handlers' context doesn't.
+  let paseo: PluginHandlerContext["paseo"] | null = null;
+  const seen = (context: PluginHandlerContext) => { paseo = context.paseo; return context.paseo as unknown as ReportPaseo; };
+  const report = smartSessionReporter({
+    call: (method, input) => invoke(method, input ?? {}, { paseo } as never),
+    directory: async () => {
+      if (!paseo) return { workspaces: [], agentTitles: [] };
+      const api = paseo as unknown as { workspaces: { list(): Promise<{ entries: { name?: string; title?: string | null; projectDisplayName?: string; projectRootPath?: string }[] }> }; agents: { list(): Promise<{ entries: { agent: { title?: string | null } }[] }> } };
+      const [workspaces, agents] = await Promise.all([api.workspaces.list().then((r) => r.entries).catch(() => []), api.agents.list().then((r) => r.entries).catch(() => [])]);
+      return { workspaces, agentTitles: agents.map((e) => e.agent.title).filter((t): t is string => !!t) };
+    },
+    logs,
+    startedAt: Date.now(),
+  });
+  server.handle(reportIssueRpc, async ({ agentId, input }, context) => { seen(context); return report.reporter.run(agentId, input); });
+  server.handle(reportTargetsRpc, async (at, context) => reportTargets(seen(context), at));
+  server.handle(reportSendRpc, async (input, context) => sendReport(seen(context), input));
+  server.handle(reportLinkRpc, async ({ kind, text }) => ({ url: (await report.manualLink(kind, text)).url }));
+  return restoreConsole;
 }

@@ -6,6 +6,7 @@ import { displayPreferences, displayRpc } from "../shared/display.ts";
 import { enrolmentState } from "../shared/governor.ts";
 import { getSettings, setSettings } from "../shared/smart-session.ts";
 import { refreshPills } from "./pill-store.ts";
+import { openReportSheet } from "./report-request.ts";
 import { OVERVIEW_SCREEN, SETTINGS_SCREEN } from "./screens.ts";
 
 /**
@@ -57,6 +58,15 @@ export function commandItems(): CommandItem[] {
         await rpc(setSettings, { showPill: next });
         await refreshPills(() => rpc(enrolmentState, {}));
       },
+    },
+    {
+      // Report a bug (docs/report-issue.md): the sheet hands the person's words to an agent; nothing is filed from here.
+      id: "smart-session-report-issue",
+      title: "Smart Session: Report a bug, idea or feedback",
+      icon: "Bug",
+      keywords: ["bug", "report", "issue", "problem", "broken", "feature request", "idea", "feedback", "github", "help", "session guard"],
+      context: "global",
+      onSelect() { openReportSheet(); },
     },
   ];
 }

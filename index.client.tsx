@@ -1,6 +1,6 @@
 import { withButtonVisibility } from "./client/button-visibility";
 import { contributeDisplay } from "./client/display";
-import type { PluginClientContext } from "@getpaseo/plugin/client";
+import type { PluginClientContext, PluginScreenProps, PluginSurfaceProps } from "@getpaseo/plugin/client";
 
 import { observeAgents } from "./client/agents";
 import { contributeChat } from "./client/chat";
@@ -12,6 +12,8 @@ import { createLive } from "./client/live";
 import { OVERVIEW_SCREEN, PAUSED_SCREEN, SMART_COMPACT_SETTINGS, makeOverview } from "./client/overview";
 import { contributeClient } from "./client/pill";
 import { makeSettings } from "./client/settings";
+import { ReportSheetHost, openReportSheet, setReportFallback } from "./client/report-issue";
+import { reportSendRpc } from "./shared/report-issue";
 import { watchSubscriptions } from "./client/subscriptions";
 import { watchUsageCards } from "./client/usage-hide";
 import { budgetStatus } from "./shared/smart-session";
@@ -20,12 +22,23 @@ export default function contribute(host: PluginClientContext) {
   const visibility = withButtonVisibility(host);
   const client = visibility.client;
   const live = createLive();
-  const Overview = makeOverview(client, live);
+  const BareOverview = makeOverview(client, live);
+  const BareSettings = makeSettings(client);
+  // Report a bug (docs/report-issue.md): the sheet lives on the overview and in Settings; with neither on screen, the
+  // overview opens and its host shows the request already waiting.
+  setReportFallback(() => client.openScreen({ screenId: OVERVIEW_SCREEN }));
+  const Overview = (props: PluginScreenProps) => <><BareOverview {...props} /><ReportSheetHost theme={props.theme} layout={props.layout} openAgent={props.navigation ? (agentId) => props.navigation!.openAgent({ agentId }) : undefined} /></>;
+  const Settings = (props: PluginSurfaceProps) => <><BareSettings {...props} /><ReportSheetHost theme={props.theme} layout={props.layout} openAgent={props.navigation ? (agentId) => props.navigation!.openAgent({ agentId }) : undefined} /></>;
   const removers = [
     client.addScreen({ id: OVERVIEW_SCREEN, title: "Smart Session", Component: Overview }),
     // The old Paused sessions screen: links to it from older chats and clients land on the list.
     client.addScreen({ id: PAUSED_SCREEN, title: "Smart Session", Component: (props) => <Overview {...props} params={{ ...props.params, focus: "paused" }} /> }),
-    client.addSettingsScreen({ id: SMART_COMPACT_SETTINGS, title: "Settings", icon: "Gauge", Component: makeSettings(client) }),
+    client.addSettingsScreen({ id: SMART_COMPACT_SETTINGS, title: "Settings", icon: "Gauge", Component: Settings }),
+    // /report-smart-session: words go straight to this agent; with none, the sheet opens with this agent picked.
+    client.addSlashCommand({ name: "report-smart-session", description: "Report a Smart Session bug, idea or feedback; this agent files it on GitHub after you OK it", argumentHint: "what happened", context: "agent", async onSubmit({ args, agent, workspace, rpc }) {
+      if (args.trim()) await rpc(reportSendRpc, { kind: "bug", text: args.trim(), agentId: agent.id }).catch(() => openReportSheet({ agentId: agent.id, workspaceId: workspace.id }));
+      else openReportSheet({ agentId: agent.id, workspaceId: workspace.id });
+    } }),
     contributeDisplay(client, live),
     ...commandItems().map((item) => client.addCommandCenterItem(item)),
     contributeChat(client),

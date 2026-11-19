@@ -45,7 +45,7 @@ export function nativeTools(invoke: Invoke): AgentToolDefinition[] {
     input: fromJSONSchema(shape.inputSchema),
     async execute(input: unknown, context: AgentToolContext) {
       try {
-        const tools = agentTools({ agentId: context.agent.id, call: (method, payload) => invoke(method, payload, context) });
+        const tools = agentTools({ agentId: context.agent.id, native: true, call: (method, payload) => invoke(method, payload, context) });
         const text = await tools[shape.name as keyof typeof tools].run((input ?? {}) as Record<string, unknown>);
         return { text: named(text, true) };
       } catch (error) {

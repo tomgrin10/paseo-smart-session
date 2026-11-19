@@ -18,6 +18,10 @@ import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
 import { HistoryShedSection } from "./history-shed";
 import { Button, errorText } from "./kit";
 import { refreshPills } from "./pill-store";
+import { openReportSheet } from "./report-request";
+
+/** Settings → Help → Report a bug: Follow-up's words. */
+export const REPORT_HINT = "Or an idea or feedback. An agent writes it up and shows you the issue before filing it.";
 
 /** A whole number from 1 to 99, or null. */
 /** The four editable lines: the end-of-turn and mid-turn line for each window size. */
@@ -308,6 +312,11 @@ export function makeSettings(client: PluginClientContext) {
         </SettingsCard>
         {guard.status === "ready" && guard.saveError ? <Text accessibilityRole="alert" style={{ color: c.statusDanger }}>{guard.saveError}</Text> : null}
       </SettingsSection>}
+
+      {/* Report a bug (docs/report-issue.md): where people look for it, at the end of settings, as in Follow-up. */}
+      <SettingsSection title="Help">
+        <SettingsCard><SettingsAction label="Report a bug" hint={REPORT_HINT} actionLabel="Report" onPress={() => openReportSheet()} /></SettingsCard>
+      </SettingsSection>
     </ScrollView>;
   };
 }

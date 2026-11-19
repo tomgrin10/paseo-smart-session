@@ -62,6 +62,8 @@ test("MCP can be explicitly hidden outside Paseo without hiding agent tools", as
     "defer_compaction",
     "publish_as",
     "publish_as_settings",
+    "report_issue",
+    "report_send",
     "request_compaction",
   ]);
 });
