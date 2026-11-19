@@ -56,3 +56,10 @@ Everything the agent writes, every row and every log line goes through the modul
 (`<email>`), IP addresses, the hostname (`<host>`), home paths (`~`), the GitHub repositories of Paseo's projects
 (`repo-N`, read from each project's `origin` while a report is prepared), and workspace, project and agent titles
 (`PR-N`). `report-issue.test.ts` holds it for Smart Session's own diagnostics.
+
+## Renders
+
+`docs/evidence/report-issue/` (an isolated Paseo 0.15.4 harness with fictional workspaces; not shipped in the
+package): Settings → Help on desktop and phone, the sheet with words typed, and the Send to picker, light and dark.
+The harness had no agent provider that could start, so the picker shows only "A new agent" and there is no render of
+the sent state.

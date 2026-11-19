@@ -28,7 +28,8 @@
     "shared/",
     "hooks/",
     "mcp.mjs",
-    "docs/"
+    "docs/",
+    "!docs/evidence/"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
