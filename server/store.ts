@@ -84,7 +84,13 @@ export interface AccountSample extends Omit<UsageSample, "src"> {
   readonly family: "claude" | "codex";
 }
 
-type LogKind = "usage" | "context" | "accounts";
+/**
+ * The account-use logs (`shared/account-log.ts`): where agents run, Session Guard holds,
+ * ZeroSub moves, and each account's credits. Same rules as the others.
+ */
+export type AccountLogKind = "placement" | "holds" | "moves" | "credits";
+
+type LogKind = "usage" | "context" | "accounts" | AccountLogKind;
 
 /** Monthly files: small enough to read whole, coarse enough to stay few. */
 function logPath(kind: LogKind, at: string): string {
@@ -126,6 +132,22 @@ export async function appendContext(sample: ContextSample): Promise<void> {
 
 export async function appendAccount(sample: AccountSample): Promise<void> {
   await append("accounts", sample.at, sample);
+}
+
+/** One row onto an account-use log, in the month of its `at`. */
+export async function appendAccountLog(kind: AccountLogKind, row: { readonly at: string }): Promise<void> {
+  await append(kind, row.at, row);
+}
+
+/**
+ * An account-use log read back: rows without a string `at`, or not objects, are skipped
+ * (a future shape, a hand edit), never thrown on.
+ */
+export async function readAccountLog<T extends { at: string }>(kind: AccountLogKind, options: { sinceMs?: number } = {}): Promise<T[]> {
+  const since = options.sinceMs ?? null;
+  const rows = await readLog<T>(kind, since);
+  return rows.filter((row) => typeof row === "object" && row !== null && typeof row.at === "string" && Number.isFinite(Date.parse(row.at))
+    && (since === null || Date.parse(row.at) >= since));
 }
 
 /**

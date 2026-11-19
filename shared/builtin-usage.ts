@@ -158,3 +158,34 @@ export function legacyListing(entries: readonly unknown[]): { fetchedAt: string 
   }
   return { fetchedAt, providers };
 }
+
+/** The login (an email) a built-in report is for, or null. The caller hashes it and drops it. */
+function loginOf(entry: unknown): string | null {
+  const e = rec(entry);
+  if (e?.sourceId !== BUILTIN_SOURCE_ID) return null;
+  const login = str(rec(e.account)?.label);
+  return login !== null && login.includes("@") ? login : null;
+}
+
+/**
+ * The CLI login's reading out of the daemon's whole listing, for the recorder.
+ *
+ * Paseo 0.16 lists one built-in Claude report per login a session runs on, so under
+ * ZeroSub the listing holds the seats' reports beside the CLI login's. `legacyListing`
+ * names every one of them `claude`, and `fromPaseoProviderUsage` reads the first: the
+ * recorder logged a seat's numbers as the CLI login's whenever the seat's report came
+ * first (2026-11: `usage-*.jsonl` weekly resets interleaved between two logins). So the
+ * CLI login's report is picked by its email's hash (`cliHash`, ZeroSub's main Claude
+ * account); with no hash to match, only a listing with a single built-in report is
+ * read. Anything ambiguous reads as no reading.
+ */
+export function cliListing(entries: readonly unknown[], cliHash: string | null, hashOf: (login: string) => string): { fetchedAt: string | null; providers: unknown[] } {
+  const builtin = entries.filter((entry) => rec(entry)?.sourceId === BUILTIN_SOURCE_ID);
+  const keep = cliHash !== null
+    ? builtin.filter((entry) => {
+      const login = loginOf(entry);
+      return login !== null && hashOf(login.trim().toLowerCase()) === cliHash;
+    })
+    : builtin.length === 1 ? builtin : [];
+  return legacyListing(keep.length === 1 ? keep : []);
+}

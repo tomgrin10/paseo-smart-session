@@ -40,8 +40,39 @@
 - The data path is fixed and deliberately decoupled from the install id, so a second install under
   `--id something-else` cannot start a second history. It also means a second install runs a second
   recorder and a second governor over the same files.
-- Preserve the on-disk shapes: `usage-YYYY-MM.jsonl`, `context-YYYY-MM.jsonl`, `accounts-YYYY-MM.jsonl`, `settings.json`,
+- Preserve the on-disk shapes: `usage-YYYY-MM.jsonl`, `context-YYYY-MM.jsonl`, `accounts-YYYY-MM.jsonl`, the account-use
+  logs below (`placement-`, `holds-`, `moves-`, `credits-YYYY-MM.jsonl`), `settings.json`,
   `enrolment.json`, `compactions.json`, `state/<agentId>.md`. Migrate rather than break them.
+- **Invariant: every usage reading says whose it is (`usage-account-identity`).** The recorder reads only the CLI's own
+  Claude login: its `~/.claude` credentials (upstream), its cache (`.claude.json`), and that login's report out of the
+  daemon's listing. Paseo 0.16 lists one built-in report per login a session runs on, so under ZeroSub the seats'
+  reports sit beside the CLI login's; `cliListing` (`shared/builtin-usage.ts`) picks it by the email's SHA-256 (ZeroSub's
+  main Claude account), and with nothing to match only a listing with one built-in report is read. Root cause it fixes
+  (2026-11): `legacyListing` named every login's report `claude` and `fromPaseoProviderUsage` took the first, so `paseo`
+  rows were sometimes a seat's (weekly resets interleaved between two logins) and every row said `account: null`.
+  Each row now carries `login: "cli"` and `accountId` (ZeroSub's id, `claude-main`; null without ZeroSub). Rows from
+  before 3.8.0-beta.9 have neither: readers treat them as unknown, never as another account (`account-log.test.ts`).
+- **The account-use logs** (`shared/account-log.ts` rules, `server/account-log.ts` writer), append-only monthly JSONL
+  beside the others, ids only (agent ids, ZeroSub account ids, flags, times, numbers; never a title, prompt, email,
+  generated label or path). Written on the recorder's minute tick from the agent listing and the ZeroSub snapshot it
+  already reads once a tick; nothing else is read after the first tick.
+  - `placement-YYYY-MM.jsonl`, one row a minute while any Claude/Codex agent is open:
+    `{at, accounts: {<accountId>: {running, idle, other?}}, running: [agentId], agents?: {agentId: accountId}}`.
+    `agents` (the full map) is written only when it changed and on a process's first row; carry the last one forward.
+    Without ZeroSub the key is `claude-cli`/`codex-cli`; an agent ZeroSub can't place is `<family>-unknown`.
+  - `holds-YYYY-MM.jsonl`, when Session Guard saves a hold starting or ending (the guard `Store`'s observer, so every
+    path that writes a pause is logged): `{at, event: "start"|"end", pauseId, agentId, provider, accountId, windowId,
+    reason: limit|quota-failure|idle|demo, pausedAt, resetsAt, nextRoomAt, outcome?, phase}`. After a reload an open
+    hold is logged as a start again: dedupe by `pauseId`.
+  - `moves-YYYY-MM.jsonl`, when ZeroSub's `state.json` shows an agent's session on another account than a minute ago
+    (read only; we don't own ZeroSub): `{at, agentId, family, from, to, reason, openedAt}`; `from` null is a new
+    placement; `reason` is ZeroSub's binding source (`pace`, `auto`, `balance[:<selectionReason>]`, `thread`, `user`),
+    else `limit` when `from` was limited, else `unknown`. A process's first tick is a baseline, so a move during a
+    reload gap is missed.
+  - `credits-YYYY-MM.jsonl`, per ZeroSub account (the CLI login included) when its Extra usage, credits or limit state
+    changes: `{at, accountId, family, fetchedAt, extraUsage: {enabled, spend, limit, currency}|null, credits: {balance,
+    unlimited}|null, limitedUntil, limitKind, signedIn, disabled}`; money in minor units.
+  - Read back with `readAccountLog`, which skips a torn line or a row without a valid `at`.
 - `server/store.ts` owns the one-time v0.1 `super-session` to `smart-session` directory migration.
   The old name is allowed only in that migration, its regression tests, and upgrade documentation.
 

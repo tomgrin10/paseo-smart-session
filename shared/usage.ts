@@ -40,6 +40,13 @@ export interface UsageSample {
   readonly fetchedAt: string | null;
   readonly src: SampleSource;
   readonly account: string | null;
+  /**
+   * Which login the reading is of. `"cli"`: the CLI's own Claude login (`~/.claude`), the
+   * only one the recorder reads. Absent on rows written before 3.8.0-beta.9.
+   */
+  readonly login?: "cli";
+  /** ZeroSub's id for that login (`claude-main`) when ZeroSub is enabled, else null. Absent on older rows. */
+  readonly accountId?: string | null;
   readonly windows: Readonly<Record<string, WindowSample>>;
   readonly credits: CreditsSample | null;
 }
@@ -306,6 +313,16 @@ export function fromStatusline(raw: unknown, observedAt = new Date()): UsageSamp
     windows,
     credits: null,
   };
+}
+
+/**
+ * A reading the recorder takes, tagged with its login: every source it reads is the CLI's
+ * own Claude login (`login: "cli"`), which ZeroSub calls `accountId` (null without ZeroSub).
+ * Before 3.8.0-beta.9 every row said `account: null` and nothing else, so readers treat a
+ * row without `login` as unknown, never as another account.
+ */
+export function asCliReading(sample: UsageSample, accountId: string | null): UsageSample {
+  return { ...sample, login: "cli", accountId };
 }
 
 /**
