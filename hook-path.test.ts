@@ -170,7 +170,7 @@ test("update simulation: install vA, install vB, delete vA — the hooks run vB"
   assert.equal(settings.model, "opus");
   const commands: string[] = Object.values(settings.hooks as Record<string, { hooks: { command: string }[] }[]>)
     .flat().flatMap((group) => group.hooks.map((hook) => hook.command));
-  assert.equal(commands.length, 7);
+  assert.equal(commands.length, 8);
   for (const command of commands) {
     assert.doesNotMatch(command, /aaaa-old|bbbb-new/, "no command names an install directory");
     // Exactly as Claude Code runs it: through a shell, the hook event on stdin.
