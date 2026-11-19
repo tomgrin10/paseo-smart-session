@@ -4,13 +4,15 @@
  * An artifact belongs to the account of the session that publishes it. Under ZeroSub an agent may
  * run on a seat account, and then the person can't open, share or edit what it publishes. So a
  * publish from a session on a non-main account is handed to a short-lived helper agent pinned to
- * the main account (`server/publish-as.ts`), and the `PreToolUse` hook on the Artifact tool
+ * the main account (`server/publish-as.ts`), and the `PreToolUse` hook on the artifact tools
  * (`hooks/publish-as.mjs`) does that by default. This module decides when, for whom, and what the
  * model is told.
  *
- * Only actions that create or change a page this feature owns are taken over. Anything else passes
- * through untouched, and so does a publish to a url we didn't make: an older page owned by the seat
- * can only be updated from the seat, and breaking its link is worse than a wrong owner.
+ * Every page has a recorded owner: the helper records what it publishes, and a `PostToolUse` hook
+ * records what a session publishes or reads directly. A call on a page goes to its owner, whichever
+ * account the caller runs on now, so a session that moves between accounts keeps its pages. A url
+ * nobody recorded, from a session off the target, is tried on the target first (the main account
+ * owns nearly everything the person opens); if the target can't see it, the call runs as it was.
  */
 import { accountOf, type ZeroSubAccount, type ZeroSubSnapshot } from "./guard/zerosub.ts";
 
@@ -22,14 +24,25 @@ export const HELPER_LABEL = { key: "smart-session.helper", value: "publish-as" }
 /** The Artifact tool's input, as far as this module reads it. Everything else is passed on verbatim. */
 export type ArtifactInput = Record<string, unknown>;
 
-/** A page this feature published, so a later update of it is routed to the account that owns it. */
+/**
+ * A page a session published or read, and the account that owns it, so a later call on it goes to
+ * that account. One row per (url, caller); the newest row for a url names its owner.
+ */
 export interface OwnedPage {
   readonly url: string;
   readonly callerAgentId: string;
-  /** The caller's own path to the page file, absolute; null for a page made from a type. */
+  /** The caller's own path to the page file, absolute; null for a page made from a type or only read. */
   readonly filePath: string | null;
   readonly accountId: string;
   readonly at: string;
+  /**
+   * The version this caller last published or read. A helper won't publish over a newer one: the
+   * caller gets the live copy to merge instead. Absent on rows written before versions were kept,
+   * which are not checked.
+   */
+  readonly versionId?: string | null;
+  /** How the row was learnt: a helper publish, a direct publish, or a read. */
+  readonly via?: "helper" | "direct" | "read";
 }
 
 export type ArtifactAction =
@@ -37,7 +50,12 @@ export type ArtifactAction =
   /** A new page (or a republish of a path this caller published through us before). */
   | { kind: "create"; filePath: string | null }
   /** A publish, or an asset upload, to an existing url. */
-  | { kind: "update"; url: string };
+  | { kind: "update"; url: string }
+  /** A call that reads or writes an existing page without republishing it: run it as its owner. */
+  | { kind: "access"; url: string };
+
+/** The artifact tools the hook routes. */
+export const ROUTED_TOOLS = ["Artifact", "ArtifactData", "ArtifactComments"] as const;
 
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim() !== "" ? value.trim() : null);
 
@@ -46,11 +64,19 @@ export function normalizeUrl(url: string): string {
   return url.trim().replace(/[?#].*$/, "").replace(/\/+$/, "");
 }
 
-/** What an Artifact call does. Only `publish` (the default action) can create or change a page. */
-export function classify(input: ArtifactInput): ArtifactAction {
-  const action = text(input.action) ?? "publish";
-  if (action !== "publish") return { kind: "other" };
+/**
+ * What an artifact tool call does. Only an Artifact `publish` (the default action) creates or
+ * republishes a page. An Artifact `read` or a file/asset listing, and any ArtifactData or
+ * ArtifactComments call, works on an existing page and only its owner can make it.
+ */
+export function classify(input: ArtifactInput, tool = "Artifact"): ArtifactAction {
   const url = text(input.url);
+  if (tool === "ArtifactData" || tool === "ArtifactComments") return url ? { kind: "access", url: normalizeUrl(url) } : { kind: "other" };
+  if (tool !== "Artifact") return { kind: "other" };
+  const action = text(input.action) ?? "publish";
+  if (action === "read" && url) return { kind: "access", url: normalizeUrl(url) };
+  if (action === "list" && url && (input.scope === "files" || input.scope === "assets")) return { kind: "access", url: normalizeUrl(url) };
+  if (action !== "publish") return { kind: "other" };
   if (url) return { kind: "update", url: normalizeUrl(url) };
   // An asset upload or copy always names the artifact it goes to; without one there's nothing to do.
   if (input.asset === true) return { kind: "other" };
@@ -74,7 +100,7 @@ export interface PublishAsSettings {
 }
 
 /** Why a publish to a limited target is refused before any helper starts. */
-export type RefuseReason = "extra-usage-setting-off" | "extra-usage-off" | "extra-usage-spent" | "extra-usage-unknown";
+export type RefuseReason = "extra-usage-setting-off" | "extra-usage-off" | "extra-usage-spent" | "target-unusable";
 
 /**
  * Whether the target is out of usage, and if so whether the helper may run on its Extra usage.
@@ -95,7 +121,9 @@ export function limitedTarget(
   if (!useExtraUsage) return { kind: "refuse", why: "extra-usage-setting-off" };
   const extra = snapshot.readings[target.id]?.extraUsage ?? null;
   if (target.limitKind === "budget") return { kind: "refuse", why: "extra-usage-spent" };
-  if (!extra) return { kind: "refuse", why: "extra-usage-unknown" };
+  // No reading yet: the person said a publish is worth a dollar, so try; the helper's own result is
+  // the real answer, and ZeroSub turns a spent account into a budget limit.
+  if (!extra) return { kind: "extra-usage" };
   if (!extra.enabled) return { kind: "refuse", why: "extra-usage-off" };
   if (extra.spend !== null && extra.limit !== null && extra.spend >= extra.limit) return { kind: "refuse", why: "extra-usage-spent" };
   return { kind: "extra-usage" };
@@ -124,6 +152,8 @@ export function unusable(account: ZeroSubAccount): string | null {
 
 export interface HookInput {
   readonly callerAgentId: string | null;
+  /** The tool called: Artifact (the default), ArtifactData or ArtifactComments. */
+  readonly tool?: string;
   readonly provider: string;
   readonly input: ArtifactInput;
   readonly settings: PublishAsSettings;
@@ -147,13 +177,24 @@ export type HookDecision =
       filePath: string | null;
       /** The target is out of usage and the helper runs on its Extra usage (the setting allows it). */
       extraUsage: boolean;
+      /** `publish` creates or republishes a page; `access` runs the caller's call as given. */
+      mode: "publish" | "access";
+      /** The tool to run: Artifact, ArtifactData or ArtifactComments. */
+      tool: string;
+      /** Nobody recorded this url: the target is a guess, and if it can't see the page the call runs as it was. */
+      guess: boolean;
+      /**
+       * For a republish: the version this caller last saw. Null when it never saw the page, undefined
+       * when that isn't known (an old row), which skips the check.
+       */
+      expectedVersion: string | null | undefined;
     }
   /** The target is out of usage and the helper may not run there: nothing starts, and `note` says why. */
   | { decision: "refuse"; target: ZeroSubAccount; why: RefuseReason; note: string };
 
 export type PassReason =
   | "helper" | "not-a-publish" | "setting-off" | "no-agent" | "not-claude" | "no-zerosub" | "zerosub-unreadable"
-  | "no-target" | "target-unusable" | "on-target" | "unknown-url";
+  | "no-target" | "on-target" | "owner" | "owner-unusable";
 
 const pass = (why: PassReason, note: string | null = null): HookDecision => ({ decision: "pass", why, note });
 
@@ -163,7 +204,8 @@ const pass = (why: PassReason, note: string | null = null): HookDecision => ({ d
  */
 export function decide(hook: HookInput): HookDecision {
   if (hook.isHelper) return pass("helper");
-  const action = classify(hook.input);
+  const tool = hook.tool ?? "Artifact";
+  const action = classify(hook.input, tool);
   if (action.kind === "other") return pass("not-a-publish");
   if (!hook.settings.enabled) return pass("setting-off");
   if (!hook.callerAgentId) return pass("no-agent");
@@ -173,33 +215,68 @@ export function decide(hook: HookInput): HookDecision {
   const snapshot = hook.zerosub;
   const target = targetAccount(snapshot, hook.settings.accountId);
   if (!target) return pass("no-target");
-  const caller = accountOf(snapshot, hook.callerAgentId, "claude");
-  if (!caller || caller.id === target.id) return pass("on-target");
-  const problem = unusable(target);
-  if (problem) return pass("target-unusable", `Smart Session didn't publish this as ${ownerName(target)} because ${problem}, so it goes out on this session's own account. The user may not be able to open it.`);
+  // A session ZeroSub never routed runs on the CLI login, which is the main account.
+  const caller = accountOf(snapshot, hook.callerAgentId, "claude")
+    ?? snapshot.accounts.find((account) => account.family === "claude" && account.kind === "main")
+    ?? null;
+  const callerId = caller?.id ?? target.id;
 
-  let page: OwnedPage | undefined;
-  if (action.kind === "update") {
-    page = hook.pages.find((candidate) => normalizeUrl(candidate.url) === action.url);
-    // A page we didn't make belongs to whoever did; only that account can update it.
-    if (!page) return pass("unknown-url");
+  // Who owns the page this call is about: the newest record for its url, else the target for a new
+  // page, else (a url nobody recorded) a guess at the target from a session that isn't on it.
+  let owner = target;
+  let guess = false;
+  let mine: OwnedPage | undefined;
+  if (action.kind === "update" || action.kind === "access") {
+    const rows = hook.pages.filter((candidate) => normalizeUrl(candidate.url) === action.url);
+    // A publish proves ownership; a read only proves that account could see the page.
+    const latest = rows.filter((row) => row.via !== "read").at(-1) ?? rows.at(-1);
+    mine = [...rows].reverse().find((row) => row.callerAgentId === hook.callerAgentId);
+    if (latest) {
+      const recorded = snapshot.accounts.find((account) => account.id === latest.accountId);
+      if (!recorded) return pass("owner-unusable");
+      owner = recorded;
+      if (owner.id === callerId) return pass("owner");
+    } else {
+      if (callerId === target.id) return pass("on-target");
+      guess = true;
+    }
+  } else if (callerId === target.id) {
+    return pass("on-target");
+  }
+
+  const problem = unusable(owner);
+  if (problem) {
+    // A guess is only a guess: let the call run as it was rather than refuse it for an account
+    // that may not own the page at all.
+    if (guess) return pass("owner-unusable", null);
+    return { decision: "refuse", target: owner, why: "target-unusable", note: refuseReason("target-unusable", owner, snapshot) };
   }
   // Out of usage: run on its Extra usage only when allowed and credits remain; else stop here, before
-  // a helper is spent learning it (ZeroSub would put the helper on another account).
-  const limit = limitedTarget(snapshot, target, hook.settings.useExtraUsage === true, hook.now ?? Date.now());
-  if (limit.kind === "refuse") return { decision: "refuse", target, why: limit.why, note: refuseReason(limit.why, target, snapshot) };
+  // a helper is spent learning it (ZeroSub would put the helper on another account). Only the target
+  // spends Extra usage; that is what the setting is about.
+  const limit = limitedTarget(snapshot, owner, hook.settings.useExtraUsage === true && owner.id === target.id, hook.now ?? Date.now());
+  if (limit.kind === "refuse") {
+    if (guess) return pass("owner-unusable", null);
+    return { decision: "refuse", target: owner, why: limit.why, note: refuseReason(limit.why, owner, snapshot) };
+  }
   const extraUsage = limit.kind === "extra-usage";
-  if (action.kind === "update") return { decision: "redirect", target, input: hook.input, filePath: page?.filePath ?? null, extraUsage };
-  // Republishing a file this caller published through us before updates that page, as it would have
-  // in the caller's own session.
+  const common = { decision: "redirect" as const, target: owner, extraUsage, tool, guess };
+  if (action.kind === "access") {
+    return { ...common, input: hook.input, filePath: null, mode: "access", expectedVersion: undefined };
+  }
+  if (action.kind === "update") {
+    return { ...common, input: hook.input, filePath: mine?.filePath ?? null, mode: "publish", expectedVersion: mine ? mine.versionId : null };
+  }
+  // Republishing a file this caller published before updates that page, as it would have in the
+  // caller's own session.
   const previous = action.filePath === null ? undefined : [...hook.pages].reverse()
-    .find((page) => page.callerAgentId === hook.callerAgentId && page.filePath === action.filePath);
+    .find((row) => row.callerAgentId === hook.callerAgentId && row.filePath === action.filePath);
   return {
-    decision: "redirect",
-    target,
+    ...common,
     input: previous ? { ...hook.input, url: previous.url } : hook.input,
     filePath: action.filePath,
-    extraUsage,
+    mode: "publish",
+    expectedVersion: previous ? previous.versionId : undefined,
   };
 }
 
@@ -263,6 +340,10 @@ function money(minor: number, currency: string | null): string {
  */
 export function refuseReason(why: RefuseReason, target: ZeroSubAccount, snapshot: ZeroSubSnapshot): string {
   const owner = ownerName(target);
+  if (why === "target-unusable") {
+    const state = target.signedIn ? "set aside in ZeroSub" : "signed out in ZeroSub";
+    return `Not published: ${owner} is ${state}, so Smart Session can't publish as it, and publishing from this session's own account would make a page the user may not be able to open. No helper was started; tell the user. They can sign it in again, or turn off "Publish artifacts as the main account" in Smart Session's settings to publish from this session's account.`;
+  }
   const when = target.limitedUntil && target.limitKind !== "budget" ? resetWhen(target.limitedUntil) : null;
   const extra = snapshot.readings[target.id]?.extraUsage ?? null;
   const head = `Not published: ${owner} is out of usage${when ? ` until ${when}` : ""}`;
@@ -277,12 +358,10 @@ export function refuseReason(why: RefuseReason, target: ZeroSubAccount, snapshot
       const spent = extra && extra.limit !== null ? ` (${money(extra.spend ?? extra.limit, extra.currency)} of its ${money(extra.limit, extra.currency)} monthly limit)` : "";
       return `${head}, and its Extra usage is used up${spent}. ${told} To publish while it's out, the user can raise that account's Extra usage limit in its claude.ai settings.${later}`;
     }
-    case "extra-usage-unknown":
-      return `${head}, and ZeroSub hasn't reported yet whether that account has Extra usage left. ${told} Try again after ZeroSub's next usage reading, in a few minutes.${later}`;
   }
 }
 
-/** The first claude.ai artifact link in a helper's reply. */
+/** The first claude.ai artifact link in a text. */
 export function extractUrl(reply: string | null | undefined): string | null {
   const match = reply?.match(/https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/);
   return match ? match[0] : null;
@@ -301,19 +380,160 @@ export function parseHelperReply(reply: string | null | undefined): { url: strin
   };
 }
 
-/** The helper's whole task. It publishes the given input once, as given, and reports back. */
-export function helperPrompt(input: ArtifactInput): string {
-  const url = text(input.url);
+/** One step of a helper's turn, as the daemon's timeline records it. */
+export type TurnItem =
+  | { kind: "tool"; name: string; input: Record<string, unknown>; output: string; failed: boolean }
+  | { kind: "text"; text: string };
+
+/** What a helper's whole turn did, read from its tool calls rather than from what it said last. */
+export interface TurnReading {
+  /** The page a publish went to, and the version it made. */
+  readonly url: string | null;
+  readonly versionId: string | null;
+  /** A read's live version and the file its full HTML was saved to. */
+  readonly liveVersion: string | null;
+  readonly savedPath: string | null;
+  /** The routed call's own result text, verbatim (for an access call or a typed page). */
+  readonly output: string | null;
+  readonly error: string | null;
+  /** The session couldn't sign in: a fresh helper may succeed once the login is refreshed. */
+  readonly auth: boolean;
+}
+
+const AUTH_FAILURE = /failed to authenticate|oauth (?:session|token)[^.]*expired|could not be refreshed|invalid api key|please run \/login|not logged in/i;
+const NO_ACCESS = /no such artifact|not found|no access|no longer have write access|you (?:don't|do not) have (?:write )?access|deleted|HTTP 40[34]/i;
+
+/** Whether a helper's text is a sign-in failure. */
+export const isAuthFailure = (value: string | null | undefined): boolean => typeof value === "string" && AUTH_FAILURE.test(value);
+/** Whether a routed call's result says the account can't see the page at all. */
+export const isNoAccess = (value: string | null | undefined): boolean => typeof value === "string" && NO_ACCESS.test(value);
+
+/** A version id in a read header ("(version 1794926006-fe4a)") or a publish result ("version id 1794949120-f95e"). */
+export function versionIn(output: string): string | null {
+  return output.match(/version id ([A-Za-z0-9_-]+)/)?.[1] ?? output.match(/\(version ([A-Za-z0-9_-]+)\)/)?.[1] ?? null;
+}
+
+/**
+ * Reads a helper's turn: the last Artifact read (live version, saved file) and publish (url,
+ * version), the routed call's output, and any error. A turn whose last words are prose (a hook
+ * talked to it) still counts by what its tools did.
+ */
+export function readTurn(items: readonly TurnItem[], tool = "Artifact", lastMessage: string | null = null): TurnReading {
+  let url: string | null = null;
+  let versionId: string | null = null;
+  let liveVersion: string | null = null;
+  let savedPath: string | null = null;
+  let output: string | null = null;
+  let error: string | null = null;
+  const texts: string[] = [];
+  for (const item of items) {
+    if (item.kind === "text") { texts.push(item.text); continue; }
+    if (item.name !== tool) continue;
+    const action = text(item.input.action) ?? (tool === "Artifact" ? "publish" : "");
+    output = item.output;
+    const first = item.output.trim().split("\n")[0]!.slice(0, 500);
+    // A publish worked only when it says so, and a read only when it names the version it viewed;
+    // anything else (a refusal, "no write access", an error) is the reason it didn't.
+    const read = tool === "Artifact" && action === "read" ? versionIn(item.output) : null;
+    const published = tool === "Artifact" && action === "publish" && /^Published\b/.test(item.output.trim());
+    const failed = item.failed || /^(?:error\b|refused\b)/i.test(item.output.trim())
+      || (tool === "Artifact" && action === "read" && read === null)
+      || (tool === "Artifact" && action === "publish" && !published);
+    if (failed) {
+      error = first || "the call returned nothing";
+    } else if (read !== null) {
+      liveVersion = read;
+      savedPath = item.output.match(/saved to (\/\S+?\.html)\b/)?.[1] ?? null;
+      error = null;
+    } else if (published) {
+      url = extractUrl(item.output);
+      versionId = versionIn(item.output);
+      error = null;
+    }
+  }
+  const said = [...texts, lastMessage ?? ""].join("\n");
+  const reply = parseHelperReply(lastMessage);
+  if (tool === "Artifact" && !url && reply.url && !error) url = reply.url;
+  if (!error && reply.error) error = reply.error;
+  const auth = isAuthFailure(said) || isAuthFailure(error);
+  return { url, versionId, liveVersion, savedPath, output, error, auth };
+}
+
+/**
+ * The url and version a direct Artifact call's result names, for the owner record. Reads both the
+ * structured result (`{ url, version }`, `{ artifactRead: { ver } }`) and the text form.
+ */
+export function recordFrom(input: ArtifactInput, response: unknown): { url: string; versionId: string | null; via: "direct" | "read" } | null {
+  const action = text(input.action) ?? "publish";
+  if (action !== "publish" && action !== "read") return null;
+  if (action === "publish" && input.asset === true) return null;
+  const object = response && typeof response === "object" ? (response as Record<string, unknown>) : null;
+  const raw = typeof response === "string" ? response : (() => { try { return JSON.stringify(response) ?? ""; } catch { return ""; } })();
+  if (action === "publish" && typeof response === "string" && !/^Published\b/.test(response.trim())) return null;
+  const read = object?.read && typeof object.read === "object" ? (object.read as Record<string, unknown>) : null;
+  const url = extractUrl(text(object?.url) ?? text(read?.url) ?? text(input.url) ?? raw);
+  if (!url) return null;
+  const artifactRead = object?.artifactRead && typeof object.artifactRead === "object" ? (object.artifactRead as Record<string, unknown>) : null;
+  const versionId = text(object?.version) ?? text(artifactRead?.ver) ?? versionIn(raw);
+  return { url: normalizeUrl(url), versionId, via: action === "read" ? "read" : "direct" };
+}
+
+const RULES = "Never Read, change or create a file, never change a parameter, never call any other tool, and never retry a refused call.";
+
+/** The helper's first step for a republish: view the live version, without loading the page. */
+export function readPrompt(url: string): string {
+  return [
+    "You are a publishing helper. Do exactly this and nothing else.",
+    `Call the Artifact tool with action "read" and url ${url}.`,
+    "Do not Read the saved file or anything else afterwards; only the read itself is needed.",
+    RULES,
+    'Then reply with only one line of JSON: {"done": true}.',
+  ].join("\n");
+}
+
+/** The helper's publish: the given input, once, as given. */
+export function publishPrompt(input: ArtifactInput): string {
   const typed = text(input.type_url) !== null;
   return [
     "You are a publishing helper. Do exactly this and nothing else.",
-    url
-      ? `1. Call the Artifact tool with action "read" and url ${url} (it must be read before it can be republished).\n2. Call the Artifact tool once with exactly these parameters:`
-      : "1. Call the Artifact tool once with exactly these parameters:",
+    "Call the Artifact tool once with exactly these parameters:",
     "```json",
     JSON.stringify(input, null, 2),
     "```",
-    "Relative paths are relative to your working directory. You may read the files before publishing, but never change a file or a parameter, never publish anything else, and never retry a refused publish.",
+    `Relative paths are relative to your working directory. ${RULES}`,
     `Then reply with only one line of JSON: {"url": "<the artifact url>", "error": null${typed ? ', "result": "<the publish result text, verbatim>"' : ""}}. If the publish failed, put the reason in "error" and the url as null.`,
+  ].join("\n");
+}
+
+/** A routed call on an existing page (a read, a listing, data, comments), run once as given. */
+export function accessPrompt(tool: string, input: ArtifactInput): string {
+  return [
+    "You are a helper for another session. Do exactly this and nothing else.",
+    `Call the ${tool} tool once with exactly these parameters:`,
+    "```json",
+    JSON.stringify(input, null, 2),
+    "```",
+    `${RULES} Do not Read any file a result names.`,
+    'Then reply with only one line of JSON: {"done": true}.',
+  ].join("\n");
+}
+
+/** What the model reads after a routed call ran on the page's owner. */
+export function accessReason(result: { owner: string; tool: string; output: string; savedPath?: string | null }): string {
+  return [
+    `Ran on ${result.owner}: this ${result.tool} call was made from that account, because the page belongs to it. This is the call's result, not an error; do not call it again.`,
+    result.savedPath ? `The page's full HTML was copied to ${result.savedPath}; Read that file (with offset/limit for a big page).` : null,
+    "The result, as the owner's session received it:",
+    result.output.slice(0, 20_000),
+  ].filter((line): line is string => line !== null).join("\n");
+}
+
+/** What the model reads when a republish would have overwritten changes it never saw. */
+export function conflictReason(result: { owner: string; url: string; livePath: string | null; liveVersion: string | null }): string {
+  return [
+    `Not published: the page changed since this session last published or read it (live version ${result.liveVersion ?? "unknown"}), so publishing now would overwrite someone else's changes.`,
+    result.livePath
+      ? `The live page is saved to ${result.livePath}. Merge its changes into your file, then publish again with url ${result.url}; Smart Session will publish it as ${result.owner}.`
+      : `Read the page (Artifact action "read", url ${result.url}), merge its changes into your file, then publish again.`,
   ].join("\n");
 }

@@ -24,6 +24,7 @@
  * `context-threshold.mjs`; the text and the guards both use are in `ask.mjs`.
  */
 
+import { isPublishHelper } from "./context.mjs";
 import { askable, compose } from "./ask.mjs";
 import { noteCancelledCompaction } from "./cancelled.mjs";
 import { recordAsk, shouldAsk } from "./asks.mjs";
@@ -39,6 +40,7 @@ function emit(text) {
 }
 
 async function main() {
+  if (isPublishHelper()) return;
   const raw = await new Promise((resolve) => {
     let input = "";
     process.stdin.setEncoding("utf8");

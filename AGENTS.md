@@ -548,12 +548,41 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
 ## Publishing as the main account
 
 - An artifact belongs to the account of the session that publishes it. `hooks/publish-as.mjs` (a `PreToolUse` hook,
-  matcher `Artifact`, timeout 180 s; logic in `server/hooklib/publish-as.mjs`) asks the plugin
-  (`smart-session.publish_as.start`/`.wait`) whether to take a publish over, and when it does answers "deny" with the
-  link. That reason leads with the success and says not to retry; `publish-as.test.ts` pins the wording.
-- The decisions are pure, in `shared/publish-as.ts`: only a publish that creates a page, a `type_url` create, or an
-  update/asset upload to a url in `publish-as/pages.json` is taken over, and only for a caller on another Claude account
-  than the target. Everything else, and every url we didn't make, passes through. ZeroSub unreadable: pass, with a note.
+  matcher `Artifact|ArtifactData|ArtifactComments`, timeout 180 s; logic in `server/hooklib/publish-as.mjs`) asks the
+  plugin (`smart-session.publish_as.start`/`.wait`) whether to take a call over, and when it does answers "deny" with
+  the result. That reason leads with the success and says not to retry; `publish-as.test.ts` pins the wording. The same
+  script as a `PostToolUse` hook on `Artifact` (timeout 15 s) sends every direct publish and read to
+  `smart-session.publish_as.record`, which writes the session's account and the version into `publish-as/pages.json`.
+- The decisions are pure, in `shared/publish-as.ts`. A new page goes to the target when the caller is on another
+  account. A call on an existing page (a republish or asset upload, an Artifact `read` or `list` of files/assets, any
+  ArtifactData or ArtifactComments call) goes to the page's recorded owner, which may be the target or a seat. A url
+  nobody recorded, from a caller off the target, is a guess at the target; if the target can't see it (`not-owner`) the
+  wait answers `allow` and the original call runs on the caller's account. Everything else passes through.
+  ZeroSub unreadable: pass, with a note.
+- **Invariant: a page a session published stays editable from whatever account the session moves to.** Every publish
+  and read has an owner row (helper, `PostToolUse` record), and routing goes by the newest row for the url, never by
+  the caller's current account. Root cause it fixes (2026-11-10 to 11-17, the most common failure): a session published
+  directly on main, pace or a limit moved it to a seat, and its next update failed with "deleted or no write access"
+  because only helper-made pages were recorded. `publish-as-routing.test.ts` (class 1) runs that move.
+- **Invariant: a seat never publishes a page meant for the main account.** A signed-out or set-aside target is a
+  refusal (`target-unusable`) with the reason and the fix, not a pass-through onto the seat; a guess is the only call
+  that may fall back, and only once the target said it can't see the page. A sign-in failure in the helper (`auth`) is
+  retried once in a fresh helper after 10 s (Claude's refresh tokens rotate; the loser of a refresh race fails and a
+  later process reads the winner's token), then reported as such (class 5).
+- **Invariant: a helper never overwrites a version its caller didn't see.** A republish is two turns of one helper:
+  `readPrompt` (view the live version, never Read the saved page), then `publishPrompt` only when the live version is
+  the one the caller last published or read (`versionId` on its row). Otherwise the outcome is `conflict`: the live copy
+  is saved under `publish-as/live/` and the caller is told to merge and publish again; its row then holds the live
+  version, so the next publish goes through, and the helper's own viewed version keeps Artifact's native guard for a
+  change between the two turns. Rows without `versionId` (older ones) aren't checked. Root cause (2026-11-17): the old
+  prompt read the page in full first, which marked the newest version viewed and switched the native guard off, so two
+  helpers overwrote a concurrent change within a minute (class 3).
+- **Invariant: a publish-as helper runs none of Smart Session.** Every hook returns at once for
+  `SMART_SESSION_PUBLISH_HELPER=1` (`isPublishHelper` in `server/hooklib/context.mjs`); `session_open` gives a helper
+  (by label or env) no tools, and the helper is created with `plugin-tools/enabled=false`. What a helper did is read
+  from its tool calls on the daemon timeline (`turnItems`, `readTurn`), not from its last message. Root cause
+  (2026-11-17): the context hooks fired inside a helper at 97% after it read a whole page, it asked for compaction, its
+  last message was prose, and a real publish was logged as "reported no url" (class 4).
 - `server/publish-as.ts` runs the helper: create (background, Haiku, chosen id, label `smart-session.helper=publish-as`,
   env `SMART_SESSION_PUBLISH_HELPER=1`), pin with ZeroSub's `zerosub.agents.account`, reopen with our own
   `refreshAgent` (ZeroSub's CLI reload doesn't find a new background agent), confirm ZeroSub's session record says the
@@ -562,15 +591,18 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
 - **Invariant: the helper never runs on an account other than the publish owner, and it only runs on a limited owner
   when "Use the main account's Extra usage when it's out" (`publishAsExtraUsage`, off by default) is on and credits
   remain** (`publish-as.test.ts`). `limitedTarget` decides from ZeroSub's `limitedUntil`/`limitKind` and the reading's
-  `extraUsage`. Refused (setting off, Extra usage off, used up, or not reported) means no helper starts: the hook denies
+  `extraUsage`. Refused (setting off, Extra usage off, or used up) means no helper starts: the hook denies
   with `refuseReason` (reason and fix, pinned), the run log records `refused`. Allowed means the pin carries
   `allowLimited`, which ZeroSub 1.5.1-pace.12+ honours for one-shot helpers only (no routing swap, no failover move or
   continue); an older ZeroSub ignores it and the account check fails with `wrong-account`. The account is checked again
-  after the turn, so a helper moved mid-turn is never a success. Root cause it fixes (2026-11-13): with the owner
+  after the turn, so a helper moved mid-turn is never a success. With the setting on and no Extra usage reading yet, the
+  helper tries (a publish is worth a dollar; ZeroSub turns a spent account into a budget limit), and each run logs
+  `extraUsage`. `publish-as-zerosub-e2e.test.ts` runs ZeroSub's real routing and pin schema against our pin when
+  `ZEROSUB_DIR` names a ZeroSub install (skipped in CI). Root cause it fixes (2026-11-13): with the owner
   limited, ZeroSub's routing swapped the pin for the seat and every publish failed with `wrong-account` after a spent
   helper.
 - Hooks follow features (`managedFor` in `server/install.ts`): the compaction hooks are registered while Smart Compact is
-  on (except `Stop`, which also names killed background jobs and rides any feature), `PreToolUse(Artifact)` while publishing as the main account is on, and each is removed when its feature is turned
+  on (except `Stop`, which also names killed background jobs and rides any feature), the publish-as `PreToolUse` and `PostToolUse(Artifact)` while publishing as the main account is on, and each is removed when its feature is turned
   off. So "Register the hooks" stays usable with Smart Compact off, and a fresh install with Smart Compact off still gets
   the Artifact hook (`install.test.ts`).
 - A hook is ours only when it runs a shim in this load's own data directory (or an old install's `hooks/`). Another

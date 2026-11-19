@@ -44,6 +44,8 @@ export interface DaemonClient {
   refreshAgent(agentId: string): Promise<unknown>;
   sendAgentMessage(agentId: string, text: string): Promise<unknown>;
   waitForFinish(agentId: string, timeout?: number): Promise<{ status: string; error: string | null; lastMessage: string | null }>;
+  /** The helper's turn, read back from its tool calls (`turnItems` in `server/publish-as.ts`). */
+  fetchAgentTimeline(agentId: string, options?: { direction?: "tail" | "before" | "after"; limit?: number; projection?: "projected" | "canonical" }): Promise<unknown>;
   archiveAgent(agentId: string): Promise<unknown>;
 }
 

@@ -1,4 +1,5 @@
 import type { PluginServerContext, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
+import { HELPER_ENV, HELPER_LABEL } from "../shared/publish-as.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
@@ -38,6 +39,8 @@ export function contributeSessionMcp(server: PluginServerContext, invoke: Invoke
   return server.before("agent.session_open", async ({ request }) => {
     if (request.purpose !== "interactive" || !providers().includes(request.provider)
       || request.labels["plugin-tools/enabled"] === "false" || !(await readSettings()).enabled) return;
+    // A publish-as helper gets none of Smart Session: it can't checkpoint, compact or enrol itself.
+    if (request.labels[HELPER_LABEL.key] === HELPER_LABEL.value || request.env?.[HELPER_ENV] === "1") return;
     if (process.env.SMART_SESSION_FORCE_STDIO !== "1" && nativeToolsAvailable(request, await paseoConfig())) {
       await writeFile(join(data, "tools", `native-${request.agentId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`), JSON.stringify({ instance })).catch(() => undefined);
       return { ...request, env: { ...request.env, SMART_SESSION_TOOLS: "native" }, tools: [...request.tools, ...nativeTools(invoke)] };

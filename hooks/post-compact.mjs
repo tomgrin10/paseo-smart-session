@@ -16,6 +16,7 @@
  * Either way it is said exactly once — see hooks/pointer.mjs.
  */
 
+import { isPublishHelper } from "./context.mjs";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -84,6 +85,7 @@ function eventNameOf(event) {
 }
 
 async function main() {
+  if (isPublishHelper()) return;
   const raw = await new Promise((resolve) => {
     let input = "";
     process.stdin.setEncoding("utf8");

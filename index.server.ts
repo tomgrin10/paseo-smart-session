@@ -15,7 +15,7 @@ import type { Invoke } from "./server/native-tools.ts";
 import { closeDaemon, readAgents, withDaemon } from "./server/daemon.ts";
 import { contextGrowth, projectFull } from "./server/growth.ts";
 import { install } from "./server/install.ts";
-import { describeResult, startPublish, waitPublish } from "./server/publish-as.ts";
+import { describeWait, recordCall, startPublish, waitPublish } from "./server/publish-as.ts";
 import { summarizeSpend } from "./server/spend.ts";
 import { countEnrolled, listEnrolment, readSettings, setEnrolled, stateWrittenAt, writeSettings } from "./server/settings.ts";
 import { dataDir, newestUsage, readUsage } from "./server/store.ts";
@@ -24,6 +24,7 @@ import {
   contextStatus,
   getSettings,
   installStatus,
+  publishAsRecord,
   publishAsStart,
   publishAsWait,
   setSettings,
@@ -237,8 +238,9 @@ export default function contribute(host: PluginServerContext) {
   server.handle(publishAsStart, (request) => startPublish({ ...request, account: request.account ?? null }));
   server.handle(publishAsWait, async ({ jobId, waitMs, native }) => {
     const waited = await waitPublish(jobId, waitMs);
-    return waited.done ? { done: true as const, result: waited.result, text: describeResult(waited.result, native === true) } : waited;
+    return waited.done ? { done: true as const, result: waited.result, ...describeWait(waited.result, native === true) } : waited;
   });
+  server.handle(publishAsRecord, (request) => recordCall(request));
 
   server.handle(
     requestCompaction,

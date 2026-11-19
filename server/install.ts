@@ -63,8 +63,12 @@ const MANAGED = [
   { event: "PostCompact", matcher: "", script: "post-compact.mjs", feature: "compact" },
   { event: "SessionStart", matcher: "compact", script: "post-compact.mjs", feature: "compact" },
   // Publishes an artifact as the main account through a helper agent, which takes 10-20 s and may
-  // queue behind another; the hook gives up at 160 s (`hooks/publish-as.mjs`).
-  { event: "PreToolUse", matcher: "Artifact", script: "publish-as.mjs", timeout: 180, feature: "publish" },
+  // queue behind another; the hook gives up at 160 s (`hooks/publish-as.mjs`). Data, comments and
+  // reads of a page another account owns run on that account the same way.
+  { event: "PreToolUse", matcher: "Artifact|ArtifactData|ArtifactComments", script: "publish-as.mjs", timeout: 180, feature: "publish" },
+  // Records which account owns each page a session publishes or reads directly, so it stays
+  // reachable after the session moves to another account. One plugin call, no helper.
+  { event: "PostToolUse", matcher: "Artifact", script: "publish-as.mjs", timeout: 15, feature: "publish" },
   // A plugin update detaches the smart_* tools from open sessions; these tell such a session how to reach them
   // (`hooks/detached.mjs`). A failed smart_* call raises PostToolUseFailure, never PostToolUse (Claude Code 2.1.322).
   { event: "PostToolUseFailure", matcher: "mcp__paseo__smart_.*", script: "detached.mjs", feature: "tools" },
