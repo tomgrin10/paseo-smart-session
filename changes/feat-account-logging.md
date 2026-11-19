@@ -1,0 +1,2 @@
+- With several Claude accounts in ZeroSub, the main account's usage history and charts no longer pick up another account's readings.
+- Smart Session now keeps a local record of which account each agent runs on, pauses at the limit, ZeroSub's moves and each account's Extra usage, so it can later tell you how well your accounts are used.

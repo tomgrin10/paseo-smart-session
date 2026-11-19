@@ -68,6 +68,11 @@ export interface ZeroSubSnapshot {
   readonly autoSwitch: boolean;
   /** The account each family opens new sessions on, when the person chose one. */
   readonly defaults: Readonly<Record<ZeroSubFamily, string | null>>;
+  /**
+   * Why ZeroSub bound each agent where it did (`bindings` in `state.json`): `source` is
+   * `pace`, `auto`, `balance`, `thread`, `user` and so on. Read for the moves log only.
+   */
+  readonly bindings?: Readonly<Record<string, { readonly accountId: string; readonly source: string; readonly selectionReason: string | null }>>;
 }
 
 /** ZeroSub's ids for the CLI's own login (`server/state.ts` `MAIN_ACCOUNT_ID`). */
@@ -167,11 +172,19 @@ export function parseZeroSub(state: unknown, usage: unknown, preferences: unknow
     if (reading) readings[accountId] = reading;
   }
 
+  const bindings: Record<string, { accountId: string; source: string; selectionReason: string | null }> = {};
+  for (const [agentId, entry] of Object.entries(record(raw.bindings) ?? {})) {
+    const binding = record(entry);
+    const accountId = text(binding?.accountId);
+    const source = text(binding?.source);
+    if (accountId && source) bindings[agentId] = { accountId, source, selectionReason: text(binding?.selectionReason) };
+  }
+
   // Paseo stores plugin settings as `{ version, values }`; missing means ZeroSub's default (on).
   const values = record(record(preferences)?.values);
   const chosen = record(raw.defaults);
   const defaults = { claude: text(chosen?.claude), codex: text(chosen?.codex) };
-  return { accounts, sessions, openedAt, continuedElsewhere, readings, autoSwitch: values?.autoSwitch !== false, defaults };
+  return { accounts, sessions, openedAt, continuedElsewhere, readings, autoSwitch: values?.autoSwitch !== false, defaults, bindings };
 }
 
 /** The ZeroSub family a Paseo provider belongs to, if ZeroSub manages it. */

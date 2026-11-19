@@ -16,9 +16,14 @@ import { join } from "node:path";
 
 import { scanSpend } from "./backfill.ts";
 import { listReports } from "./builtin-usage.ts";
+import { createHash } from "node:crypto";
+
+import { forgetAccountUse, logAccountUse } from "./account-log.ts";
 import { readAgents, readProviderUsage, withDaemon } from "./daemon.ts";
-import { onUsageListing } from "./usage-source.ts";
-import { legacyListing } from "../shared/builtin-usage.ts";
+import { readZeroSub } from "./guard/zerosub.ts";
+import { onUsageListing, sourceState } from "./usage-source.ts";
+import { cliListing } from "../shared/builtin-usage.ts";
+import type { ZeroSubSnapshot } from "../shared/guard/zerosub.ts";
 import { lifecycle } from "../shared/lifecycle.ts";
 import {
   appendContext,
@@ -33,6 +38,7 @@ import { forgetAccounts, recordAccounts } from "./subscriptions.ts";
 import { fetchUpstreamUsage } from "./upstream.ts";
 import {
   acceptReading,
+  asCliReading,
   effectiveAt,
   fromClaudeJson,
   fromPaseoProviderUsage,
@@ -87,7 +93,16 @@ function claudeJsonPath(): string {
  * "did this actually happen after what I already have" is asked before "is this
  * different from what I already have".
  */
-async function record(sample: UsageSample): Promise<boolean> {
+/**
+ * Whose readings these are. Every source the recorder reads is the CLI's own Claude login
+ * (its `~/.claude` credentials and cache, and that login's report out of the daemon's
+ * listing, `cliListing`); under ZeroSub that login is its main Claude account. Set once a
+ * tick, before any source is read.
+ */
+let cliAccountId: string | null = null;
+
+async function record(untagged: UsageSample): Promise<boolean> {
+  const sample = asCliReading(untagged, cliAccountId);
   const newest = await newestUsage();
   const verdict = acceptReading(newest, sample);
   if (!verdict.ok) return false;
@@ -187,26 +202,38 @@ async function pollUpstream(): Promise<void> {
 }
 
 /** ZeroSub's other accounts, kept as ZeroSub reads them; nothing happens without ZeroSub. */
-async function pollAccounts(): Promise<void> {
+async function pollAccounts(snapshot: ZeroSubSnapshot | null): Promise<void> {
   try {
-    await recordAccounts();
+    await recordAccounts(Date.now(), snapshot);
   } catch (error) {
     console.error("[smart-session] could not record ZeroSub's account readings", String(error));
   }
 }
 
-async function pollDaemon(): Promise<void> {
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+
+/** The CLI login's email hash, to find its report among every login's (ZeroSub knows the email). */
+async function cliLoginHash(): Promise<string | null> {
+  if (cliAccountId === null) return null;
+  const state = await sourceState().catch(() => null);
+  return state?.zerosub?.extras[cliAccountId]?.emailHash ?? null;
+}
+
+async function pollDaemon(snapshot: ZeroSubSnapshot | null): Promise<void> {
   await withDaemon(async (client) => {
     const at = new Date().toISOString();
 
     // 0.16+: one listing serves both the recorder and our usage card's alignment
-    // (`provider.usage.list` is this same listing underneath there).
+    // (`provider.usage.list` is this same listing underneath there). It holds every
+    // login's report; only the CLI login's is recorded.
     const entries = await listReports(client);
-    const usage = fromPaseoProviderUsage(entries === null ? await readProviderUsage(client) : legacyListing(entries));
+    const usage = fromPaseoProviderUsage(entries === null ? await readProviderUsage(client) : cliListing(entries, await cliLoginHash(), sha256));
     if (usage !== null) await record(usage);
     if (entries !== null) await onUsageListing(client, entries).catch((error) => console.error("[smart-session] usage card alignment failed", String(error)));
 
-    for (const agent of await readAgents(client)) {
+    const agents = await readAgents(client);
+    await logAccountUse(snapshot, agents).catch((error) => console.error("[smart-session] could not log account use", String(error)));
+    for (const agent of agents) {
       if (agent.usedTokens === null || agent.maxTokens === null) continue;
       if (lastContext.get(agent.id) === agent.usedTokens) continue;
       lastContext.set(agent.id, agent.usedTokens);
@@ -246,10 +273,13 @@ function startRecorder(): void {
     try {
       // Order matters: the freshest source first, so the acceptance gate has the
       // best reading to compare the others against.
+      // ZeroSub's files, read once a tick: whose readings these are, and where agents run.
+      const snapshot = await readZeroSub().catch(() => null);
+      cliAccountId = snapshot?.accounts.find((a) => a.family === "claude" && a.kind === "main")?.id ?? null;
       await pollUpstream();
-      await pollDaemon();
+      await pollDaemon(snapshot);
       await pollClaudeJson();
-      await pollAccounts();
+      await pollAccounts(snapshot);
       await pollSpend();
     } catch (error) {
       // A daemon restart, a lost socket, a machine asleep — none of these should
@@ -270,6 +300,8 @@ function startRecorder(): void {
     lastContext.clear();
     clearCaches();
     forgetAccounts();
+    forgetAccountUse();
+    cliAccountId = null;
   });
 }
 

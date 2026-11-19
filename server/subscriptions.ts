@@ -48,8 +48,8 @@ let lastKept: Map<string, string> | null = null;
  * Keeps every new ZeroSub reading. Runs on the recorder's tick; costs three small file
  * reads when nothing changed and nothing at all without ZeroSub.
  */
-export async function recordAccounts(now = Date.now()): Promise<number> {
-  const snapshot = await readZeroSub();
+export async function recordAccounts(now = Date.now(), read?: ZeroSubSnapshot | null): Promise<number> {
+  const snapshot = read === undefined ? await readZeroSub() : read;
   if (snapshot === null) return 0;
   if (lastKept === null) {
     lastKept = new Map();

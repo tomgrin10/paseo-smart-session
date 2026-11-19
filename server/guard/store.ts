@@ -2,7 +2,10 @@ import { mkdir, readFile, rename, open, unlink, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { StateSchema, type State } from "../../shared/guard/policy.ts";
+import { StateSchema, type Pause, type State } from "../../shared/guard/policy.ts";
+
+/** Told after every save: the pauses as last read or saved (ids and settledAt; null before any), and the saved ones. */
+export type PausesObserver = (previous: readonly Pick<Pause, "id" | "settledAt">[] | null, next: readonly Pause[]) => void;
 
 /**
  * Where Session Guard keeps its pauses, session overrides and governor lock.
@@ -24,10 +27,19 @@ export class LockHeldError extends Error {}
 
 export class Store {
   readonly directory: string;
-  constructor(directory: string) { this.directory = directory; }
+  /** Holds log (`server/account-log.ts`): every hold that starts or ends goes through `write`. */
+  private readonly observe: PausesObserver | null;
+  /** What `observe` compares a save with: ids and settledAt of the last read or save (callers mutate the state they read). */
+  private seen: Pick<Pause, "id" | "settledAt">[] | null = null;
+  constructor(directory: string, observe: PausesObserver | null = null) { this.directory = directory; this.observe = observe; }
+  private note(pauses: readonly Pause[]) {
+    if (this.observe) this.seen = pauses.map(p => ({ id: p.id, settledAt: p.settledAt }));
+  }
   async read(): Promise<State> {
     try {
-      return StateSchema.parse(JSON.parse(await readFile(join(this.directory, "state.json"), "utf8")));
+      const state = StateSchema.parse(JSON.parse(await readFile(join(this.directory, "state.json"), "utf8")));
+      this.note(state.pauses);
+      return state;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, overrides: {}, pauses: [] };
       throw new Error("Session Guard state could not be read. Restore state.json before continuing.");
@@ -47,6 +59,11 @@ export class Store {
         await file.sync(); // Confirmed schedules must reach disk before signals.
       } finally { await file.close(); }
       await rename(temporary, join(this.directory, "state.json"));
+      if (this.observe) {
+        const previous = this.seen;
+        this.note(parsed.pauses);
+        try { this.observe(previous, parsed.pauses); } catch { /* the log never fails a save */ }
+      }
       if (process.platform === "linux") {
         const directory = await open(this.directory, "r");
         try { await directory.sync(); } finally { await directory.close(); }
