@@ -5,13 +5,14 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, ScrollView, Text, TextInput, View } from "react-native";
 
 import { displayPreferences } from "../shared/display";
-import { formatCompactTokens } from "../shared/format";
+import { formatClock, formatCompactTokens, formatRelative } from "../shared/format";
 import { enrolmentState } from "../shared/governor";
 import { guardPreferences } from "../shared/guard/contracts";
 import { isPending, type Policy } from "../shared/guard/policy";
 import { checkTiming, timingOf, type Timing } from "../shared/guard/timing";
 import { governorNotice } from "../shared/guard/presentation";
-import { getSettings, installStatus, setSettings, subscriptionsStatus } from "../shared/smart-session";
+import { getSettings, installStatus, publishAsRuns, setSettings, subscriptionsStatus } from "../shared/smart-session";
+import { extraUsageLine, showsMainChip, subscriptionState } from "../shared/subscriptions";
 import { DEFAULT_THRESHOLDS, linesProblem, withCompactThreshold } from "../shared/thresholds";
 import { broadcastDisplay } from "./display";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
@@ -57,6 +58,8 @@ export function makeSettings(client: PluginClientContext) {
     const install = useQuery({ queryKey: ["smart-session", "install"], queryFn: () => readInstall({}), refetchInterval: 5 * 60_000 });
     const readSubscriptions = useRpc(subscriptionsStatus);
     const subscriptions = useQuery({ queryKey: ["smart-session", "subscriptions"], queryFn: () => readSubscriptions({}), refetchInterval: 5 * 60_000 });
+    const readRuns = useRpc(publishAsRuns);
+    const runs = useQuery({ queryKey: ["smart-session", "publish-runs"], queryFn: () => readRuns({ limit: 5 }), refetchInterval: 60_000 });
     const guard = useSettings(guardPreferences);
     const display = useSettings(displayPreferences);
     const status = useSyncExternalStore(subscribeGuard, guardSnapshot, guardSnapshot);
@@ -157,6 +160,23 @@ export function makeSettings(client: PluginClientContext) {
     const mainAccount = claudeAccounts.find((account) => account.kind === "main");
     const publishTarget = claudeAccounts.find((account) => account.id === settings.publishAsAccount) ?? mainAccount;
     const nameAs = (account: typeof publishTarget) => (!account || account.kind === "main" ? "your main account" : account.name);
+    // "Main", or "Alice (Main)": the main account is named as such wherever accounts are listed.
+    const labelOf = (account: NonNullable<typeof publishTarget>) => (showsMainChip(account) ? `${account.name} (Main)` : account.name);
+    // The target's state now: what a publish would meet.
+    const targetHint = (() => {
+      if (!publishTarget) return null;
+      const now = Date.now();
+      const state = subscriptionState(publishTarget, now);
+      const extra = publishTarget.extraUsage ? `Extra usage ${extraUsageLine(publishTarget.extraUsage).replace(/^Off$/, "off").replace(/^On$/, "on")}` : null;
+      const head = state.kind === "signed-out" ? "Signed out in ZeroSub. Publishing stops until it signs in, or turn this off."
+        : state.kind === "aside" ? "Set aside in ZeroSub. Publishing stops until it is back."
+          : state.kind === "limit" ? `${state.label}. ${settings.publishAsExtraUsage ? "Publishes use its Extra usage meanwhile." : "Publishing stops until then."}`
+            : state.kind === "unknown" ? "No reading yet." : "Ready.";
+      return [head, extra].filter(Boolean).join(" ");
+    })();
+    const RUN_WORDS: Record<string, string> = { published: "published", done: "done", refused: "refused", conflict: "asked to merge first", "not-owner": "not its page", auth: "sign-in failed", failed: "failed", timeout: "timed out", "wrong-account": "wrong account", busy: "busy" };
+    const runList = runs.data?.runs ?? [];
+    const runsHint = runList.length === 0 ? "None yet." : runList.map((run) => `${formatClock(run.at)} ${RUN_WORDS[run.outcome] ?? run.outcome}`).join(" · ") + (runList[0] ? ` · newest ${formatRelative(runList[0].at)}` : "");
     const publishTargetName = nameAs(publishTarget);
     const publishMatters = claudeAccounts.length > 1;
     // Extra usage is billed, so it is opt-in; off, a publish to an account that is out stops with the reason.
@@ -235,12 +255,14 @@ export function makeSettings(client: PluginClientContext) {
           <SettingsSwitch label="Publish artifacts as the main account" hint={publishHint} value={settings.publishAsMain} disabled={saving}
             onValueChange={(publishAsMain) => void save({ publishAsMain }, publishAsMain ? `Artifacts are published as ${publishTargetName}` : "Artifacts stay on the session's own account")} />
           {publishMatters ? <SettingsSelect label="Publish as" hint="The account that owns the pages. Pages already published keep their owner."
-            value={publishTarget?.id ?? "main"} options={claudeAccounts.map((account) => ({ label: account.kind === "main" ? `${account.name} (main)` : account.name, value: account.id }))}
+            value={publishTarget?.id ?? "main"} options={claudeAccounts.map((account) => ({ label: labelOf(account), value: account.id }))}
             disabled={saving || !settings.publishAsMain}
             onValueChange={(id) => { const account = claudeAccounts.find((candidate) => candidate.id === id); void save({ publishAsAccount: account?.kind === "main" ? null : id }, `Artifacts are published as ${nameAs(account)}`); }} /> : null}
           {publishMatters ? <SettingsSwitch label="Use the main account's Extra usage when it's out" hint={extraHint} value={settings.publishAsExtraUsage}
             disabled={saving || !settings.publishAsMain}
             onValueChange={(publishAsExtraUsage) => void save({ publishAsExtraUsage }, publishAsExtraUsage ? `Pages can use Extra usage when ${publishTargetName} is out` : `Publishing stops when ${publishTargetName} is out`)} /> : null}
+          {publishMatters && settings.publishAsMain && publishTarget && targetHint ? <SettingsRow label={`Publishing as ${labelOf(publishTarget)}`} hint={targetHint} /> : null}
+          {publishMatters && settings.publishAsMain ? <SettingsRow label="Recent publishes" hint={runsHint} /> : null}
         </SettingsCard>
       </SettingsSection>
 

@@ -16,12 +16,12 @@ import { join } from "node:path";
 
 import { scanSpend } from "./backfill.ts";
 import { listReports } from "./builtin-usage.ts";
-import { createHash } from "node:crypto";
 
 import { forgetAccountUse, logAccountUse } from "./account-log.ts";
 import { readAgents, readProviderUsage, withDaemon } from "./daemon.ts";
 import { readZeroSub } from "./guard/zerosub.ts";
-import { onUsageListing, sourceState } from "./usage-source.ts";
+import { onUsageListing } from "./usage-source.ts";
+import { cliLoginHash as cliHashOf, sha256 } from "./cli-login.ts";
 import { cliListing } from "../shared/builtin-usage.ts";
 import type { ZeroSubSnapshot } from "../shared/guard/zerosub.ts";
 import { lifecycle } from "../shared/lifecycle.ts";
@@ -210,14 +210,8 @@ async function pollAccounts(snapshot: ZeroSubSnapshot | null): Promise<void> {
   }
 }
 
-const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
-
-/** The CLI login's email hash, to find its report among every login's (ZeroSub knows the email). */
-async function cliLoginHash(): Promise<string | null> {
-  if (cliAccountId === null) return null;
-  const state = await sourceState().catch(() => null);
-  return state?.zerosub?.extras[cliAccountId]?.emailHash ?? null;
-}
+/** The CLI login's email hash, to find its report among every login's. */
+const cliLoginHash = () => cliHashOf(cliAccountId);
 
 async function pollDaemon(snapshot: ZeroSubSnapshot | null): Promise<void> {
   await withDaemon(async (client) => {

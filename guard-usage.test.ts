@@ -72,3 +72,36 @@ test("the recorder's fresher reading releases a pause before Paseo's cache catch
   await engine.tick();
   assert.deepEqual(sent, ["a"], "the recorder's post-reset reading continues it once");
 });
+
+// Paseo 0.16 lists one built-in Claude report per login, every one as `claude` ("Claude (<email>)").
+// The guard took the first, so a main session could be held or released on a seat's numbers.
+const sha = (s: string) => `h:${s}`;
+const listing = (first: "seat" | "main"): Usage => {
+  const seat = { providerId: "claude", displayName: "Claude (bob@example.com)", status: "available", windows: [{ id: "five_hour", usedPct: 97, resetsAt: iso(end) }] };
+  const main = { providerId: "claude", displayName: "Claude (alice@example.com)", status: "available", windows: [{ id: "five_hour", usedPct: 12, resetsAt: iso(end) }] };
+  return { fetchedAt: iso(base), providers: first === "seat" ? [seat, main, paseo(base, 0).providers[1]!] : [main, seat, paseo(base, 0).providers[1]!] };
+};
+
+test("the guard reads the CLI login's Claude report, never a seat's listed before it", async () => {
+  const { cliOnlyUsage } = await import("./server/guard/usage.ts");
+  for (const first of ["seat", "main"] as const) {
+    const usage = cliOnlyUsage(listing(first), sha("alice@example.com"), sha);
+    const claude = usage.providers.filter(p => p.providerId === "claude");
+    assert.equal(claude.length, 1, first);
+    assert.equal(claude[0]!.windows[0]!.usedPct, 12, first);
+    assert.ok(usage.providers.some(p => p.providerId === "codex"), "other providers stay");
+  }
+});
+
+test("with no login to match, several Claude reports read as none, and the recorder fills in", async () => {
+  const { cliOnlyUsage } = await import("./server/guard/usage.ts");
+  const usage = cliOnlyUsage(listing("seat"), null, sha);
+  assert.equal(usage.providers.filter(p => p.providerId === "claude").length, 0);
+  const merged = withRecordedUsage(usage, recorded(base + 60_000, 33));
+  assert.equal(merged.providers.find(p => p.providerId === "claude")!.windows.find(w => w.id === "five_hour")!.usedPct, 33);
+  // One report, and it names a seat's login: not the CLI login's either.
+  const lone: Usage = { fetchedAt: iso(base), providers: [listing("seat").providers[0]!] };
+  assert.equal(cliOnlyUsage(lone, sha("alice@example.com"), sha).providers.length, 0);
+  // One report without a login (pre-0.16): it is the CLI login's.
+  assert.equal(cliOnlyUsage(paseo(base, 50), sha("alice@example.com"), sha).providers.length, 2);
+});

@@ -46,7 +46,7 @@ export interface Subscription {
   readonly kind: "main" | "managed";
   /** The name the person gave it in ZeroSub, else a neutral one (`subscriptionName`). */
   readonly name: string;
-  /** True when `name` is the person's own; false for "CLI login" / "Account 2". */
+  /** True when `name` is the person's own; false for "Main" / "Account 2". */
   readonly named: boolean;
   readonly isDefault: boolean;
   readonly signedIn: boolean;
@@ -67,8 +67,52 @@ export interface Subscription {
   readonly readAt: string | null;
   readonly windows: SubscriptionWindow[];
   readonly credits: { readonly balance: number | null; readonly unlimited: boolean } | null;
-  /** The open session window's readings, oldest first, thinned to a sparkline's worth. */
+  /** The open session window's readings, oldest first, thinned to a chart's worth. */
   readonly history?: { t: string; pct: number }[];
+  /** Finished session windows of the last 14 days, oldest first: how close each came to the limit. */
+  readonly past?: { startAt: string | null; resetsAt: string | null; firstSeenAt: string; peakPct: number }[];
+  /** Claude Extra usage (billed past the plan), when the reading reports it; money in minor units. */
+  readonly extraUsage?: { enabled: boolean; spend: number | null; limit: number | null; currency: string | null } | null;
+  /** Where this account's history comes from, and how much of it there is. */
+  readonly recorded?: { source: "recorder" | "zerosub"; since: string | null; readings: number };
+}
+
+/**
+ * Invariant: every account shows everything the main account shows. One account's
+ * page sections, in the order the overview draws them, the same for main and every
+ * seat; a section without data says so instead of disappearing.
+ * `subscriptions.test.ts` holds every account to the main account's list.
+ */
+export type AccountSection = "windows" | "extra-usage" | "chart" | "past" | "recorded";
+export const ACCOUNT_SECTIONS: readonly AccountSection[] = ["windows", "extra-usage", "chart", "past", "recorded"];
+
+/** What one account's row has to say per section; null means "nothing recorded yet", never "not for this account". */
+export function accountSections(account: Subscription): Record<AccountSection, boolean> {
+  return {
+    windows: account.windows.length > 0,
+    "extra-usage": account.family === "claude" && account.extraUsage !== undefined && account.extraUsage !== null,
+    chart: (account.history?.length ?? 0) > 0,
+    past: (account.past?.length ?? 0) > 0,
+    recorded: account.recorded !== undefined,
+  };
+}
+
+/** "$139.91 of $220.00 this month", or "Off". Money in minor units. */
+export function extraUsageLine(extra: NonNullable<Subscription["extraUsage"]>): string {
+  if (!extra.enabled) return "Off";
+  const money = (minor: number) => {
+    try { return new Intl.NumberFormat("en-US", { style: "currency", currency: extra.currency ?? "USD" }).format(minor / 100); }
+    catch { return `${(minor / 100).toFixed(2)}${extra.currency ? ` ${extra.currency}` : ""}`; }
+  };
+  if (extra.spend === null && extra.limit === null) return "On";
+  if (extra.limit === null) return `${money(extra.spend ?? 0)} spent this month`;
+  return `${money(extra.spend ?? 0)} of ${money(extra.limit)} this month`;
+}
+
+/** Share of the Extra usage limit spent, 0–100; null without a limit. */
+export function extraUsagePct(extra: NonNullable<Subscription["extraUsage"]>): number | null {
+  if (!extra.enabled || extra.limit === null || extra.limit <= 0) return null;
+  return Math.min(100, Math.max(0, ((extra.spend ?? 0) / extra.limit) * 100));
 }
 
 const time = (iso: string | null | undefined): number | null => {
@@ -80,8 +124,8 @@ const time = (iso: string | null | undefined): number | null => {
 export const familyName = (family: Family) => (family === "claude" ? "Claude" : "Codex");
 
 /**
- * What to call an account. The name the person chose, else a neutral one: "CLI login"
- * for the CLI's own login, "Account 2", "Account 3"… for the ones ZeroSub added, in
+ * What to call an account. The name the person chose, else a neutral one: "Main"
+ * for the CLI's own login (the main account; the UI also marks it with a Main badge), "Account 2", "Account 3"… for the ones ZeroSub added, in
  * the order they were added. Never the email, and never ZeroSub's generated label,
  * which is the email or part of it.
  */
@@ -90,7 +134,7 @@ export function subscriptionName(
   all: readonly { id: string; family: Family; kind: "main" | "managed"; createdAt: string | null }[],
 ): { name: string; named: boolean } {
   if (account.label !== null) return { name: account.label, named: true };
-  if (account.kind === "main") return { name: "CLI login", named: false };
+  if (account.kind === "main") return { name: "Main", named: false };
   const managed = all
     .filter((other) => other.family === account.family && other.kind === "managed")
     .sort((a, b) => (time(a.createdAt) ?? 0) - (time(b.createdAt) ?? 0) || a.id.localeCompare(b.id));
@@ -572,3 +616,29 @@ export function atTheLimit(
   if (targetAge !== null) return { ...said, text: `${said.text} · its reading is ${formatDuration(targetAge)} old` };
   return said;
 }
+
+/**
+ * The CLI login as a `Subscription`, from `budget_status`, for a host without ZeroSub: the
+ * overview then draws its one account through the same row as every ZeroSub account
+ * (`accountSections`), so there is one per-account model and one renderer.
+ */
+export function recordedAccount(budget: {
+  windows: readonly { id: string; pct: number; resetsAt: string | null; burnPctPerHour: number | null; history?: { t: string; pct: number }[] }[];
+  past?: readonly { startAt: string | null; resetsAt: string | null; firstSeenAt: string; peakPct: number }[];
+  recorder: { newestAt: string | null; samplesHeld: number; firstSampleAt: string | null };
+}): Subscription {
+  const session = budget.windows.find((w) => w.id === "five_hour");
+  return {
+    id: "claude-cli", family: "claude", kind: "main", name: "Main", named: false, isDefault: true, signedIn: true, disabled: false,
+    limitedUntil: null, createdAt: null, agents: 0, readAt: budget.recorder.newestAt,
+    windows: budget.windows.map(({ id, pct, resetsAt, burnPctPerHour }) => ({ id, pct, resetsAt, burnPctPerHour })),
+    credits: null,
+    history: session?.history ?? [],
+    past: [...(budget.past ?? [])],
+    extraUsage: null,
+    recorded: { source: "recorder", since: budget.recorder.firstSampleAt, readings: budget.recorder.samplesHeld },
+  };
+}
+
+/** Whether a row shows the Main chip: the main account, when its name doesn't already say "Main". */
+export const showsMainChip = (account: Pick<Subscription, "kind" | "name">) => account.kind === "main" && account.name !== "Main";

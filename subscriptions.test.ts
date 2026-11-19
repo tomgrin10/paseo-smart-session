@@ -31,7 +31,7 @@ test("names: the person's own, else a neutral one; never an email", () => {
     { id: "b", family: "claude" as const, kind: "managed" as const, label: null, createdAt: iso(NOW - 2 * H) },
     { id: "c", family: "claude" as const, kind: "managed" as const, label: "Personal", createdAt: iso(NOW - H) },
   ];
-  assert.deepEqual(subscriptionName(all[0]!, all), { name: "CLI login", named: false });
+  assert.deepEqual(subscriptionName(all[0]!, all), { name: "Main", named: false });
   assert.deepEqual(subscriptionName(all[1]!, all), { name: "Account 2", named: false });
   assert.deepEqual(subscriptionName(all[2]!, all), { name: "Personal", named: true });
 });
@@ -270,7 +270,7 @@ test("recorder: keeps each new ZeroSub reading once, keyed by account id, never 
     const view = buildView(snapshot, { recorded: [], accountRows: rows, liveAgents: [{ id: "a1", provider: "claude" }, { id: "a2", provider: "claude" }] }, NOW);
     assert.ok(!JSON.stringify(view).includes("@"), "no email in the RPC output");
     const byId = Object.fromEntries(view.accounts.map((a) => [a.id, a]));
-    assert.deepEqual([byId["claude-main"]!.name, byId["claude-x1"]!.name, byId["claude-x2"]!.name, byId["codex-main"]!.name], ["CLI login", "Personal", "Account 3", "CLI login"]);
+    assert.deepEqual([byId["claude-main"]!.name, byId["claude-x1"]!.name, byId["claude-x2"]!.name, byId["codex-main"]!.name], ["Main", "Personal", "Account 3", "Main"]);
     assert.equal(byId["claude-x1"]!.isDefault, true);
     assert.equal(byId["claude-x1"]!.agents, 1);
     assert.equal(byId["claude-main"]!.agents, 1, "an agent with no session of its own runs on the CLI login");
@@ -344,4 +344,70 @@ test("at the limit: an old reading says so instead of reading as current", () =>
   assert.doesNotMatch(text, /at this pace/);
   const target = [account("claude-main", { p5: 100 }), account("work", { p5: 10, name: "Personal", readAt: iso(NOW - 2 * H) })];
   assert.match(atTheLimit(target, "claude-main", NOW, { autoSwitch: true, protectedHere: false }).text, /ZeroSub moves it to Personal · its reading is 2h( 0m)? old$/);
+});
+
+// Invariant: every account shows everything the main account shows. Before this, the page drew the
+// session chart, the earlier windows and the per-model caps only for the CLI login (from the recorder);
+// a seat's row had two mini meters, though its history sat in accounts-*.jsonl.
+function seatHistory(id: string, family: "claude" = "claude") {
+  const rows = [];
+  // Two finished session windows on earlier days, then the open one.
+  for (const [start, peak] of [[NOW - 50 * H, 64], [NOW - 26 * H, 100], [NOW - 3 * H, 41]] as const) {
+    const reset = start + 5 * H;
+    for (let t = start + 15 * 60_000; t <= Math.min(reset - 60_000, NOW); t += 15 * 60_000) {
+      const pct = Math.min(peak, (peak * (t - start)) / Math.min(4 * H, NOW - start));
+      rows.push({ at: iso(t), fetchedAt: iso(t), src: "zerosub" as const, account: null, accountId: id, family, credits: null,
+        windows: { five_hour: { pct, resetsAt: iso(reset) }, seven_day: { pct: 30, resetsAt: iso(NOW + 4 * 24 * H) }, seven_day_opus: { pct: 22, resetsAt: iso(NOW + 4 * 24 * H) } } });
+    }
+  }
+  return rows;
+}
+
+test("every account has the main account's sections: chart, earlier windows, caps, Extra usage and its history source", async () => {
+  const { buildView } = await import("./server/subscriptions.ts");
+  const { parseZeroSub } = await import("./shared/guard/zerosub.ts");
+  const { accountSections, ACCOUNT_SECTIONS } = await import("./shared/subscriptions.ts");
+  const state = { accounts: [
+    { id: "claude-main", family: "claude", label: "alice@example.com", autoLabel: true, kind: "main", createdAt: iso(NOW - 90 * H) },
+    { id: "claude-bob", family: "claude", label: "Bob", autoLabel: false, kind: "managed", createdAt: iso(NOW - 80 * H) },
+    { id: "claude-carol", family: "claude", label: "carol@example.com", autoLabel: true, kind: "managed", createdAt: iso(NOW - 70 * H) },
+  ] };
+  const extra = { enabled: true, spend: 13991, limit: 22000, currency: "USD" };
+  const reading = (pct: number) => ({ fetchedAt: iso(NOW - 60_000), windows: [
+    { id: "five_hour", usedPercent: pct, resetsAt: iso(NOW + 2 * H) }, { id: "seven_day", usedPercent: 30, resetsAt: iso(NOW + 4 * 24 * H) },
+    { id: "seven_day_opus", usedPercent: 22, resetsAt: iso(NOW + 4 * 24 * H) }], extraUsage: extra });
+  const usage = { "claude-main": reading(41), "claude-bob": reading(41), "claude-carol": reading(41) };
+  // The recorder keeps the CLI login's history; the seats' sits in accounts-*.jsonl.
+  const recorded = seatHistory("claude-main").map(({ accountId, family, src, ...row }) => ({ ...row, src: "upstream" as const,
+    windows: { five_hour: row.windows.five_hour, seven_day: row.windows.seven_day, "weekly_model:opus": row.windows.seven_day_opus } }));
+  const accountRows = [...seatHistory("claude-bob"), ...seatHistory("claude-carol")];
+  const view = buildView(parseZeroSub(state, usage, undefined)!, { recorded, accountRows, liveAgents: [] }, NOW);
+  const main = view.accounts.find((a) => a.kind === "main")!;
+  const mainSections = accountSections(main);
+  assert.ok(ACCOUNT_SECTIONS.every((s) => mainSections[s]), `main has every section: ${JSON.stringify(mainSections)}`);
+  for (const account of view.accounts) {
+    assert.deepEqual(accountSections(account), mainSections, `${account.name} shows what main shows`);
+    assert.deepEqual(account.windows.map((w) => w.id).sort(), main.windows.map((w) => w.id).sort(), `${account.name}: the same windows, under the same ids`);
+    assert.equal(account.past!.length, 2, `${account.name}: both earlier session windows`);
+    assert.equal(account.past!.filter((p) => p.peakPct >= 99.5).length, 1);
+    assert.ok(account.history!.length > 3, `${account.name}: the open window's chart`);
+    assert.deepEqual(account.extraUsage, extra);
+  }
+  assert.equal(main.recorded!.source, "recorder");
+  assert.equal(view.accounts.find((a) => a.id === "claude-bob")!.recorded!.source, "zerosub");
+});
+
+test("history renders for a non-main account from accounts-*.jsonl alone, with nothing in usage.json", async () => {
+  const { buildView } = await import("./server/subscriptions.ts");
+  const { parseZeroSub } = await import("./shared/guard/zerosub.ts");
+  const state = { accounts: [
+    { id: "claude-main", family: "claude", label: "a@example.com", kind: "main", createdAt: iso(NOW - 90 * H) },
+    { id: "claude-bob", family: "claude", label: "Bob", autoLabel: false, kind: "managed", createdAt: iso(NOW - 80 * H) },
+  ] };
+  const view = buildView(parseZeroSub(state, {}, undefined)!, { recorded: [], accountRows: seatHistory("claude-bob"), liveAgents: [] }, NOW);
+  const bob = view.accounts.find((a) => a.id === "claude-bob")!;
+  assert.ok(bob.history!.length > 3);
+  assert.equal(bob.past!.length, 2);
+  assert.ok(bob.windows.some((w) => w.id === "weekly_model:opus"), "ZeroSub's seven_day_opus reads as the recorder's weekly_model:opus");
+  assert.equal(view.accounts.find((a) => a.id === "claude-main")!.name, "Main", "never \"CLI login\" in user copy");
 });

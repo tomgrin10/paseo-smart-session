@@ -101,7 +101,7 @@ const SubscriptionWindowSchema = z.object({
   burnPctPerHour: z.number().nullable(),
 });
 
-/** One ZeroSub account. Names are the person's own or neutral ("CLI login", "Account 2"); never an email. */
+/** One ZeroSub account. Names are the person's own or neutral ("Main", "Account 2"); never an email. */
 export const SubscriptionSchema = z.object({
   id: z.string(),
   family: z.enum(["claude", "codex"]),
@@ -120,6 +120,9 @@ export const SubscriptionSchema = z.object({
   windows: z.array(SubscriptionWindowSchema),
   credits: z.object({ balance: z.number().nullable(), unlimited: z.boolean() }).nullable(),
   history: z.array(z.object({ t: z.string(), pct: z.number() })).optional(),
+  past: z.array(PastWindowSchema).optional(),
+  extraUsage: z.object({ enabled: z.boolean(), spend: z.number().nullable(), limit: z.number().nullable(), currency: z.string().nullable() }).nullable().optional(),
+  recorded: z.object({ source: z.enum(["recorder", "zerosub"]), since: z.string().nullable(), readings: z.number() }).optional(),
 });
 
 /**
@@ -364,6 +367,24 @@ export const publishAsRecord = defineRpc({
     response: z.unknown(),
   }),
   output: z.object({ recorded: z.boolean() }),
+});
+
+/** The newest publish-as helper runs (`publish-as/runs-YYYY-MM.jsonl`), newest first: for Settings → Artifacts. */
+export const publishAsRuns = defineRpc({
+  name: "smart-session.publish_as.runs",
+  input: z.object({ limit: z.number().int().min(1).max(50).optional() }),
+  output: z.object({
+    runs: z.array(z.object({
+      at: z.string(),
+      outcome: z.string(),
+      /** `hook` or `tool`. */
+      via: z.string().nullable(),
+      tool: z.string().nullable(),
+      ms: z.number().nullable(),
+      /** The ZeroSub account the helper ran on (an id, never an email). */
+      account: z.string().nullable(),
+    })),
+  }),
 });
 
 // ---------------------------------------------------------------------------------------------- moving old history aside

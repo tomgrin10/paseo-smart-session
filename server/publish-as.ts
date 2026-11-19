@@ -338,6 +338,27 @@ export async function recordCall(request: { callerAgentId: string | null; tool?:
   return { recorded: true };
 }
 
+/** The newest runs from this month's and last month's logs, newest first; a torn line is skipped. */
+export async function readRuns(limit = 8, now = Date.now()): Promise<{ at: string; outcome: string; via: string | null; tool: string | null; ms: number | null; account: string | null }[]> {
+  const month = (ms: number) => new Date(ms).toISOString().slice(0, 7);
+  const thisMonth = month(now);
+  const lastMonth = month(Date.parse(`${thisMonth}-01T00:00:00Z`) - 1);
+  const rows: { at: string; outcome: string; via: string | null; tool: string | null; ms: number | null; account: string | null }[] = [];
+  for (const m of [lastMonth, thisMonth]) {
+    const textOf = await readFile(join(dir(), `runs-${m}.jsonl`), "utf8").catch(() => "");
+    for (const line of textOf.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const row = JSON.parse(line) as Record<string, unknown>;
+        if (typeof row.at !== "string" || typeof row.outcome !== "string") continue;
+        const str = (v: unknown) => (typeof v === "string" ? v : null);
+        rows.push({ at: row.at, outcome: row.outcome, via: str(row.via), tool: str(row.tool), ms: typeof row.ms === "number" ? row.ms : null, account: str(row.account) });
+      } catch { /* a torn line */ }
+    }
+  }
+  return rows.sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
+}
+
 /** One line per helper run, for auditing: who asked, which helper, how long, what happened. */
 async function logRun(entry: Record<string, unknown>): Promise<void> {
   try {

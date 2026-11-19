@@ -165,7 +165,7 @@ export function discoverAccounts(state: SourceState, scope: UsageScopeIn): Usage
   }
   const accounts = claudeAccounts(state);
   if (accounts.length === 0) {
-    return state.recorded === null ? [] : [{ key: CLI_KEY, label: "CLI login", input: { account: CLI_KEY, lead: true } }];
+    return state.recorded === null ? [] : [{ key: CLI_KEY, label: "Main", input: { account: CLI_KEY, lead: true } }];
   }
   const lead = scope.kind === "session" ? sessionAccount(state, scope.env) : (accounts.find((a) => a.isDefault) ?? null);
   return ordered(accounts, lead?.id ?? null).map((account) => ({

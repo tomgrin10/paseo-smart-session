@@ -1,0 +1,6 @@
+- Every Claude account on the Smart Session page now shows what the main one does: the session chart, earlier windows, per-model weekly limits, Extra usage and where its history comes from.
+- The main account is called Main everywhere (the page, the session popover, Settings → Artifacts), never "CLI login", and is listed first.
+- Session context on the Smart Session page is folded by default and sits lower on the page. Its heading still tells you when a session is past its compact line.
+- The Smart Session page is cleaner: one row per account with a details toggle, one meter key, a Features heading, and the "CLI login · history" section is gone.
+- Settings → Artifacts shows whether the account artifacts are published as is ready, and your recent publishes. The session popover says "Publish as Main" for sessions on another account.
+- Pause at the limit now measures the main account on its own usage, not on another account's when Paseo lists several Claude logins.

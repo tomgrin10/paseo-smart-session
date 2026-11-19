@@ -52,6 +52,22 @@
   rows were sometimes a seat's (weekly resets interleaved between two logins) and every row said `account: null`.
   Each row now carries `login: "cli"` and `accountId` (ZeroSub's id, `claude-main`; null without ZeroSub). Rows from
   before 3.8.0-beta.9 have neither: readers treat them as unknown, never as another account (`account-log.test.ts`).
+- **Invariant: every account shows everything the main account shows (`account-parity`).** One per-account model,
+  `Subscription` (`shared/subscriptions.ts`), carries every window under the recorder's ids (`claudeWindowId`: ZeroSub's
+  `seven_day_opus` is `weekly_model:opus`), the open window's chart points, 14 days of earlier session windows, Extra
+  usage and where the history comes from (`recorded`). The server builds it the same way for every account
+  (`buildView`: the main account from `usage-*.jsonl`, the others from `accounts-*.jsonl`); without ZeroSub the CLI
+  login becomes the same model (`recordedAccount`). The overview draws every account through one row and one details
+  fold (`AccountRow`/`AccountDetails` in `client/subscriptions-view.tsx`); main is just the account with the Main
+  name or chip, pinned first. A section with no data says so instead of disappearing. Root cause it fixes (2026-11):
+  the chart, earlier windows and per-model caps were drawn only in a "CLI login · history" section fed by
+  `budget_status`, while a seat's row had two mini meters though its history sat in `accounts-*.jsonl`.
+  `subscriptions.test.ts` holds every account to the main account's `accountSections`. Never "CLI login" in user copy:
+  the main account is "Main" (`subscriptionName`), or the person's name with a Main chip (`showsMainChip`).
+- Session Guard reads Paseo's listing through `cliOnlyUsage` (`server/guard/usage.ts`): Paseo 0.16 lists every login's
+  Claude report as `claude`, and the guard took the first, so a main session could be held or released on a seat's
+  numbers (`guard-usage.test.ts`). The CLI login's hash comes from `server/cli-login.ts`, which has no side effects:
+  importing the recorder from the guard kept test processes alive.
 - **The account-use logs** (`shared/account-log.ts` rules, `server/account-log.ts` writer), append-only monthly JSONL
   beside the others, ids only (agent ids, ZeroSub account ids, flags, times, numbers; never a title, prompt, email,
   generated label or path). Written on the recorder's minute tick from the agent listing and the ZeroSub snapshot it

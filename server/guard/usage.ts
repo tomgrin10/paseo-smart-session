@@ -55,3 +55,36 @@ export function withRecordedUsage(paseo: Usage, recorded: UsageSample | null): U
   else providers[index] = merged;
   return { ...paseo, providers };
 }
+
+/** The login a legacy listing's Claude report is for: "Claude (alice@example.com)" → the email. */
+function loginOf(provider: ProviderUsage): string | null {
+  const name = (provider as { displayName?: unknown }).displayName;
+  if (typeof name !== "string") return null;
+  const match = /\(([^()\s]+@[^()\s]+)\)\s*$/.exec(name);
+  return match ? match[1]!.trim().toLowerCase() : null;
+}
+
+/**
+ * Only the CLI login's Claude report out of Paseo's listing (`usage-account-identity`).
+ *
+ * Paseo 0.16 lists one built-in report per login a session runs on, every one as
+ * `claude`, and the guard took the first: a main session was held or released on a
+ * seat's numbers whenever the seat's report came first. Seats are measured from
+ * ZeroSub's readings (`accountView`), so here only the CLI login's report stays, picked
+ * by its email's hash as the recorder does (`cliListing`). A report that names another
+ * login, or several with nothing to match, read as none; `withRecordedUsage` then fills
+ * the CLI login's windows from the recorder. A report without a login (before 0.16) is
+ * the CLI login's.
+ */
+export function cliOnlyUsage(usage: Usage, cliHash: string | null, hashOf: (login: string) => string): Usage {
+  const claude = usage.providers.filter((provider) => provider.providerId === RECORDED_PROVIDER);
+  if (claude.length === 0) return usage;
+  const mine = (provider: ProviderUsage) => {
+    const login = loginOf(provider);
+    if (login === null) return claude.length === 1;
+    return cliHash !== null ? hashOf(login) === cliHash : claude.length === 1;
+  };
+  const keep = claude.filter(mine);
+  const chosen = keep.length === 1 ? keep[0] : undefined;
+  return { ...usage, providers: usage.providers.filter((provider) => provider.providerId !== RECORDED_PROVIDER || provider === chosen) };
+}
