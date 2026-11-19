@@ -27,6 +27,16 @@ const TAIL_BYTES = 256 * 1024;
  * what tires a context is the absolute prefix re-read every turn, so 30% of a
  * million tokens is a heavier context than 85% of two hundred thousand.
  */
+/**
+ * A publish-as helper (`server/publish-as.ts`) is a one-shot Haiku session on another account. No
+ * Smart Session hook speaks to it, records for it or enrols it: on 2026-11-17 the context hooks
+ * fired in a helper that had read a whole page, it asked for compaction, and its real publish was
+ * logged as a failure. Every hook checks this first.
+ */
+export function isPublishHelper(env = process.env) {
+  return env.SMART_SESSION_PUBLISH_HELPER === "1";
+}
+
 export const DEFAULT_THRESHOLDS = {
   largeWindowFrom: 400_000,
   large: { notice: 15, closing: 22, compact: 30, now: 40 },

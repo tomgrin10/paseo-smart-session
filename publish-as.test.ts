@@ -9,7 +9,8 @@ import {
   classify,
   decide,
   failureReason,
-  helperPrompt,
+  publishPrompt,
+  readPrompt,
   ownerName,
   parseHelperReply,
   successReason,
@@ -46,9 +47,14 @@ test("classify: only a publish creates or changes a page", () => {
   assert.deepEqual(classify({ type_url: "https://claude.ai/type/x", title: "Deck" }), { kind: "create", filePath: null });
   assert.deepEqual(classify({ file_path: "/a.html", url: `${URL}/` }), { kind: "update", url: URL });
   assert.deepEqual(classify({ asset: true, url: URL, file_path: "/a.png" }), { kind: "update", url: URL });
-  for (const action of ["read", "list", "open", "quickstart", "delete", "pin", "unpin"]) {
+  for (const action of ["list", "open", "quickstart", "delete", "pin", "unpin"]) {
     assert.deepEqual(classify({ action, url: URL }), { kind: "other" }, action);
   }
+  // Calls on an existing page run as its owner.
+  assert.deepEqual(classify({ action: "read", url: URL }), { kind: "access", url: URL });
+  assert.deepEqual(classify({ action: "list", url: URL, scope: "files" }), { kind: "access", url: URL });
+  assert.deepEqual(classify({ action: "get", url: URL, collection: "c", doc_id: "d" }, "ArtifactData"), { kind: "access", url: URL });
+  assert.deepEqual(classify({ action: "read", url: URL }, "ArtifactComments"), { kind: "access", url: URL });
   assert.deepEqual(classify({ asset: true, file_path: "/a.png" }), { kind: "other" });
 });
 
@@ -58,9 +64,10 @@ test("decision table: account × action", () => {
     ["seat makes a page from a type", base({ type_url: "https://claude.ai/type/slides", title: "Deck" }), "redirect"],
     ["seat updates a page we made", base({ file_path: "/work/page.html", url: URL }, { pages: [ours] }), "redirect"],
     ["seat uploads an asset to a page we made", base({ asset: true, url: URL, file_path: "/work/a.png" }, { pages: [ours] }), "redirect"],
-    ["seat updates an older seat page (unknown url)", base({ file_path: "/work/page.html", url: "https://claude.ai/artifact/Old" }), "pass:unknown-url"],
-    ["seat uploads an asset to an unknown page", base({ asset: true, url: "https://claude.ai/artifact/Old", file_path: "/a.png" }), "pass:unknown-url"],
-    ["seat reads", base({ action: "read", url: URL }, { pages: [ours] }), "pass:not-a-publish"],
+    // A url nobody recorded is tried on main; if main can't see it the call runs on the seat after all.
+    ["seat updates an unrecorded page", base({ file_path: "/work/page.html", url: "https://claude.ai/artifact/Old" }), "redirect"],
+    ["seat uploads an asset to an unrecorded page", base({ asset: true, url: "https://claude.ai/artifact/Old", file_path: "/a.png" }), "redirect"],
+    ["seat reads a page main owns", base({ action: "read", url: URL }, { pages: [ours] }), "redirect"],
     ["seat lists", base({ action: "list" }), "pass:not-a-publish"],
     ["seat starts from quickstart", base({ action: "quickstart", intent: "other" }), "pass:not-a-publish"],
     ["seat deletes a page we made", base({ action: "delete", url: URL }, { pages: [ours] }), "pass:not-a-publish"],
@@ -108,7 +115,8 @@ test("invariant: a limited owner takes a publish only with the setting on and cr
     ["setting on, Extra usage off", { ...ON, enabled: false }, true, "window", "refuse:extra-usage-off"],
     ["setting on, monthly limit reached", { ...ON, spend: 22_000 }, true, "window", "refuse:extra-usage-spent"],
     ["setting on, Claude said out of extra usage", ON, true, "budget", "refuse:extra-usage-spent"],
-    ["setting on, no reading of Extra usage", undefined, true, "window", "refuse:extra-usage-unknown"],
+    // A dollar is fine: with no reading yet, try; the helper's own result is the answer.
+    ["setting on, no reading of Extra usage", undefined, true, "window", "redirect:extra"],
   ];
   for (const [name, extra, useExtraUsage, kind, expected] of cases) {
     const zerosub = parseZeroSub(limitedState(kind), reading(extra), {})!;
@@ -124,7 +132,7 @@ test("invariant: a limited owner takes a publish only with the setting on and cr
   // A limit that has passed is room again.
   const passed = decide(base({ file_path: "/p.html" }, { zerosub: parseZeroSub(limitedState(), reading(ON), {})!, now: Date.parse(LIMITED_UNTIL) + 1, settings: { enabled: true, accountId: null } }) as HookInput) as any;
   assert.equal(passed.decision, "redirect");
-  // An unknown url still passes through first: only its owner can update it.
+  // An unrecorded url is only a guess at main: a limited main doesn't refuse it, the call runs as it was.
   const unknown = decide(base({ file_path: "/p.html", url: "https://claude.ai/artifact/Old" }, { zerosub: parseZeroSub(limitedState(), reading(ON), {})!, now: NOW_13 }) as HookInput);
   assert.equal(unknown.decision, "pass");
 });
@@ -138,7 +146,6 @@ test("a refused publish names the reason and the fix (pinned)", () => {
   assert.match(off, /turn on "Use the main account's Extra usage when it's out" in Smart Session's settings \(billed to that account\)\. Otherwise, publishing works again after Sun 15 Nov, 04:00 UTC\.$/);
   assert.match(note({ ...ON, enabled: false }, true), /Extra usage is off for that account.*turn on Extra usage in that account's claude\.ai settings/);
   assert.match(note({ ...ON, spend: 22_000 }, true), /Extra usage is used up \(\$220\.00 of its \$220\.00 monthly limit\).*raise that account's Extra usage limit/);
-  assert.match(note(undefined, true), /hasn't reported yet whether that account has Extra usage left.*Try again after ZeroSub's next usage reading/);
   for (const text of [off, note(ON, true, "budget")]) assert.doesNotMatch(text, /@/, "never an email");
 });
 
@@ -148,11 +155,11 @@ test("zerosub unreadable passes through with a note that says so", () => {
   assert.match((result as { note: string }).note, /couldn't read ZeroSub's account registry/);
 });
 
-test("a signed-out target passes through and says why", () => {
+test("a signed-out target is refused with the reason, never published on the seat", () => {
   const state = structuredClone(STATE);
   (state.accounts[0] as Record<string, unknown>).signedIn = false;
   const result = decide(base({ file_path: "/p.html" }, { zerosub: snapshot(state) }));
-  assert.equal(result.decision === "pass" && result.why, "target-unusable");
+  assert.equal(result.decision === "refuse" && result.why, "target-unusable");
   assert.match((result as { note: string }).note, /signed out/);
 });
 
@@ -188,8 +195,8 @@ test("the helper's reply is read defensively", () => {
   assert.equal(parseHelperReply(`Published at ${URL} for you`).url, URL);
   assert.deepEqual(parseHelperReply('{"url": null, "error": "refused"}'), { url: null, error: "refused", resultText: null });
   assert.equal(parseHelperReply(null).url, null);
-  assert.match(helperPrompt({ action: "publish", file_path: "a/p.html", url: URL }), /action "read" and url https/);
-  assert.doesNotMatch(helperPrompt({ action: "publish", file_path: "a/p.html" }), /action "read"/);
+  assert.match(readPrompt(URL), /action "read" and url https/);
+  assert.doesNotMatch(publishPrompt({ action: "publish", file_path: "a/p.html" }), /action "read"/);
 });
 
 // ------------------------------------------------------------------ the helper's lifecycle
@@ -209,6 +216,7 @@ function fakeOps(options: { onTarget?: "at-once" | "after-reload" | "never" | "m
     },
     async send() { calls.push("send"); fail("send"); },
     async wait() { calls.push("wait"); fail("wait"); return { status: options.status ?? "idle", error: null, lastMessage: options.reply === undefined ? `{"url": "${URL}", "error": null}` : options.reply }; },
+    async turn() { return []; },
     async archive(id) { calls.push(`archive:${id}`); },
   };
   return { ops, calls };
@@ -321,7 +329,7 @@ async function setupHost(state: unknown | "corrupt" | "none", usage?: unknown) {
     if (method === "smart-session.publish_as.start") return server.startPublish({ ...input, account: input.account ?? null });
     if (method === "smart-session.publish_as.wait") {
       const waited = await server.waitPublish(input.jobId, input.waitMs);
-      return waited.done ? { ...waited, text: server.describeResult(waited.result, input.native === true) } : waited;
+      return waited.done ? { ...waited, ...server.describeWait(waited.result, input.native === true) } : waited;
     }
     throw new Error(`unexpected ${method}`);
   };
@@ -351,13 +359,12 @@ test("seat session → hook → helper on main → deny with the url", async () 
   assert.equal(helpers.length, 2);
 });
 
-test("unknown url → passthrough; main session → passthrough; helper env → passthrough", async () => {
+test("main session → passthrough; helper env → passthrough; a call with no page → no daemon call", async () => {
   const { work, call, helpers } = await setupHost(STATE);
-  const unknown = await publishAsHook(event(work, { file_path: "page.html", url: "https://claude.ai/artifact/SeatOwned" }), { env: { PASEO_AGENT_ID: SEAT }, call, native: true });
-  assert.equal(unknown, null, "an older seat page is updated by the seat, untouched");
   assert.equal(await publishAsHook(event(work, { file_path: "page.html" }), { env: { PASEO_AGENT_ID: MAIN }, call, native: true }), null);
   assert.equal(await publishAsHook(event(work, { file_path: "page.html" }), { env: { PASEO_AGENT_ID: SEAT, SMART_SESSION_PUBLISH_HELPER: "1" }, call, native: true }), null);
-  assert.equal(await publishAsHook(event(work, { action: "read", url: URL }), { env: { PASEO_AGENT_ID: SEAT }, call: () => { throw new Error("no daemon call for a read"); }, native: true }), null);
+  assert.equal(await publishAsHook(event(work, { action: "list" }), { env: { PASEO_AGENT_ID: SEAT }, call: () => { throw new Error("no daemon call for a listing"); }, native: true }), null);
+  assert.equal(await publishAsHook(event(work, { action: "quickstart", intent: "other" }), { env: { PASEO_AGENT_ID: SEAT }, call: () => { throw new Error("no daemon call"); }, native: true }), null);
   assert.equal(helpers.length, 0);
 });
 

@@ -23,7 +23,7 @@ import { dirname, join } from "node:path";
 
 import { askable, compose } from "./ask.mjs";
 import { recordNowAsk, shouldAskNow } from "./asks.mjs";
-import { BANDS, DEFAULT_THRESHOLDS, detachedOnce, markDetachedTold, occupancy, readSettings } from "./context.mjs";
+import { BANDS, DEFAULT_THRESHOLDS, detachedOnce, isPublishHelper, markDetachedTold, occupancy, readSettings } from "./context.mjs";
 import { BRIDGE } from "./ask.mjs";
 import { clearPending, pluginDir, readPending, statePath } from "./pointer.mjs";
 
@@ -82,6 +82,7 @@ function advice(band, pct, used, max, path) {
 }
 
 async function main() {
+  if (isPublishHelper()) return;
   const raw = await new Promise((resolve) => {
     let input = "";
     process.stdin.setEncoding("utf8");

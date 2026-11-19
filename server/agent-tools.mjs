@@ -471,7 +471,7 @@ export function agentTools(context) {
 
     publish_as: {
       description:
-        "Publish an HTML file as an artifact on another Claude account, by default the user's main one, so the user owns the page and can open, share and edit it. Under ZeroSub this session may run on a different (seat) account, and a page published from here would belong to that account. A Smart Session hook already does this for a plain Artifact publish, so call this only when that hook told you to, or to choose another account. A short-lived helper agent on that account publishes the file and is archived afterwards; it takes 10-30 seconds. Pass a url only for a page published this way before.",
+        "Publish an HTML file as an artifact on another Claude account, by default the user's main one, so the user owns the page and can open, share and edit it. Under ZeroSub this session may run on a different (seat) account, and a page published from here would belong to that account. A Smart Session hook already does this for a plain Artifact publish, so call this only when that hook told you to, or to choose another account. A short-lived helper agent on that account publishes the file and is archived afterwards; it takes 10-30 seconds. Pass a url to update an existing page.",
       inputSchema: {
         type: "object",
         properties: {
@@ -479,7 +479,7 @@ export function agentTools(context) {
           title: { type: "string", description: "Fallback title when the page has no <title>." },
           description: { type: "string", description: "One sentence for the gallery card." },
           icon: { type: "string", description: "One short generic word for the tab icon, e.g. chart or doc." },
-          url: { type: "string", description: "Update this page in place. Only pages published through Smart Session can be updated." },
+          url: { type: "string", description: "Update this page in place. Smart Session sends it to the account that owns the page; if the page changed since this session last saw it, you get the live copy to merge instead." },
           account: { type: "string", description: 'The account to publish as: "main" (the default), a ZeroSub account id, or a name the user gave an account.' },
         },
         required: ["file_path"],

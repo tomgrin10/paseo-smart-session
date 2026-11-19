@@ -299,9 +299,12 @@ export const PublishResultSchema = z.object({
   ownerAccountId: z.string(),
   helperId: z.string().nullable(),
   ms: z.number(),
-  outcome: z.enum(["published", "failed", "timeout", "wrong-account", "busy"]),
+  outcome: z.enum(["published", "done", "conflict", "not-owner", "auth", "failed", "timeout", "wrong-account", "busy"]),
   error: z.string().nullable(),
   resultText: z.string().nullable(),
+  versionId: z.string().nullable().optional(),
+  livePath: z.string().nullable().optional(),
+  tool: z.string().optional(),
 });
 
 /**
@@ -319,6 +322,8 @@ export const publishAsStart = defineRpc({
     account: z.string().nullable().optional(),
     via: z.enum(["hook", "tool"]),
     isHelper: z.boolean().optional(),
+    /** The tool the hook caught: Artifact, ArtifactData or ArtifactComments. */
+    tool: z.string().optional(),
   }),
   output: z.discriminatedUnion("decision", [
     z.object({ decision: z.literal("pass"), why: z.string(), note: z.string().nullable() }),
@@ -338,9 +343,27 @@ export const publishAsWait = defineRpc({
   }),
   output: z.discriminatedUnion("done", [
     z.object({ done: z.literal(false) }),
-    /** `text` is what the model reads: `successReason` or `failureReason` in `shared/publish-as.ts`. */
-    z.object({ done: z.literal(true), result: PublishResultSchema, text: z.string() }),
+    /**
+     * `text` is what the model reads (`describeWait` in `server/publish-as.ts`). `allow`: the owner was
+     * a guess that couldn't see the page, so the original call runs after all.
+     */
+    z.object({ done: z.literal(true), result: PublishResultSchema, text: z.string(), allow: z.boolean().optional() }),
   ]),
+});
+
+/**
+ * Records which account owns a page a session published or read directly (the `PostToolUse` hook on
+ * Artifact), so later calls on it go to that account wherever the session runs by then.
+ */
+export const publishAsRecord = defineRpc({
+  name: "smart-session.publish_as.record",
+  input: z.object({
+    callerAgentId: z.string().min(1).nullable(),
+    tool: z.string().optional(),
+    input: z.record(z.string(), z.unknown()),
+    response: z.unknown(),
+  }),
+  output: z.object({ recorded: z.boolean() }),
 });
 
 // ---------------------------------------------------------------------------------------------- moving old history aside

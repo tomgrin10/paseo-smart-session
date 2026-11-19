@@ -15,10 +15,11 @@
 
 import { BRIDGE } from "./ask.mjs";
 import { noteCancelledCompaction } from "./cancelled.mjs";
-import { detachedOnce, markDetachedTold } from "./context.mjs";
+import { detachedOnce, isPublishHelper, markDetachedTold } from "./context.mjs";
 import { killedJobsNotice, markKilledTold } from "./killed-jobs.mjs";
 
 async function main() {
+  if (isPublishHelper()) return;
   const raw = await new Promise((resolve) => {
     let input = "";
     process.stdin.setEncoding("utf8");

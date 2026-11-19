@@ -1,12 +1,18 @@
 /**
- * The `PreToolUse` hook on the Artifact tool, as a function: `hooks/publish-as.mjs` wires it to
- * stdin, stdout and the daemon, and the tests call it with the plugin's own handlers.
+ * The `PreToolUse` hook on the artifact tools, and the `PostToolUse` record on Artifact, as
+ * functions: `hooks/publish-as.mjs` wires them to stdin, stdout and the daemon, and the tests call
+ * them with the plugin's own handlers.
  *
  * A page published from a session on another Claude account (under ZeroSub) is published as the
  * main account instead, so the person owns it. The decision and the helper run live in the plugin
  * (`server/publish-as.ts`); this only asks. A call it takes over is answered "deny" with the link:
  * the only way a `PreToolUse` hook can stop the original publish and still hand text back. That
  * reason leads with the success, so the model doesn't retry.
+ *
+ * A call on an existing page (an Artifact read or file listing, ArtifactData, ArtifactComments)
+ * that another account owns runs on that account the same way, and its result comes back the same
+ * way. The `PostToolUse` record tells the plugin which account owns each page a session publishes
+ * or reads directly, so its pages stay reachable after the session moves to another account.
  *
  * It never fails the turn: anything unexpected (no daemon, an old plugin, a malformed event) lets
  * the call through as it is, which is what happened before this hook existed.
@@ -19,13 +25,29 @@ export const HELPER_ENV = "SMART_SESSION_PUBLISH_HELPER";
 export const UNREACHABLE =
   "Smart Session couldn't reach Paseo to check which Claude account this artifact should be published as, so it is published on this session's own account. If that isn't the user's main account, they may not be able to open it: say so when you share the link.";
 
+const filled = (value) => typeof value === "string" && value.trim() !== "";
+
 /** Only a publish can create or change a page; anything else never reaches the daemon. */
 export function mayPublish(input) {
   if (input === null || typeof input !== "object") return false;
-  const action = typeof input.action === "string" && input.action.trim() !== "" ? input.action.trim() : "publish";
+  const action = filled(input.action) ? input.action.trim() : "publish";
   if (action !== "publish") return false;
-  return ["url", "type_url", "file_path"].some((key) => typeof input[key] === "string" && input[key].trim() !== "")
+  return ["url", "type_url", "file_path"].some((key) => filled(input[key]))
     || (input.files !== undefined && input.files !== null);
+}
+
+/**
+ * Whether a call may need another account: a publish, or a call on an existing page (one that names
+ * its url). Anything else never reaches the daemon, so the hook costs nothing for it.
+ */
+export function mayRoute(tool, input) {
+  if (input === null || typeof input !== "object") return false;
+  if (tool === "ArtifactData" || tool === "ArtifactComments") return filled(input.url);
+  if (tool !== "Artifact") return false;
+  const action = filled(input.action) ? input.action.trim() : "publish";
+  if (action === "read") return filled(input.url);
+  if (action === "list") return filled(input.url) && (input.scope === "files" || input.scope === "assets");
+  return mayPublish(input);
 }
 
 const output = (fields) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", ...fields } });
@@ -36,7 +58,7 @@ const output = (fields) => ({ hookSpecificOutput: { hookEventName: "PreToolUse",
  * @returns {Promise<object | null>} The hook's stdout, or null to say nothing.
  */
 export async function publishAsHook(event, context) {
-  if (event?.tool_name !== "Artifact" || !mayPublish(event.tool_input)) return null;
+  if (!mayRoute(event?.tool_name, event?.tool_input)) return null;
   // A helper is on the main account already; never let it start another helper.
   if (context.env[HELPER_ENV] === "1") return null;
   const agentId = context.env.PASEO_AGENT_ID;
@@ -50,6 +72,7 @@ export async function publishAsHook(event, context) {
       cwd: typeof event.cwd === "string" && event.cwd !== "" ? event.cwd : process.cwd(),
       input: event.tool_input,
       via: "hook",
+      tool: event.tool_name,
     });
   } catch {
     return output({ additionalContext: UNREACHABLE });
@@ -72,10 +95,38 @@ export async function publishAsHook(event, context) {
     } catch {
       break;
     }
-    if (waited?.done) return output({ permissionDecision: "deny", permissionDecisionReason: waited.text });
+    if (waited?.done) {
+      // The owner was a guess and can't see the page: the call runs as it was, on this account.
+      if (waited.allow === true) return output({ additionalContext: waited.text });
+      return output({ permissionDecision: "deny", permissionDecisionReason: waited.text });
+    }
   }
   return output({
     permissionDecision: "deny",
     permissionDecisionReason: `Not confirmed yet: Smart Session is still publishing this as ${started.owner} and stopped waiting. Don't call Artifact for it again. In a minute, call ${context.native ? "smart_publish_as" : "publish_as"} with the same file_path: it updates that same page and returns its link.`,
   });
+}
+
+/**
+ * The `PostToolUse` record: tells the plugin which account owns a page this session just published
+ * or read directly. Says nothing, and never fails the turn.
+ *
+ * @param {any} event The hook's stdin, parsed.
+ * @param {{ env: Record<string, string | undefined>, call: (method: string, input: unknown) => Promise<any> }} context
+ */
+export async function recordHook(event, context) {
+  if (event?.tool_name !== "Artifact" || event?.tool_input === null || typeof event?.tool_input !== "object") return null;
+  if (context.env[HELPER_ENV] === "1") return null;
+  const agentId = context.env.PASEO_AGENT_ID;
+  if (!agentId) return null;
+  const action = filled(event.tool_input.action) ? event.tool_input.action.trim() : "publish";
+  if (action !== "publish" && action !== "read") return null;
+  try {
+    await context.call("smart-session.publish_as.record", {
+      callerAgentId: agentId, tool: event.tool_name, input: event.tool_input, response: event.tool_response ?? null,
+    });
+  } catch {
+    // A missing record only means the page is found by a guess later.
+  }
+  return null;
 }

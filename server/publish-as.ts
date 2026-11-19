@@ -9,6 +9,11 @@
  * its one prompt: publish this input, reply with the url. It is archived afterwards whatever
  * happened. Nothing here opens a credential file; the helper is just a session on that account.
  *
+ * A republish is two turns of one helper: it reads the live version (without loading the page), and
+ * only when that is the version the caller last saw does it publish. Otherwise the caller gets the
+ * live copy to merge, so a helper never overwrites a change nobody merged. What the helper did is
+ * read from its tool calls on the daemon's timeline, not from what it said last.
+ *
  * One helper runs at a time. The decisions (what is taken over, which account, what the model is
  * told) are in `shared/publish-as.ts`.
  */
@@ -21,17 +26,26 @@ import { parseZeroSub, type ZeroSubAccount, type ZeroSubSnapshot } from "../shar
 import {
   HELPER_ENV,
   HELPER_LABEL,
+  accessPrompt,
+  accessReason,
+  conflictReason,
   decide,
   failureReason,
-  helperPrompt,
+  isNoAccess,
   normalizeUrl,
   ownerName,
-  parseHelperReply,
+  publishPrompt,
+  readPrompt,
+  readTurn,
+  recordFrom,
   successReason,
   type ArtifactInput,
   type HookDecision,
   type OwnedPage,
+  type TurnItem,
 } from "../shared/publish-as.ts";
+
+export type { TurnItem } from "../shared/publish-as.ts";
 import { withDaemon, type DaemonClient } from "./daemon.ts";
 import { zerosubInstallId } from "./guard/zerosub.ts";
 import { readSettings } from "./settings.ts";
@@ -57,10 +71,16 @@ export interface PublishResult {
   readonly ownerAccountId: string;
   readonly helperId: string | null;
   readonly ms: number;
-  readonly outcome: "published" | "failed" | "timeout" | "wrong-account" | "busy";
+  readonly outcome: "published" | "done" | "conflict" | "not-owner" | "auth" | "failed" | "timeout" | "wrong-account" | "busy";
   readonly error: string | null;
-  /** For a page made from a type: the publish result, which says how to fill it. */
+  /** For a page made from a type: the publish result, which says how to fill it. For an access call: its result. */
   readonly resultText: string | null;
+  /** The version a publish made, or for a conflict the live version the caller must merge. */
+  readonly versionId?: string | null;
+  /** A copy of the live page the caller can read (a routed read, or a conflict). */
+  readonly livePath?: string | null;
+  /** The routed tool, for what the model is told. */
+  readonly tool?: string;
 }
 
 /** Everything the helper run needs from the outside world, so tests can stand in for the daemon. */
@@ -76,25 +96,79 @@ export interface HelperOps {
   sessionAccount(agentId: string): Promise<string | null>;
   send(agentId: string, prompt: string): Promise<void>;
   wait(agentId: string, ms: number): Promise<{ status: string; error: string | null; lastMessage: string | null }>;
+  /** The helper's last turn, from its prompt on: what each tool call got back. */
+  turn(agentId: string): Promise<TurnItem[]>;
   archive(agentId: string): Promise<void>;
 }
 
+/** One helper job. */
+export interface HelperJob {
+  readonly target: ZeroSubAccount;
+  readonly input: ArtifactInput;
+  readonly cwd: string;
+  readonly extraUsage?: boolean;
+  /** `publish` (the default) or `access`: run a call on an existing page as given. */
+  readonly mode?: "publish" | "access";
+  readonly tool?: string;
+  /** For a republish: the version the caller last saw (null: never saw it; undefined: don't check). */
+  readonly expectedVersion?: string | null;
+  /** Where a copy of the live page goes for the caller to read. */
+  readonly liveDir?: string;
+}
+
+/** The pause before a second helper after a sign-in failure, so it picks up the refreshed login. */
+let authRetryMs = 10_000;
+/** For tests. */
+export function setAuthRetryMs(ms: number): void { authRetryMs = ms; }
+
+async function keepLiveCopy(savedPath: string | null, liveDir: string | undefined, url: string, version: string | null): Promise<string | null> {
+  if (!savedPath || !liveDir) return null;
+  try {
+    await mkdir(liveDir, { recursive: true });
+    const id = normalizeUrl(url).split("/").at(-1) ?? "page";
+    const copy = join(liveDir, `${id}-${version ?? randomUUID()}.html`);
+    await copyFile(savedPath, copy);
+    return copy;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * One helper run: create, pin, reopen, confirm the account, publish, archive. The archive is in a
- * `finally`, so a helper never outlives its publish, whether it worked, failed or timed out.
+ * One helper run, retried once in a fresh helper when the first couldn't sign in: Claude's refresh
+ * tokens rotate, so a helper that lost a refresh race fails, and one started a few seconds later
+ * reads the token the winner wrote.
  */
 export async function runHelper(
   ops: HelperOps,
-  job: { target: ZeroSubAccount; input: ArtifactInput; cwd: string; extraUsage?: boolean },
+  job: HelperJob,
   options: { turnMs?: number; newId?: () => string; now?: () => number } = {},
+): Promise<PublishResult> {
+  const first = await runHelperOnce(ops, job, options);
+  if (first.outcome !== "auth") return first;
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, authRetryMs));
+  const second = await runHelperOnce(ops, job, options);
+  return second.outcome === "auth" ? { ...second, ms: second.ms + first.ms } : second;
+}
+
+/**
+ * One helper: create, pin, reopen, confirm the account, run, archive. The archive is in a
+ * `finally`, so a helper never outlives its job, whether it worked, failed or timed out.
+ */
+async function runHelperOnce(
+  ops: HelperOps,
+  job: HelperJob,
+  options: { turnMs?: number; newId?: () => string; now?: () => number },
 ): Promise<PublishResult> {
   const now = options.now ?? Date.now;
   const started = now();
   const helperId = (options.newId ?? randomUUID)();
   const owner = ownerName(job.target);
+  const tool = job.tool ?? "Artifact";
+  const turnMs = options.turnMs ?? HELPER_TURN_MS;
   const done = (outcome: PublishResult["outcome"], fields: Partial<PublishResult>): PublishResult => ({
     ok: false, url: null, owner, ownerAccountId: job.target.id, helperId, ms: now() - started, outcome,
-    error: null, resultText: null, ...fields,
+    error: null, resultText: null, tool, ...fields,
   });
   let created = false;
   try {
@@ -109,17 +183,59 @@ export async function runHelper(
       const why = extraUsage ? ". Publishing on a limited account's Extra usage needs ZeroSub 1.5.1-pace.12 or later" : "";
       return done("wrong-account", { error: `the helper opened on another account (${on ?? "unknown"}), so nothing was published${why}` });
     }
-    await ops.send(helperId, helperPrompt(job.input));
-    const finished = await ops.wait(helperId, options.turnMs ?? HELPER_TURN_MS);
-    if (finished.status === "timeout") return done("timeout", { error: `the helper didn't finish within ${Math.round((options.turnMs ?? HELPER_TURN_MS) / 1000)} s` });
-    // Moved off the owner mid-turn (ZeroSub failing it over): whatever it made isn't the owner's page.
-    const after = await ops.sessionAccount(helperId);
-    if (after !== job.target.id) return done("wrong-account", { error: `the helper was moved to another account (${after ?? "unknown"}) during the publish, so it isn't published as the owner` });
-    const reply = parseHelperReply(finished.lastMessage);
-    if (finished.status !== "idle" || !reply.url) {
-      return done("failed", { error: reply.error ?? finished.error ?? (finished.status === "permission" ? "the helper was asked for a permission" : "the helper reported no url") });
+    /** One prompt, one turn, read back from its tool calls. Null when the turn ran out of time or moved. */
+    type Finished = Awaited<ReturnType<HelperOps["wait"]>>;
+    const step = async (prompt: string): Promise<{ stop: PublishResult } | { finished: Finished; reading: ReturnType<typeof readTurn> }> => {
+      await ops.send(helperId, prompt);
+      const finished = await ops.wait(helperId, turnMs);
+      if (finished.status === "timeout") return { stop: done("timeout", { error: `the helper didn't finish within ${Math.round(turnMs / 1000)} s` }) };
+      // Moved off the owner mid-turn (ZeroSub failing it over): whatever it made isn't the owner's page.
+      const after = await ops.sessionAccount(helperId);
+      if (after !== job.target.id) return { stop: done("wrong-account", { error: `the helper was moved to another account (${after ?? "unknown"}) during the publish, so it isn't published as the owner` }) };
+      const items = await ops.turn(helperId).catch(() => [] as TurnItem[]);
+      const reading = readTurn(items, tool, finished.lastMessage);
+      if (reading.auth || (finished.error && readTurn([], tool, finished.error).auth)) {
+        return { stop: done("auth", { error: `the helper couldn't sign in to ${owner} (${(reading.error ?? finished.error ?? finished.lastMessage ?? "").slice(0, 200)})` }) };
+      }
+      return { finished, reading };
+    };
+
+    const url = typeof job.input.url === "string" ? job.input.url : null;
+    if (job.mode === "access") {
+      const ran = await step(accessPrompt(tool, job.input));
+      if ("stop" in ran) return ran.stop;
+      const { finished, reading } = ran;
+      if (reading.output === null) return done("failed", { error: reading.error ?? finished.error ?? "the helper didn't make the call" });
+      if (reading.error && isNoAccess(reading.output)) return done("not-owner", { error: reading.error, resultText: reading.output });
+      const livePath = reading.savedPath && url ? await keepLiveCopy(reading.savedPath, job.liveDir, url, reading.liveVersion) : null;
+      const output = livePath && reading.savedPath ? reading.output.split(reading.savedPath).join(livePath) : reading.output;
+      return done("done", { ok: true, url, resultText: output, versionId: reading.liveVersion, livePath });
     }
-    return done("published", { ok: true, url: reply.url, resultText: reply.resultText });
+
+    if (url) {
+      // View the live version first: that is what lets the publish through, and the check against
+      // the version the caller last saw is what keeps a concurrent change.
+      const viewed = await step(readPrompt(url));
+      if ("stop" in viewed) return viewed.stop;
+      const { reading } = viewed;
+      if (reading.liveVersion === null) {
+        const error = reading.error ?? "the helper couldn't read the live page";
+        return done(isNoAccess(reading.output ?? reading.error) ? "not-owner" : "failed", { error });
+      }
+      if (job.expectedVersion !== undefined && reading.liveVersion !== job.expectedVersion) {
+        const livePath = await keepLiveCopy(reading.savedPath, job.liveDir, url, reading.liveVersion);
+        return done("conflict", { url, versionId: reading.liveVersion, livePath, error: "the page changed since this session last saw it" });
+      }
+    }
+    const ran = await step(publishPrompt(job.input));
+    if ("stop" in ran) return ran.stop;
+    const { finished, reading } = ran;
+    if (!reading.url) {
+      if (url && isNoAccess(reading.error)) return done("not-owner", { error: reading.error });
+      return done("failed", { error: reading.error ?? finished.error ?? (finished.status === "permission" ? "the helper was asked for a permission" : "the helper reported no url") });
+    }
+    const typed = typeof job.input.type_url === "string";
+    return done("published", { ok: true, url: reading.url, versionId: reading.versionId, resultText: typed ? (reading.output?.slice(0, 6000) ?? null) : null });
   } catch (error) {
     return done("failed", { error: error instanceof Error ? error.message : String(error) });
   } finally {
@@ -182,14 +298,44 @@ export async function readPages(): Promise<OwnedPage[]> {
   }
 }
 
-async function remember(page: OwnedPage): Promise<void> {
-  const pages = (await readPages()).filter((candidate) => normalizeUrl(candidate.url) !== normalizeUrl(page.url) || candidate.callerAgentId !== page.callerAgentId);
-  pages.push(page);
-  await mkdir(dir(), { recursive: true });
-  const target = join(dir(), "pages.json");
-  const temp = `${target}.${randomUUID()}.tmp`;
-  await writeFile(temp, JSON.stringify(pages.slice(-500), null, 2), "utf8");
-  await rename(temp, target);
+/** Records who owns a page and which version this caller last saw. One row per (url, caller). */
+let recordTail: Promise<unknown> = Promise.resolve();
+function remember(page: OwnedPage): Promise<void> {
+  // Read-modify-write over one file: the hook's records and the helper's would otherwise race.
+  const next = recordTail.then(async () => {
+    const previous = await readPages();
+    const same = previous.find((candidate) => normalizeUrl(candidate.url) === normalizeUrl(page.url) && candidate.callerAgentId === page.callerAgentId);
+    const pages = previous.filter((candidate) => candidate !== same);
+    // A read doesn't know the caller's file; keep the one it published from.
+    pages.push({ ...page, filePath: page.filePath ?? same?.filePath ?? null });
+    await mkdir(dir(), { recursive: true });
+    const target = join(dir(), "pages.json");
+    const temp = `${target}.${randomUUID()}.tmp`;
+    await writeFile(temp, JSON.stringify(pages.slice(-1000), null, 2), "utf8");
+    await rename(temp, target);
+  });
+  recordTail = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+/**
+ * Records a direct Artifact publish or read from a session (the `PostToolUse` hook), with the
+ * account the session ran on, so a later call on that page goes back to that account wherever the
+ * session runs by then. Silent and cheap: without ZeroSub, or for anything else, it records nothing.
+ */
+export async function recordCall(request: { callerAgentId: string | null; tool?: string; input: ArtifactInput; response: unknown; isHelper?: boolean }): Promise<{ recorded: boolean }> {
+  if (!request.callerAgentId || request.isHelper || helpers.has(request.callerAgentId) || (request.tool ?? "Artifact") !== "Artifact") return { recorded: false };
+  const found = recordFrom(request.input, request.response);
+  if (!found) return { recorded: false };
+  const { view } = await zerosubView();
+  if (typeof view === "string") return { recorded: false };
+  // A session ZeroSub never routed runs on the CLI login, the main account.
+  const accountId = (await sessionAccountOf(request.callerAgentId))
+    ?? view.accounts.find((account) => account.family === "claude" && account.kind === "main")?.id;
+  if (!accountId) return { recorded: false };
+  const filePath = found.via === "direct" && typeof request.input.file_path === "string" && isAbsolute(request.input.file_path) ? request.input.file_path : null;
+  await remember({ url: found.url, callerAgentId: request.callerAgentId, filePath, accountId, at: new Date().toISOString(), versionId: found.versionId, via: found.via });
+  return { recorded: true };
 }
 
 /** One line per helper run, for auditing: who asked, which helper, how long, what happened. */
@@ -234,13 +380,38 @@ async function sessionAccountOf(agentId: string, home = paseoHome()): Promise<st
   }
 }
 
+/** The last turn of a timeline page (from its last user message on), as turn items. */
+export function turnItems(page: unknown): TurnItem[] {
+  const entries = (page as { entries?: { item?: Record<string, unknown> }[] } | null)?.entries ?? [];
+  const items = entries.map((entry) => entry.item).filter((item): item is Record<string, unknown> => !!item && typeof item === "object");
+  const lastPrompt = items.map((item) => item.type).lastIndexOf("user_message");
+  const out: TurnItem[] = [];
+  for (const item of items.slice(lastPrompt + 1)) {
+    if (item.type === "assistant_message" && typeof item.text === "string") out.push({ kind: "text", text: item.text });
+    if (item.type !== "tool_call" || typeof item.name !== "string") continue;
+    const detail = (item.detail ?? {}) as { input?: unknown; output?: unknown };
+    const output = detail.output as { output?: unknown } | string | null | undefined;
+    const textOut = typeof output === "string" ? output : typeof output?.output === "string" ? output.output : output == null ? "" : JSON.stringify(output);
+    const error = typeof item.error === "string" ? item.error : item.error ? JSON.stringify(item.error) : null;
+    out.push({
+      kind: "tool", name: item.name,
+      input: detail.input && typeof detail.input === "object" ? (detail.input as Record<string, unknown>) : {},
+      output: textOut || error || "", failed: item.status === "failed" || error !== null,
+    });
+  }
+  return out;
+}
+
 export function daemonOps(client: DaemonClient, zerosubId: string): HelperOps {
   return {
     async create(agentId, cwd) {
       await client.createAgent({
         agentId, provider: "claude", model: HELPER_MODEL, modeId: "bypassPermissions", cwd,
         title: "Publish as main account (helper)", background: true,
-        env: { [HELPER_ENV]: "1" }, labels: { [HELPER_LABEL.key]: HELPER_LABEL.value },
+        env: { [HELPER_ENV]: "1" },
+        // No plugin tools: the helper only needs Claude's own Artifact tools, and every tool it is
+        // handed is context it pays for, on Extra usage too.
+        labels: { [HELPER_LABEL.key]: HELPER_LABEL.value, "plugin-tools/enabled": "false" },
       });
     },
     async pin(agentId, accountId, allowLimited) {
@@ -251,6 +422,7 @@ export function daemonOps(client: DaemonClient, zerosubId: string): HelperOps {
     sessionAccount: (agentId) => sessionAccountOf(agentId),
     async send(agentId, prompt) { await client.sendAgentMessage(agentId, prompt); },
     wait: (agentId, ms) => client.waitForFinish(agentId, ms),
+    async turn(agentId) { return turnItems(await client.fetchAgentTimeline(agentId, { direction: "tail", limit: 60, projection: "canonical" })); },
     async archive(agentId) { await client.archiveAgent(agentId); },
   };
 }
@@ -266,6 +438,8 @@ export interface PublishRequest {
   readonly via: "hook" | "tool";
   /** The caller is itself a helper (the hook knows from its environment). */
   readonly isHelper?: boolean;
+  /** The tool the hook caught: Artifact (the default), ArtifactData or ArtifactComments. */
+  readonly tool?: string;
 }
 
 export type StartResult =
@@ -298,7 +472,7 @@ export async function startPublish(request: PublishRequest): Promise<StartResult
     : request.input;
   const tool = request.via === "tool";
   const plan = decide({
-    callerAgentId: request.callerAgentId, provider: "claude", input, isHelper, pages, zerosub: view,
+    callerAgentId: request.callerAgentId, provider: "claude", input, isHelper, pages, zerosub: view, tool: request.tool ?? "Artifact",
     // The tool publishes whatever the setting says; it is the explicit path.
     settings: {
       enabled: tool || settings.publishAsMain,
@@ -307,7 +481,7 @@ export async function startPublish(request: PublishRequest): Promise<StartResult
     },
   });
   if (plan.decision === "refuse") {
-    await logRun({ caller: request.callerAgentId, via: request.via, helperId: null, ms: 0, outcome: "refused", why: plan.why, account: plan.target.id });
+    await logRun({ caller: request.callerAgentId, via: request.via, tool: request.tool ?? "Artifact", helperId: null, ms: 0, outcome: "refused", why: plan.why, account: plan.target.id });
     return { decision: "refused", why: plan.why, note: plan.note };
   }
   if (plan.decision === "pass" && tool) return { decision: "pass", why: plan.why, note: toolNote(plan, view, request.account ?? null) };
@@ -326,7 +500,10 @@ export async function startPublish(request: PublishRequest): Promise<StartResult
     await mkdir(stageRoot, { recursive: true });
     try {
       const staged = await stage(plan.input, request.cwd, stageRoot, jobId);
-      const go = (ops: HelperOps) => runHelper(ops, { target, input: staged, cwd: stageRoot, extraUsage: plan.extraUsage }, {
+      const go = (ops: HelperOps) => runHelper(ops, {
+        target, input: staged, cwd: stageRoot, extraUsage: plan.extraUsage, mode: plan.mode, tool: plan.tool,
+        expectedVersion: plan.expectedVersion, liveDir: join(dir(), "live"),
+      }, {
         newId: () => { const id = randomUUID(); helpers.add(id); return id; },
       });
       return opsFactory ? await opsFactory(pluginId ?? "zerosub", go) : await withDaemon((client) => go(daemonOps(client, pluginId ?? "zerosub")));
@@ -338,10 +515,20 @@ export async function startPublish(request: PublishRequest): Promise<StartResult
   };
   const promise = tail.then(run, run).then(async (result) => {
     if (result.helperId) helpers.delete(result.helperId);
-    if (result.ok && result.url && request.callerAgentId) {
-      await remember({ url: result.url, callerAgentId: request.callerAgentId, filePath, accountId: target.id, at: new Date().toISOString() }).catch(() => undefined);
+    const at = new Date().toISOString();
+    if (request.callerAgentId && result.url) {
+      const row = { url: result.url, callerAgentId: request.callerAgentId, accountId: target.id, at };
+      // What the caller has now seen: the version it made, the live version it was handed to merge,
+      // or the version it read.
+      if (result.outcome === "published") await remember({ ...row, filePath, versionId: result.versionId ?? null, via: "helper" }).catch(() => undefined);
+      else if (result.outcome === "conflict") await remember({ ...row, filePath, versionId: result.versionId ?? null, via: "read" }).catch(() => undefined);
+      else if (result.outcome === "done" && plan.tool === "Artifact" && result.versionId) await remember({ ...row, filePath: null, versionId: result.versionId, via: "read" }).catch(() => undefined);
     }
-    await logRun({ caller: request.callerAgentId, via: request.via, helperId: result.helperId, ms: result.ms, outcome: result.outcome, account: target.id, ...(result.url ? { url: result.url } : {}), ...(result.error ? { error: result.error } : {}) });
+    await logRun({
+      caller: request.callerAgentId, via: request.via, tool: plan.tool, mode: plan.mode, helperId: result.helperId, ms: result.ms, outcome: result.outcome,
+      account: target.id, extraUsage: plan.extraUsage, ...(plan.guess ? { guess: true } : {}),
+      ...(result.url ? { url: result.url } : {}), ...(result.versionId ? { version: result.versionId } : {}), ...(result.error ? { error: result.error } : {}),
+    });
     job.result = result;
     return result;
   });
@@ -370,7 +557,8 @@ function toolNote(plan: Extract<HookDecision, { decision: "pass" }>, view: ZeroS
         ? `ZeroSub has only one Claude account here, so there is nothing to switch to. ${none} Call Artifact directly.`
         : `This session already runs on that account, so call Artifact directly. ${none}`;
     }
-    case "unknown-url": return `That url wasn't published through Smart Session, so another account can't update it: only the account that owns a page can. ${none}`;
+    case "owner": return `This session runs on the account that owns that page, so call Artifact directly. ${none}`;
+    case "owner-unusable": return `The account that owns that page can't take it right now, so call Artifact directly from this session. ${none}`;
     default: return plan.note ?? none;
   }
 }
@@ -407,7 +595,30 @@ export async function publishNow(request: PublishRequest): Promise<StartResult |
 
 /** What the model reads for a finished publish, by the same rules the hook uses. */
 export function describeResult(result: PublishResult, native: boolean): string {
-  return result.ok && result.url
-    ? successReason({ url: result.url, owner: result.owner, resultText: result.resultText })
-    : failureReason(result.error ?? result.outcome, result.owner, native);
+  return describeWait(result, native).text;
+}
+
+/**
+ * What the model reads for a finished job, and whether the original call should run after all:
+ * a guess at the owner that the target couldn't see runs as it was, on the caller's own account.
+ */
+export function describeWait(result: PublishResult, native: boolean): { text: string; allow: boolean } {
+  if (result.outcome === "not-owner") {
+    return { allow: true, text: `Smart Session tried this on ${result.owner}, but it isn't a page the main Claude account can open, so it runs on this session's own account as asked.` };
+  }
+  if (result.outcome === "conflict" && result.url) {
+    return { allow: false, text: conflictReason({ owner: result.owner, url: result.url, livePath: result.livePath ?? null, liveVersion: result.versionId ?? null }) };
+  }
+  if (result.outcome === "done") {
+    return { allow: false, text: accessReason({ owner: result.owner, tool: result.tool ?? "Artifact", output: result.resultText ?? "", savedPath: result.livePath ?? null }) };
+  }
+  if (result.outcome === "auth") {
+    return { allow: false, text: failureReason(`Smart Session couldn't sign in to ${result.owner === "the main Claude account (CLI login)" ? "the main Claude account" : result.owner}, twice, ten seconds apart. ${result.error ?? ""}`.trim(), result.owner, native) };
+  }
+  return {
+    allow: false,
+    text: result.ok && result.url
+      ? successReason({ url: result.url, owner: result.owner, resultText: result.resultText })
+      : failureReason(result.error ?? result.outcome, result.owner, native),
+  };
 }
