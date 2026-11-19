@@ -19,10 +19,16 @@ export { named };
 import { defer, readLedger } from "./hooklib/asks.mjs";
 
 /** The tools that act on the calling session and need its agent id. */
-export const AGENT_SCOPED = new Set(["context_status", "checkpoint", "request_compaction", "defer_compaction", "publish_as", "publish_as_settings"]);
+export const AGENT_SCOPED = new Set(["context_status", "checkpoint", "request_compaction", "defer_compaction", "publish_as", "publish_as_settings", "report_issue", "report_send"]);
 
 /**
- * @param {{ agentId: string | null, call: (method: string, input: unknown) => Promise<any>, home?: string, stateFile?: string }} context
+ * `report_issue`'s one-line description: the only standing context reporting costs (docs/report-issue.md). The same
+ * words as the kit module's `reportToolDescription("Smart Session")`; `report-issue.test.ts` keeps them equal.
+ */
+export const REPORT_DESCRIPTION = "Report a bug, feature request or feedback about Smart Session to its GitHub. Call with kind+summary first; the reply has the procedure.";
+
+/**
+ * @param {{ agentId: string | null, call: (method: string, input: unknown) => Promise<any>, home?: string, stateFile?: string, native?: boolean }} context
  */
 export function agentTools(context) {
   const AGENT_ID = context.agentId;
@@ -540,6 +546,64 @@ export function agentTools(context) {
         const install = await callPlugin("smart-session.install.status", {}).catch(() => null);
         for (const home of install?.report?.homes ?? []) lines.push(home.line);
         return lines.join("\n");
+      },
+    },
+
+    // Report a bug (docs/report-issue.md). The procedure, template and consent steps come back in the first call's
+    // reply, so they cost context only while someone is reporting; nothing else mentions reporting.
+    report_issue: {
+      description: REPORT_DESCRIPTION,
+      inputSchema: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["bug", "feature", "feedback"] },
+          summary: { type: "string" },
+          fields: { type: "object" },
+          planId: { type: "string" },
+          confirm: { type: "boolean" },
+          screenshot_consent: { type: "boolean" },
+        },
+        additionalProperties: false,
+      },
+      async run(args) {
+        const result = await callPlugin("smart-session.report.issue", { agentId: requireAgent(), input: args ?? {} });
+        const text = JSON.stringify(result, null, 2);
+        // The stdio fallback serves the tool without the native `smart_` prefix.
+        return context.native === true ? text : text.replaceAll("smart_report_issue", "report_issue");
+      },
+    },
+
+    // The sheet's Send, for agents (agent parity): hand a person's report to another agent, or to a new agent in a
+    // workspace. With no target it only lists where it could go.
+    report_send: {
+      description: "Hand a person's Smart Session bug report, idea or feedback to another agent (or a new one) to file. Call with no target to list targets.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["bug", "feature", "feedback"], description: "Defaults to bug." },
+          text: { type: "string", description: "The person's own words." },
+          agentId: { type: "string", description: "An agent from the list to send it to." },
+          newAgentWorkspaceId: { type: "string", description: "A workspace to start a new agent in instead." },
+        },
+        additionalProperties: false,
+      },
+      async run(args) {
+        const self = requireAgent();
+        const kind = ["bug", "feature", "feedback"].includes(args.kind) ? args.kind : "bug";
+        const text = typeof args.text === "string" ? args.text : "";
+        const agentId = typeof args.agentId === "string" && args.agentId !== "" ? args.agentId : undefined;
+        const newAgentWorkspaceId = typeof args.newAgentWorkspaceId === "string" && args.newAgentWorkspaceId !== "" ? args.newAgentWorkspaceId : undefined;
+        if (agentId === self) return "That's you: file it yourself with report_issue instead. Nothing was sent.";
+        if (!agentId && !newAgentWorkspaceId) {
+          const targets = await callPlugin("smart-session.report.targets", { agentId: self });
+          const lines = (targets.agents ?? []).filter((a) => a.id !== self).map((a) => `- agentId ${a.id}: ${a.workspaceTitle ? `${a.workspaceTitle} · ` : ""}${a.title} (${a.provider}, ${a.status})`);
+          if (targets.newAgentWorkspace) lines.push(`- newAgentWorkspaceId ${targets.newAgentWorkspace.id}: a new agent in ${targets.newAgentWorkspace.title}`);
+          return lines.length ? `Where it can go (pass one, with the person's words in text):\n${lines.join("\n")}\nNothing was sent.` : "No agent or workspace to send it to. Nothing was sent.";
+        }
+        if (agentId && newAgentWorkspaceId) return "Give one target: agentId or newAgentWorkspaceId. Nothing was sent.";
+        if (!text.trim()) return "Put the person's words in text. Nothing was sent.";
+        const sent = await callPlugin("smart-session.report.send", { kind, text, ...(agentId ? { agentId } : { newAgentWorkspaceId }) });
+        return sent.started ? `Started ${sent.title} (agent ${sent.agentId}) with the report. It files it after the person's OK.` : `Sent to ${sent.title} (agent ${sent.agentId}). It files it after the person's OK.`;
       },
     },
   };

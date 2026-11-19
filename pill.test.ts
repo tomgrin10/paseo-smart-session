@@ -99,7 +99,7 @@ test("limit timing is checked field by field, and an untouched draft saves the s
 
 test("Command Center: one name, the old keywords still find it, paused lands on the list", async () => {
   const items = commandItems();
-  assert.deepEqual(items.map((item) => item.title), ["Smart Session", "Smart Session: settings", "Smart Session: held sessions", "Smart Session: show or hide the pill"]);
+  assert.deepEqual(items.map((item) => item.title), ["Smart Session", "Smart Session: settings", "Smart Session: held sessions", "Smart Session: show or hide the pill", "Smart Session: Report a bug, idea or feedback"]);
   for (const item of items) assert.ok(String(item.title).startsWith("Smart Session"));
   const words = items.flatMap((item) => item.keywords ?? []);
   for (const word of ["quota", "limit", "pause", "resume", "guard", "session guard", "display"]) assert.ok(words.includes(word), word);

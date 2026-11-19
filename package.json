@@ -28,12 +28,13 @@
     "shared/",
     "hooks/",
     "mcp.mjs",
-    "docs/"
+    "docs/",
+    "!docs/evidence/"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types *.test.ts",
-    "check": "node check-bundles.mjs && node check-gitinstall.mjs && node check-teardown.mjs && node check-mcp-resolve.mjs",
+    "check": "node check-bundles.mjs && node check-gitinstall.mjs && node check-teardown.mjs && node check-mcp-resolve.mjs && paseo-kit vendor --check report-issue server/report-issue",
     "verify": "npm run typecheck && npm run test && npm run check && node --test button-visibility.test.mjs && node release-notes.mjs check",
     "test:native": "node check-native-tools.mjs && node check-native-tools.mjs --stdio"
   },
@@ -46,6 +47,7 @@
     "@types/node": "^22.10.2",
     "@types/react": "~19.2.0",
     "esbuild": "^0.28.2",
+    "paseo-plugin-kit": "github:tomgrin10/paseo-plugin-kit#v0.3.0",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "typescript": "^5.9.3",

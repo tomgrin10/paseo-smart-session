@@ -249,6 +249,16 @@
   while it is off. There is no third pill state — a session is enrolled or it is not. With Smart
   Compact off the pill is drawn only while Pause at the limit runs here (muted ring, no tick).
 - Do not log secrets, tokens, task-state contents, or message bodies. Credentials are read-only.
+- **Report a bug** (`docs/report-issue.md`). `server/report-issue/` is vendored from paseo-plugin-kit: never edit it
+  here (`npm run check` runs `paseo-kit vendor --check`); change the kit, bump the pin, run `paseo-kit vendor
+  report-issue server/report-issue`. Invariant `report-issue-never-carries-secrets`: diagnostics rows are switches and
+  counts, never an account name, email, path or title, and everything an issue carries passes the module's
+  `Redactor` (`report-issue.test.ts` feeds it an account email, the hostname, home and a private repo). Invariant
+  `report-issue-files-only-after-confirm`: nothing is posted before the agent's confirm with the dry run's `planId`,
+  and the caller comes from the transport, never the arguments. Invariant `report-issue-costs-no-standing-context`:
+  `report_issue`'s description is the kit's one line and no hook mentions reporting. The sheet's Send and
+  `report_send` deliver the person's own words to an agent through the host API; that is neither Smart Compact's
+  `sendToAgent` nor a Session Guard message, and it runs only from a person's Send or an agent's `report_send`.
 
 ## Session Guard
 

@@ -23,10 +23,11 @@ async function runClientBundle(code) {
     "@getpaseo/plugin/client/ui": {
       SettingsAction: () => null, SettingsCard: () => null, SettingsSection: () => null, SettingsSwitch: () => null,
       SettingsInput: () => null, SettingsRow: () => null, SidebarRow: () => null, Icon: () => null, ScrollView: () => null,
+      Modal: Object.assign(() => null, { Content: () => null }), TextInput: () => null,
       useToast: () => ({ show() {}, error() {} }),
     },
     "@getpaseo/plugin": contracts,
-    "@getpaseo/plugin/client": { useRpc: () => async () => ({}), useSettings: () => ({ status: "loading" }) },
+    "@getpaseo/plugin/client": { useRpc: () => async () => ({}), useSettings: () => ({ status: "loading" }), openExternalUrl: async () => undefined },
     "@getpaseo/plugin/client/react-native": {
       Icon: () => null,
       Modal: () => null,
@@ -162,6 +163,14 @@ async function runClientBundle(code) {
       requireText(item?.icon, "Command Center icon");
       requireFunction(item?.onSelect, `Command Center ${item.id} callback`);
       summary.push(`addCommandCenterItem(${item.id})`);
+      return removable();
+    },
+    addSlashCommand(item) {
+      // Paseo's own rule: a lowercase name of letters, digits and dashes, with a description and an onSubmit.
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(item?.name ?? "")) throw new Error(`Invalid slash command name ${item?.name}`);
+      requireText(item?.description, "slash command description");
+      requireFunction(item?.onSubmit, `slash command ${item.name} callback`);
+      summary.push(`addSlashCommand(${item.name})`);
       return removable();
     },
     addTimelineRenderer(item) {
