@@ -1,24 +1,24 @@
 import { useRpc, useSettings, type PluginClientContext, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
-import { Platform, ScrollView, Text, View, type ScrollView as ScrollViewType } from "react-native";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Platform, Pressable, ScrollView, Text, View, type ScrollView as ScrollViewType } from "react-native";
 
 import { outlookShort } from "../shared/compact-lines";
 import { formatCompactTokens, formatDay, formatDuration, formatRelative, isInteresting } from "../shared/format";
 import {
-  budgetLine, contextOutlook, forecastWindow, formatMoment, headline, leadWindow, paceLine, resetLine,
+  contextOutlook, forecastWindow, formatMoment, headline, leadWindow,
   type Tone, type WindowForecast,
 } from "../shared/forecast";
 import { enrolmentState } from "../shared/governor";
 import { guardPreferences } from "../shared/guard/contracts";
 import { governorNotice, pausedLead, pausedSessions } from "../shared/guard/presentation";
 import { budgetStatus, contextStatus, getSettings, installStatus, setSettings, spendSummary } from "../shared/smart-session";
-import { DailyBars, HourHeatmap, Meter, PastWindows, RankedTotals, Ring, WindowChart, ink, toneFill } from "./charts";
+import { DailyBars, HourHeatmap, Meter, RankedTotals, Ring, toneFill } from "./charts";
 import { Exceptions, PausedSection } from "./guard/paused";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
 import { hasSubscriptions, pools, subscribeSubscriptions, subscriptionsSnapshot } from "./subscriptions";
-import { familyName, leadPool, poolHeadline, poolTrailing, subscriptionState } from "../shared/subscriptions";
+import { familyName, leadPool, poolHeadline, poolTrailing, recordedAccount, subscriptionState } from "../shared/subscriptions";
 import { SubscriptionsSection } from "./subscriptions-view";
 import { Card, CardRow, Chip, IconButton, SectionHead, StatusGlyph, Switch, TextLink, errorText, text, useNow } from "./kit";
 import type { Live } from "./live";
@@ -31,47 +31,15 @@ export { OVERVIEW_SCREEN, PAUSED_SCREEN } from "./screens";
 /** The one settings screen; it kept Smart Compact's id so links to it still land. */
 export const SMART_COMPACT_SETTINGS = SETTINGS_SCREEN;
 
+/** Whether Session context is open; folded by default, kept while the page is away and back. */
+const contextFold = { open: false };
+
 const ORDER = (id: string) => (id === "five_hour" ? 0 : id === "seven_day" ? 1 : 2);
 
 function toneIcon(tone: Tone, state: WindowForecast["state"] | null): string {
   if (state === "full") return "OctagonAlert";
   if (tone !== "default") return "Hourglass";
   return "Gauge";
-}
-
-/** A meter row for one plan window: label and percentage, meter, reset and pace. */
-function WindowRow({ theme, f, now, first, children, quiet = false, note = null }: { theme: Theme; f: WindowForecast; now: number; first: boolean; children?: ReactNode; quiet?: boolean; note?: string | null }) {
-  const c = theme.colors;
-  const t = text(c);
-  // Quiet: the Subscriptions section already says when this window runs out.
-  const pace = quiet ? "" : paceLine(f, now);
-  const budget = f.id === "five_hour" && !quiet ? budgetLine(f) : null;
-  return <CardRow theme={theme} first={first} style={{ gap: 6 }}>
-    <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
-      <Text style={{ ...t.label, flex: 1 }}>{f.label}</Text>
-      <Text style={{ color: c.foreground, fontSize: 17, lineHeight: 22, fontWeight: "600" }}>{`${Math.round(f.pct)}%`}</Text>
-    </View>
-    <Meter theme={theme} pct={f.pct} tone={f.tone} projected={f.atResetPct} pace={f.elapsed === null ? null : f.elapsed * 100}
-      label={`${f.label}: ${Math.round(f.pct)}% used${f.state === "short" ? `, ${pace.toLowerCase()}` : ""}`} />
-    <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 10, rowGap: 2 }}>
-      <Text style={t.meta}>{resetLine(f, now)}</Text>
-      {pace ? <Text style={{ ...t.meta, color: f.state === "short" || f.state === "full" ? toneColor(c, f.tone) : c.foregroundMuted, fontWeight: f.state === "short" ? "600" : "400" }}>{pace}</Text> : null}
-      {budget ? <Text style={t.meta}>{budget}</Text> : null}
-    </View>
-    {note ? <Text style={{ ...t.meta, color: c.statusDanger }}>{note}</Text> : null}
-    {children}
-  </CardRow>;
-}
-
-/** What the meter's three marks mean, once, under the card. */
-function MeterKey({ theme }: { theme: Theme }) {
-  const c = theme.colors;
-  const swatch = (color: string) => <View style={{ width: 14, height: 6, borderRadius: 3, backgroundColor: color }} />;
-  return <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 14, rowGap: 4, paddingHorizontal: 14, paddingVertical: 10, borderTopWidth: 1, borderTopColor: c.border }}>
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>{swatch(ink(c, 0.82))}<Text style={text(c).small}>Used</Text></View>
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>{swatch(ink(c, 0.16))}<Text style={text(c).small}>By the reset at this pace</Text></View>
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}><View style={{ width: 2, height: 12, borderRadius: 1, backgroundColor: c.foregroundMuted }} /><Text style={text(c).small}>Even pace</Text></View>
-  </View>;
 }
 
 function LoadingCard({ theme, rows = 3 }: { theme: Theme; rows?: number }) {
@@ -147,10 +115,10 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const multi = hasSubscriptions(subs);
     const subPools = multi ? pools(subs, now) : [];
     const poolLead = leadPool(subPools.filter((p) => p.total > 1), now);
-    // The CLI's newer limit notice outranks the recorder's last reading; the history row says so.
-    const cliOut = multi ? subs.accounts.find((a) => a.id === "claude-main") : undefined;
-    const cliState = cliOut ? subscriptionState(cliOut, now) : null;
-    const cliOutNote = cliState?.kind === "limit" ? `ZeroSub reports this login ${cliState.label.charAt(0).toLowerCase()}${cliState.label.slice(1)}` : null;
+    // The main account's newer limit notice (ZeroSub's) outranks the recorder's last reading.
+    const mainOut = multi ? subs.accounts.find((a) => a.family === "claude" && a.kind === "main") : undefined;
+    const cliState = mainOut ? subscriptionState(mainOut, now) : null;
+    const [contextOpen, setContextOpen] = useState(() => contextFold.open);
     const poolHead = poolLead === null || !multi ? null : poolHeadline(poolLead, subs.accounts.filter((a) => a.family === poolLead.family), now);
     const focus = params?.focus === "paused" ? "paused" : null;
     const scroller = useRef<ScrollViewType>(null);
@@ -173,7 +141,6 @@ export function makeOverview(client: PluginClientContext, live: Live) {
       .map((w) => forecastWindow(w, now)).sort((a, b) => ORDER(a.id) - ORDER(b.id) || b.pct - a.pct);
     const lead = leadWindow(forecasts);
     const head = budgetQuery.data === undefined ? null : headline(lead, now);
-    const session = budgetQuery.data?.windows.find((w) => w.id === "five_hour");
     const paused = guard === undefined ? [] : pausedSessions(guard.pauses);
     // The lead speaks only for pauses this process can act on; another governor's are listed, not announced.
     const governed = guard?.governor === "active" ? paused : [];
@@ -208,6 +175,15 @@ export function makeOverview(client: PluginClientContext, live: Live) {
       });
     }
 
+    const contextSummary: { text: string; tone: Tone } = (() => {
+      if (contextQuery.data === undefined) return { text: "", tone: "default" };
+      if (agents.length === 0) return { text: "None reporting yet", tone: "default" };
+      const outlooks = agents.map((agent) => ({ agent, outlook: contextOutlook(agent) }));
+      const past = outlooks.filter(({ agent, outlook }) => enrolled.has(agent.agentId) && outlook.past).length;
+      const worst: Tone = outlooks.some(({ outlook }) => outlook.tone === "danger") ? "danger" : outlooks.some(({ outlook }) => outlook.tone === "warning") ? "warning" : "default";
+      const fullest = Math.max(...outlooks.map(({ outlook }) => outlook.pct));
+      return past > 0 ? { text: `${past} past ${past === 1 ? "its" : "their"} compact line`, tone: worst } : { text: `fullest ${Math.round(fullest)}%`, tone: worst };
+    })();
     const install = installQuery.data?.report;
     // Only a problem earns a line: a working install is the default.
     const hooksProblem = install === undefined ? null
@@ -221,7 +197,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     const compactLine: ReactNode = settings === undefined ? "…" : !settings.enabled ? "Off · nothing is asked or compacted"
       // Only the clause that is state wears the state colour.
       : pastUpper + pastLine > 0 ? <>{`${enrolled.size} enrolled`}{pastUpper > 0 ? <Text style={{ color: c.statusDanger }}>{` · ${pastUpper} asked mid-turn`}</Text> : null}{pastLine > 0 ? <Text style={{ color: c.statusWarning }}>{` · ${pastLine} asked at the end of a turn`}</Text> : null}</>
-        : `${enrolled.size} enrolled · asked at ${settings.thresholds.large.compact}% / ${settings.thresholds.large.now}% of a ${formatCompactTokens(settings.thresholds.largeWindowFrom)}+ window, ${settings.thresholds.small.compact}% / ${settings.thresholds.small.now}% of a smaller one`;
+        : `${enrolled.size} ${enrolled.size === 1 ? "session" : "sessions"} enrolled · asked at a safe stopping point, never forced`;
     const guardState: { line: string; tone: Tone } = (() => {
       if (guardOn === null) return { line: "…", tone: "default" };
       if (!guardOn) return { line: paused.length > 0 ? `Off · ${paused.length} paused still ${paused.length === 1 ? "waits" : "wait"} for the reset` : "Off · sessions run into the limit", tone: "default" };
@@ -282,61 +258,18 @@ export function makeOverview(client: PluginClientContext, live: Live) {
         {header}
         {error ? <Text accessibilityRole="alert" style={{ ...t.meta, color: c.statusDanger }}>{error}</Text> : null}
         {pausedSection}
-        {multi ? <SubscriptionsSection theme={theme} compact={compact} accounts={subs.accounts} pools={subPools} now={now} autoSwitch={subs.autoSwitch} leadFamily={pauseLead === null && poolHead !== null ? poolLead?.family ?? null : null} /> : null}
+        {multi ? <SubscriptionsSection theme={theme} compact={compact} accounts={subs.accounts} pools={subPools} now={now} autoSwitch={subs.autoSwitch} guardPct={guardPct}
+          leadFamily={pauseLead === null && poolHead !== null ? poolLead?.family ?? null : null} />
+          // Without ZeroSub the one login, through the same row and details as every account.
+          : budgetQuery.data === undefined ? <View style={{ gap: 8 }}><SectionHead theme={theme} title="Plan limits" /><LoadingCard theme={theme} /></View>
+            : forecasts.length === 0 ? <View style={{ gap: 8 }}><SectionHead theme={theme} title="Plan limits" />
+              <Empty theme={theme} title="No reading yet" detail="Smart Session records Claude's plan usage every minute while Paseo runs. The first reading usually arrives within a few minutes of signing in to Claude on this host." /></View>
+              : <Reveal><SubscriptionsSection theme={theme} compact={compact} accounts={[recordedAccount(budgetQuery.data)]} pools={[]} now={now} autoSwitch guardPct={guardPct} leadFamily={null} title="Plan limits" /></Reveal>}
+
+        {/* Reserved: a future per-account utilization section sits here, right after the accounts. */}
 
         <View style={{ gap: 8 }}>
-          {/* Under ZeroSub these are the CLI login's windows, with the recorder's full history. */}
-          <SectionHead theme={theme} title={multi ? "CLI login · history" : "Plan limits"} />
-          {budgetQuery.data === undefined ? <LoadingCard theme={theme} />
-            : forecasts.length === 0 ? <Empty theme={theme} title="No reading yet" detail="Smart Session records Claude's plan usage every minute while Paseo runs. The first reading usually arrives within a few minutes of signing in to Claude on this host." />
-              : <Reveal><Card theme={theme}>
-                {forecasts.map((f, i) => <WindowRow key={f.id} theme={theme} f={f} now={now} first={i === 0} quiet={multi && (f.id === "five_hour" || f.id === "seven_day")} note={f.id === "five_hour" ? cliOutNote : null}>
-                  {f.id === "five_hour" && session?.history && session.history.length > 0 ? <View style={{ gap: 14, paddingTop: 10 }}>
-                    <WindowChart theme={theme} forecast={f} history={session.history} now={now} compact={compact} guardPct={guardPct} />
-                    {budgetQuery.data?.past && budgetQuery.data.past.length > 0 ? <View style={{ gap: 2 }}>
-                      <Text style={t.small}>Earlier session windows, last 14 days</Text>
-                      <PastWindows theme={theme} past={budgetQuery.data.past} now={now} compact={compact} />
-                    </View> : null}
-                  </View> : null}
-                </WindowRow>)}
-                <MeterKey theme={theme} />
-              </Card></Reveal>}
-        </View>
-
-        <View style={{ gap: 8 }}>
-          <SectionHead theme={theme} title="Session context" count={agents.length || undefined} />
-          {contextQuery.data === undefined ? <LoadingCard theme={theme} rows={2} />
-            : agents.length === 0 ? <Empty theme={theme} title="No session has reported its context yet" detail="Each session reports how full its context is after its first turn." />
-              : <Card theme={theme}>{agents.map((agent, i) => {
-                const outlook = contextOutlook(agent);
-                const on = enrolled.has(agent.agentId);
-                const upper = agent.compactNowAtPct ?? null;
-                // A session nobody enrolled is never asked, so it gets no lines and no ticks.
-                const parts = [`${formatCompactTokens(agent.usedTokens)} of ${formatCompactTokens(agent.maxTokens)}`];
-                if (!on) { if (compact) parts.push("not enrolled"); }
-                else parts.push(upper === null ? `compacts at ${agent.compactAtPct}%` : `asks at ${agent.compactAtPct}%, mid-turn at ${upper}%`);
-                if (agent.growthTokensPerHour !== null && agent.growthTokensPerHour > 0) parts.push(`+${formatCompactTokens(agent.growthTokensPerHour)}/h`);
-                const outlookLine = outlookShort(outlook, on);
-                return <CardRow key={agent.agentId} theme={theme} first={i === 0} style={{ gap: 6 }}
-                  onPress={navigation ? () => navigation.openAgent({ agentId: agent.agentId }) : undefined} accessibilityLabel={`Open ${agent.title ?? "session"}`}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <StatusGlyph theme={theme} status={agent.status} />
-                    <Text numberOfLines={1} style={{ ...t.label, flexShrink: 1 }}>{agent.title ?? `Session ${agent.agentId.slice(0, 8)}`}</Text>
-                    <View style={{ flex: 1 }} />
-                    {governed.some((p) => p.agentId === agent.agentId) ? <Chip theme={theme} icon="Pause" label="Held" color={c.statusWarning} /> : null}
-                    {on ? <Chip theme={theme} label="Smart Compact" /> : compact ? null : <Text style={t.small}>Not enrolled</Text>}
-                    <Ring size={16} color={outlook.tone !== "default" ? toneFill(c, outlook.tone) : on ? c.foreground : c.foregroundMuted} fraction={outlook.pct / 100} mark={on ? agent.compactAtPct / 100 : null} upper={upper === null ? null : upper / 100} />
-                    <Text style={{ color: c.foreground, fontSize: 15, lineHeight: 20, fontWeight: "600", minWidth: 36, textAlign: "right", ...tabular }}>{`${Math.round(outlook.pct)}%`}</Text>
-                  </View>
-                  <Meter theme={theme} pct={outlook.pct} tone={outlook.tone} mark={on ? agent.compactAtPct : null} upper={on ? upper : null} height={6} label={`${agent.title ?? "Session"}: ${Math.round(outlook.pct)}% of its context${on ? `, asked at ${agent.compactAtPct}%${upper === null ? "" : ` and mid-turn at ${upper}%`}` : ", not enrolled"}`} />
-                  <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 10, rowGap: 2 }}>
-                    <Text style={t.meta}>{parts.join(" · ")}</Text>
-                    {outlookLine ? <Text style={{ ...t.meta, color: outlook.past ? toneColor(c, outlook.tone) : c.foregroundMuted }}>{outlookLine}</Text> : null}
-                  </View>
-                </CardRow>;
-              })}</Card>}
-        </View>
-
+          <SectionHead theme={theme} title="Features" />
         <Card theme={theme}>
           <FeatureRow theme={theme} first icon="FoldVertical" title="Smart Compact" line={compactLine} on={settings?.enabled ?? null} compact={compact}
             onToggle={(next) => void saveSmartCompact({ enabled: next }, next ? "Smart Compact on" : "Smart Compact off")}
@@ -351,6 +284,7 @@ export function makeOverview(client: PluginClientContext, live: Live) {
             {guard !== undefined && guardOn ? <Exceptions theme={theme} layout={layout} status={guard} titleOf={titleOf} /> : null}
           </FeatureRow>
         </Card>
+        </View>
 
         {summary === undefined || summary.bucketCount === 0 ? null : <View style={{ gap: 8 }}>
           <SectionHead theme={theme} title="Tokens, last 30 days" />
@@ -382,6 +316,50 @@ export function makeOverview(client: PluginClientContext, live: Live) {
             </View>
           </Card>
         </View>}
+
+        <View style={{ gap: 8 }}>
+          {/* Folded by default: the composer pill already carries each session's context where it is actionable. */}
+          <Pressable accessibilityRole="button" aria-expanded={contextOpen} accessibilityLabel={`${contextOpen ? "Hide" : "Show"} session context`}
+            onPress={() => { contextFold.open = !contextOpen; setContextOpen(!contextOpen); }} hitSlop={6}
+            style={(state) => ({ flexDirection: "row", alignItems: "center", gap: 7, minHeight: compact ? 44 : 28, opacity: state.pressed ? 0.7 : 1 })}>
+            <View style={{ transform: [{ rotate: contextOpen ? "90deg" : "0deg" }] }}><Icon name="ChevronRight" size={13} color={c.foregroundMuted} /></View>
+            <Text accessibilityRole="header" style={t.group}>Session context</Text>
+            {agents.length > 0 ? <Chip theme={theme} label={String(agents.length)} /> : null}
+            <View style={{ flex: 1 }} />
+            {/* Folding never hides trouble: the head says when a session is past its line. */}
+            <Text numberOfLines={1} style={{ ...t.small, flexShrink: 1, color: contextSummary.tone === "default" ? c.foregroundMuted : toneColor(c, contextSummary.tone), fontWeight: contextSummary.tone === "default" ? "400" : "600" }}>{contextSummary.text}</Text>
+          </Pressable>
+          {!contextOpen ? null : contextQuery.data === undefined ? <LoadingCard theme={theme} rows={2} />
+            : agents.length === 0 ? null
+              : <Card theme={theme}>{agents.map((agent, i) => {
+                const outlook = contextOutlook(agent);
+                const on = enrolled.has(agent.agentId);
+                const upper = agent.compactNowAtPct ?? null;
+                // A session nobody enrolled is never asked, so it gets no lines and no ticks.
+                const parts = [`${formatCompactTokens(agent.usedTokens)} of ${formatCompactTokens(agent.maxTokens)}`];
+                if (!on) { if (compact) parts.push("not enrolled"); }
+                else parts.push(upper === null ? `compacts at ${agent.compactAtPct}%` : `asks at ${agent.compactAtPct}%, mid-turn at ${upper}%`);
+                if (agent.growthTokensPerHour !== null && agent.growthTokensPerHour > 0) parts.push(`+${formatCompactTokens(agent.growthTokensPerHour)}/h`);
+                const outlookLine = outlookShort(outlook, on);
+                return <CardRow key={agent.agentId} theme={theme} first={i === 0} style={{ gap: 6 }}
+                  onPress={navigation ? () => navigation.openAgent({ agentId: agent.agentId }) : undefined} accessibilityLabel={`Open ${agent.title ?? "session"}`}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <StatusGlyph theme={theme} status={agent.status} />
+                    <Text numberOfLines={1} style={{ ...t.label, flexShrink: 1 }}>{agent.title ?? `Session ${agent.agentId.slice(0, 8)}`}</Text>
+                    <View style={{ flex: 1 }} />
+                    {governed.some((p) => p.agentId === agent.agentId) ? <Chip theme={theme} icon="Pause" label="Held" color={c.statusWarning} /> : null}
+                    {on ? <Chip theme={theme} label="Smart Compact" /> : compact ? null : <Text style={t.small}>Not enrolled</Text>}
+                    <Ring size={16} color={outlook.tone !== "default" ? toneFill(c, outlook.tone) : on ? c.foreground : c.foregroundMuted} fraction={outlook.pct / 100} mark={on ? agent.compactAtPct / 100 : null} upper={upper === null ? null : upper / 100} />
+                    <Text style={{ color: c.foreground, fontSize: 15, lineHeight: 20, fontWeight: "600", minWidth: 36, textAlign: "right", ...tabular }}>{`${Math.round(outlook.pct)}%`}</Text>
+                  </View>
+                  <Meter theme={theme} pct={outlook.pct} tone={outlook.tone} mark={on ? agent.compactAtPct : null} upper={on ? upper : null} height={6} label={`${agent.title ?? "Session"}: ${Math.round(outlook.pct)}% of its context${on ? `, asked at ${agent.compactAtPct}%${upper === null ? "" : ` and mid-turn at ${upper}%`}` : ", not enrolled"}`} />
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 10, rowGap: 2 }}>
+                    <Text style={t.meta}>{parts.join(" · ")}</Text>
+                    {outlookLine ? <Text style={{ ...t.meta, color: outlook.past ? toneColor(c, outlook.tone) : c.foregroundMuted }}>{outlookLine}</Text> : null}
+                  </View>
+                </CardRow>;
+              })}</Card>}
+        </View>
 
         {recorder === undefined ? null : <View style={{ gap: 3 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
