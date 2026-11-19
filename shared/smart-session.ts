@@ -101,7 +101,7 @@ const SubscriptionWindowSchema = z.object({
   burnPctPerHour: z.number().nullable(),
 });
 
-/** One ZeroSub account. Names are the person's own or neutral ("CLI login", "Account 2"); never an email. */
+/** One ZeroSub account. Names are the person's own or neutral ("Main", "Account 2"); never an email. */
 export const SubscriptionSchema = z.object({
   id: z.string(),
   family: z.enum(["claude", "codex"]),
@@ -120,6 +120,9 @@ export const SubscriptionSchema = z.object({
   windows: z.array(SubscriptionWindowSchema),
   credits: z.object({ balance: z.number().nullable(), unlimited: z.boolean() }).nullable(),
   history: z.array(z.object({ t: z.string(), pct: z.number() })).optional(),
+  past: z.array(PastWindowSchema).optional(),
+  extraUsage: z.object({ enabled: z.boolean(), spend: z.number().nullable(), limit: z.number().nullable(), currency: z.string().nullable() }).nullable().optional(),
+  recorded: z.object({ source: z.enum(["recorder", "zerosub"]), since: z.string().nullable(), readings: z.number() }).optional(),
 });
 
 /**

@@ -19,8 +19,8 @@ import { STALE_AFTER_MS, poolForecast, subscriptionName, type Subscription, type
 import { canonicalWindowId, effectiveAt, type UsageSample } from "../shared/usage.ts";
 
 const DAY = 24 * 60 * 60_000;
-/** Enough history for an open week and its pace. */
-const HISTORY_MS = 8 * DAY;
+/** An open week and its pace, and the 14 days of earlier session windows every account shows. */
+const HISTORY_MS = 14 * DAY;
 /** The CLI's own Claude login: the recorder measures it, and more often than ZeroSub. */
 const RECORDED_ACCOUNT = "claude-main";
 
@@ -29,9 +29,27 @@ const RECORDED_ACCOUNT = "claude-main";
  * families (Codex's are told apart by length), so one set of rules reads both.
  */
 export function canonicalAccountWindow(family: "claude" | "codex", window: ZeroSubWindow): string {
-  if (family === "claude") return canonicalWindowId(window.id);
+  if (family === "claude") return claudeWindowId(window.id);
   if (window.minutes !== null) return window.minutes <= 6 * 60 ? "five_hour" : window.minutes >= 6 * DAY / 60_000 ? "seven_day" : window.id;
   return window.id === "primary" ? "five_hour" : window.id === "secondary" ? "seven_day" : window.id;
+}
+
+/**
+ * A Claude window under the recorder's ids, so every account's caps read alike: ZeroSub
+ * names a per-model week `seven_day_opus` or `weekly_fable`, the recorder `weekly_model:opus`.
+ */
+export function claudeWindowId(id: string): string {
+  const scoped = /^(?:seven_day|weekly)_(?!model:|surface:)([a-z][a-z0-9]*)$/i.exec(id);
+  if (scoped !== null && !["all", "model", "surface"].includes(scoped[1]!.toLowerCase())) return `weekly_model:${scoped[1]!.toLowerCase()}`;
+  return canonicalWindowId(id);
+}
+
+/** Rows kept before the ids were made one scheme (`seven_day_opus`), read under the recorder's. */
+function canonicalRow(row: AccountSample): AccountSample {
+  if (row.family !== "claude") return row;
+  const windows: Record<string, AccountSample["windows"][string]> = {};
+  for (const [id, window] of Object.entries(row.windows)) windows[claudeWindowId(id)] = window;
+  return { ...row, windows };
 }
 
 /** ZeroSub's reading as an account sample, with the window ids Smart Session uses. */
@@ -78,9 +96,12 @@ export function forgetAccounts(): void {
 }
 
 /** One account's windows from its history, with the live reading as the newest point. */
-export function windowsFrom(samples: readonly UsageSample[], readAt: string | null, now: number): { windows: SubscriptionWindow[]; history: { t: string; pct: number }[] } {
+export function windowsFrom(samples: readonly UsageSample[], readAt: string | null, now: number): {
+  windows: SubscriptionWindow[]; history: { t: string; pct: number }[]; past: NonNullable<Subscription["past"]>;
+} {
   const open = new Map<string, ReturnType<typeof segmentBlocks>[number]>();
-  for (const block of segmentBlocks(samples)) open.set(block.windowId, block);
+  const blocks = segmentBlocks(samples);
+  for (const block of blocks) open.set(block.windowId, block);
   const fresh = readAt !== null && now - Date.parse(readAt) <= STALE_AFTER_MS;
   const windows = [...open.values()].map((block) => ({
     id: block.windowId,
@@ -90,7 +111,11 @@ export function windowsFrom(samples: readonly UsageSample[], readAt: string | nu
     burnPctPerHour: fresh ? burnRatePctPerHour(block) : null,
   }));
   const session = open.get("five_hour");
-  return { windows, history: session ? thinPoints(session.points, 48) : [] };
+  // The same finished windows `budget_status` gives the recorder's login, for every account.
+  const past = blocks
+    .filter((block) => block.windowId === "five_hour" && block !== session && Date.parse(block.firstSeenAt) >= now - HISTORY_MS)
+    .map((block) => ({ startAt: block.startAt, resetsAt: block.resetsAt, firstSeenAt: block.firstSeenAt, peakPct: block.peakPct }));
+  return { windows, history: session ? thinPoints(session.points, 96) : [], past };
 }
 
 export interface SubscriptionsView {
@@ -124,13 +149,13 @@ export function buildView(
 
   const accounts = snapshot.accounts.map((account): Subscription => {
     const reading = snapshot.readings[account.id];
-    const own = input.accountRows.filter((row) => row.accountId === account.id) as unknown as UsageSample[];
+    const own = input.accountRows.filter((row) => row.accountId === account.id).map(canonicalRow) as unknown as UsageSample[];
     const live = reading ? [accountSample(account, reading, new Date(now).toISOString()) as unknown as UsageSample] : [];
     // The CLI login's windows come from the recorder when it has them: fresher, and with history.
     const recorded = account.id === RECORDED_ACCOUNT && input.recorded.length > 0;
     const samples = recorded ? input.recorded : [...own, ...live];
     const readAt = recorded ? effectiveAt(input.recorded[input.recorded.length - 1]!) : reading?.fetchedAt ?? null;
-    const { windows, history } = windowsFrom(samples, readAt, now);
+    const { windows, history, past } = windowsFrom(samples, readAt, now);
     const { name, named } = subscriptionName(account, snapshot.accounts);
     return {
       id: account.id,
@@ -153,6 +178,9 @@ export function buildView(
       windows,
       credits: reading?.credits ?? null,
       history,
+      past,
+      extraUsage: account.family === "claude" ? reading?.extraUsage ?? null : null,
+      recorded: { source: recorded ? "recorder" : "zerosub", since: samples.length > 0 ? effectiveAt(samples[0]!) : null, readings: samples.length },
     };
   });
   return { zerosub: true, autoSwitch: snapshot.autoSwitch, accounts, agents };

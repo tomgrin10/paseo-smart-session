@@ -34,7 +34,7 @@ function account(id: string, over: Partial<Subscription> = {}): Subscription {
     id,
     family: "claude",
     kind: id === "claude-main" ? "main" : "managed",
-    name: id === "claude-main" ? "CLI login" : "Account 2",
+    name: id === "claude-main" ? "Main" : "Account 2",
     named: false,
     isDefault: false,
     signedIn: true,
@@ -137,7 +137,7 @@ test("a session lists its own account first, then the default, then the rest", (
   assert.deepEqual(found.map((a) => a.key), ["claude-three", "claude-two", "claude-main"]);
   assert.deepEqual(found.map((a) => a.input.lead), [true, false, false]);
   // The footer is the account's own name, never an email.
-  assert.deepEqual(found.map((a) => a.label), ["Account 3", "Account 2", "CLI login"]);
+  assert.deepEqual(found.map((a) => a.label), ["Account 3", "Account 2", "Main"]);
 });
 
 test("a session with no binding falls back to its home, then to the default", () => {
@@ -164,7 +164,7 @@ test("without ZeroSub, the CLI login alone, while the recorder has it", () => {
   const recorded = { windows: [win("five_hour", 30, 2 * HOUR, 5)], readAt: iso(-MIN), extraUsage: true };
   assert.deepEqual(discoverAccounts({ zerosub: null, recorded: null }, session({})), []);
   const found = discoverAccounts({ zerosub: null, recorded }, session({}));
-  assert.deepEqual(found, [{ key: CLI_KEY, label: "CLI login", input: { account: CLI_KEY, lead: true } }]);
+  assert.deepEqual(found, [{ key: CLI_KEY, label: "Main", input: { account: CLI_KEY, lead: true } }]);
   const report = buildReport({ zerosub: null, recorded }, found[0]!.input, NOW);
   assert.equal(report.status, "available");
   if (report.status !== "available") return;
@@ -192,7 +192,7 @@ test("the lead card carries the pool line; the others do not", () => {
   assert.equal(pool!.tone, "warning");
   assert.equal(other.details!.some((d) => d.id === "pool"), false);
   // The badge names the account, then the plan.
-  assert.equal(lead.planLabel, "CLI login · Team");
+  assert.equal(lead.planLabel, "Main · Team");
   assert.equal(other.planLabel, "Account 2 · Team");
   // Detail times are durations, never clocks: the daemon's timezone is not the viewer's.
   for (const detail of [...lead.details!, ...other.details!]) assert.doesNotMatch(detail.value, /\b\d{1,2}:\d{2}\b/);
@@ -301,7 +301,7 @@ test("the card the work is on names who takes over next; the next one says when"
   const other = buildReport(state, { account: "claude-two", lead: false }, NOW);
   if (lead.status !== "available" || other.status !== "available") return assert.fail("both available");
   assert.deepEqual(lead.details!.find((d) => d.id === "then"), { id: "then", label: "Then", value: "Account 2 takes over" });
-  assert.deepEqual(other.details!.find((d) => d.id === "status"), { id: "status", label: "Takes over", value: "when CLI login runs out" });
+  assert.deepEqual(other.details!.find((d) => d.id === "status"), { id: "status", label: "Takes over", value: "when Main runs out" });
 });
 
 test("a stale lead card leaves the pool out, and extra usage shows on other cards only when at stake", () => {
@@ -323,7 +323,7 @@ test("handoffs follow each account's own work, not the pool's first busy account
   const seatCard = buildReport(state, { account: "claude-two", lead: true }, NOW);
   const cliCard = buildReport(state, { account: "claude-main", lead: false }, NOW);
   if (seatCard.status !== "available" || cliCard.status !== "available") return assert.fail("both available");
-  assert.deepEqual(seatCard.details!.find((d) => d.id === "then"), { id: "then", label: "Then", value: "CLI login takes over" });
+  assert.deepEqual(seatCard.details!.find((d) => d.id === "then"), { id: "then", label: "Then", value: "Main takes over" });
   assert.equal(cliCard.details!.some((d) => d.id === "then"), false, "the CLI login does not hand off to itself");
   assert.deepEqual(cliCard.details!.find((d) => d.id === "status"), { id: "status", label: "Takes over", value: "when Account 2 runs out" });
 });

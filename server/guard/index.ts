@@ -44,7 +44,7 @@ import { standaloneEnabled } from "./standalone.ts";
 import { guardDataDir, LockHeldError, Store } from "./store.ts";
 import { timelinePublisher } from "./timeline.ts";
 import { cliOnlyUsage, withRecordedUsage } from "./usage.ts";
-import { cliLoginHash, sha256 } from "../recorder.ts";
+import { cliLoginHash, sha256 } from "../cli-login.ts";
 import { logHolds } from "../account-log.ts";
 import { readZeroSub, zerosubInstallId } from "./zerosub.ts";
 import { accountView } from "../../shared/guard/zerosub.ts";
