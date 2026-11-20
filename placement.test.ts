@@ -172,8 +172,8 @@ test("replay: an account added later is not room before its first reading", () =
     since: { holds: NOW - 9 * DAY, placement: NOW - 9 * DAY, moves: NOW - 9 * DAY },
     now: NOW,
   });
-  assert.ok(report.replay.same.waitingHours >= 9.5, `waiting ${report.replay.same.waitingHours}`);
-  assert.equal(report.replay.same.expired.carol, 0, "nothing of carol's expired before she existed");
+  assert.ok(report.replay.historical.waitingHours >= 9.5, `waiting ${report.replay.historical.waitingHours}`);
+  assert.equal(report.replay.historical.expired.carol, 0, "nothing of carol's expired before she existed");
 });
 
 test("every scored rule is pure: the same state gives the same order and the same replay", () => {

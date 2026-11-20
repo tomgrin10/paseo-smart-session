@@ -184,6 +184,46 @@ test("Add an account: held work the pool couldn't take is waiting one more accou
   assert.equal(report.waitingSince, iso(NOW - 14 * DAY));
 });
 
+test("an account added mid-window counts as there all along for add, drop and keep; add waits for its verdict", () => {
+  // alice and bob were full most of each week and sessions waited 8 hours a day. carol joined two
+  // days ago with room: the waiting before her is what she now covers, not a reason to add another.
+  const anchor = NOW - 20 * DAY;
+  const alice = series("alice", { anchor, main: true, weekly: steady(2) });
+  const bob = series("bob", { anchor: anchor + DAY, weekly: steady(2) });
+  const carol = series("carol", { anchor: NOW - 2 * DAY, from: NOW - 2 * DAY, weekly: steady(0.1) });
+  const holds: HoldSpan[] = [];
+  for (let d = 13; d >= 3; d--) holds.push({ pauseId: `p${d}`, accountId: d % 2 === 0 ? "alice" : "bob", from: NOW - d * DAY, to: NOW - d * DAY + 8 * HOUR });
+  const report = accountsReport(input([alice, bob, carol], { holds, since: { holds: NOW - 14 * DAY, placement: null, moves: null } }));
+  // As it happened, carol wasn't there: that waiting stays in the history.
+  assert.ok(report.replay.historical.waitingHours > 20, `historical ${report.replay.historical.waitingHours}`);
+  // With the accounts there are now, all along, most of it goes away.
+  assert.ok(report.replay.same.waitingHours < report.replay.historical.waitingHours - 20, `same ${report.replay.same.waitingHours}`);
+  assert.equal(report.replay.same.accounts, 3);
+  assert.notEqual(report.recommendation?.kind, "add", report.recommendation?.reason);
+  assert.equal(report.recommendation?.kind, "verdict");
+  assert.equal(report.recommendation?.accountId, "carol");
+  assert.match(report.recommendation!.reason, /^Your new account Carol would have covered \d+ h of the waiting\. Verdict on [A-Z][a-z]{2} \d+\.$/);
+  assert.ok(!report.suggestions.some((x) => x.kind === "add"));
+  assert.equal(report.suggestions.filter((x) => x.kind === "verdict" && x.accountId === "carol").length, 1, "one verdict for carol, not two");
+});
+
+test("add waits for a new account's verdict even when the pool would still fall short with it", () => {
+  // As above, but carol is a small plan (a tenth of a standard week): one more account would still
+  // save waiting. Until carol has her two full weeks, the report says what she covers and when her
+  // verdict is, rather than asking for another account.
+  const anchor = NOW - 20 * DAY;
+  const alice = series("alice", { anchor, main: true, weekly: steady(2) });
+  const bob = series("bob", { anchor: anchor + DAY, weekly: steady(2) });
+  const carol = series("carol", { anchor: NOW - 2 * DAY, from: NOW - 2 * DAY, weekly: steady(0.1) });
+  const holds: HoldSpan[] = [];
+  for (let d = 13; d >= 1; d--) holds.push({ pauseId: `p${d}`, accountId: d % 2 === 0 ? "alice" : "bob", from: NOW - d * DAY, to: NOW - d * DAY + 16 * HOUR });
+  const report = accountsReport(input([alice, bob, carol], { holds, since: { holds: NOW - 14 * DAY, placement: null, moves: null } }), normalizeReportSettings({ sizes: { carol: 0.1 } }));
+  assert.ok(report.replay.more.waitingHours < report.replay.same.waitingHours - 10, `one more would still save: ${report.replay.same.waitingHours} vs ${report.replay.more.waitingHours}`);
+  assert.ok(!report.suggestions.some((x) => x.kind === "add"), JSON.stringify(report.suggestions.map((x) => x.kind)));
+  assert.equal(report.recommendation?.kind, "verdict");
+  assert.equal(report.recommendation?.accountId, "carol");
+});
+
 test("Drop names the account that costs least; one still being judged is never dropped, its verdict date shown", () => {
   const anchor = NOW - 20 * DAY;
   const alice = series("alice", { anchor, main: true, weekly: steady(0.3) });
@@ -269,7 +309,7 @@ test("the text report carries every account, the pooled line, the replay and the
   assert.match(text, /- Bob \[bob\]/);
   assert.match(text, /^All accounts: /m);
   assert.match(text, /Waiting isn't measured yet/);
-  assert.match(text, /Replay \(pace-5h-gate\): with 2: .*; with 3: /);
+  assert.match(text, /Replay \(pace-5h-gate\), the accounts you have now: with 2: .*; with 3: /);
   assert.match(text, /^Recommendation: Keep 2 accounts\./m);
   assert.ok(LIMIT_PCT > 99 && LIMIT_PCT <= 100);
 });
