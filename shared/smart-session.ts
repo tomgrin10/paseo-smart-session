@@ -569,7 +569,7 @@ export const AccountsReportSchema = z.object({
   }),
   suggestions: z.array(AccountSuggestionSchema),
   recommendation: AccountSuggestionSchema.nullable(),
-  /** Smart placement beside what happened: Claude only, absent before 3.8.0-beta.13. */
+  /** Smart placement beside what happened: Claude only, absent before 3.8.0-beta.14. */
   placement: z.object({
     mode: z.enum(["off", "shadow", "live"]),
     liveRefusal: z.string().nullable(),
