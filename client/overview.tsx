@@ -13,13 +13,14 @@ import {
 import { enrolmentState } from "../shared/governor";
 import { guardPreferences } from "../shared/guard/contracts";
 import { governorNotice, pausedLead, pausedSessions } from "../shared/guard/presentation";
-import { budgetStatus, contextStatus, getSettings, installStatus, setSettings, spendSummary } from "../shared/smart-session";
+import { accountsReportStatus, budgetStatus, contextStatus, getSettings, installStatus, setSettings, spendSummary } from "../shared/smart-session";
 import { DailyBars, HourHeatmap, Meter, RankedTotals, Ring, toneFill } from "./charts";
 import { Exceptions, PausedSection } from "./guard/paused";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
 import { hasSubscriptions, pools, subscribeSubscriptions, subscriptionsSnapshot } from "./subscriptions";
 import { familyName, leadPool, poolHeadline, poolTrailing, recordedAccount, subscriptionState } from "../shared/subscriptions";
 import { SubscriptionsSection } from "./subscriptions-view";
+import { AccountsUseSection } from "./accounts-view";
 import { Card, CardRow, Chip, IconButton, SectionHead, StatusGlyph, Switch, TextLink, errorText, text, useNow } from "./kit";
 import type { Live } from "./live";
 import { Reveal, Skeleton } from "./motion";
@@ -101,6 +102,9 @@ export function makeOverview(client: PluginClientContext, live: Live) {
     // The recorder writes once a minute and the daemon caches usage for five, so
     // polling harder than this would only redraw the same numbers.
     const budgetQuery = useQuery({ queryKey: ["smart-session", "budget"], queryFn: () => budget({}), refetchInterval: 30_000 });
+    // Fourteen days of logs replayed: the server caches it for five minutes, so poll no faster.
+    const accountsReport = useRpc(accountsReportStatus);
+    const accountsQuery = useQuery({ queryKey: ["smart-session", "accounts-report"], queryFn: () => accountsReport({}), refetchInterval: 5 * 60_000 });
     const contextQuery = useQuery({ queryKey: ["smart-session", "context"], queryFn: () => context({}), refetchInterval: 15_000 });
     // Reconstructed from transcripts, which only change when an agent writes a turn.
     const spendQuery = useQuery({ queryKey: ["smart-session", "spend"], queryFn: () => spend({ days: 30 }), refetchInterval: 5 * 60_000 });
@@ -266,7 +270,8 @@ export function makeOverview(client: PluginClientContext, live: Live) {
               <Empty theme={theme} title="No reading yet" detail="Smart Session records Claude's plan usage every minute while Paseo runs. The first reading usually arrives within a few minutes of signing in to Claude on this host." /></View>
               : <Reveal><SubscriptionsSection theme={theme} compact={compact} accounts={[recordedAccount(budgetQuery.data)]} pools={[]} now={now} autoSwitch guardPct={guardPct} leadFamily={null} title="Plan limits" /></Reveal>}
 
-        {/* Reserved: a future per-account utilization section sits here, right after the accounts. */}
+        <AccountsUseSection theme={theme} compact={compact} reports={accountsQuery.data?.reports}
+          error={accountsQuery.data?.error ?? (accountsQuery.error ? errorText(accountsQuery.error) : null)} />
 
         <View style={{ gap: 8 }}>
           <SectionHead theme={theme} title="Features" />

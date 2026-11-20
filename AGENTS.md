@@ -89,6 +89,24 @@
     changes: `{at, accountId, family, fetchedAt, extraUsage: {enabled, spend, limit, currency}|null, credits: {balance,
     unlimited}|null, limitedUntil, limitKind, signedIn, disabled}`; money in minor units.
   - Read back with `readAccountLog`, which skips a torn line or a row without a valid `at`.
+- **The Accounts report: how well the accounts were used (`accounts-report`).** `shared/accounts-report.ts` is pure and
+  deterministic (no clock, file or setting inside; `accounts-report.test.ts` uses small fictional histories);
+  `server/accounts-report.ts` reads the logs, `smart-session.accounts.report` serves it (cached 5 min) and
+  `smart_accounts_report` gives an agent the same report as text (`reportLines`). Rules:
+  - Demand is counted in points, 1% of one standard account's week (`settings.accountsReport.sizes` scales a bigger
+    plan): each account's weekly increase × its size, plus Session Guard hold time × the burn rate before the hold, plus
+    Extra usage time × the burn rate before the limit. Whose readings are whose follows `usage-account-identity`: the
+    main account is only `login: "cli"` rows, or `src: "upstream"` rows from before the labels (`trustedMainRow`);
+    the `paseo` source mixed logins and is never read here.
+  - The replay places that demand on N-1, N and N+1 accounts through a `PlacementPolicy` (a pure function: accounts
+    in, preference order out). Today's behaviour is `paceWithGate` (pace score, the 5-hour gate at 80%); a new placement
+    rule is scored by adding it to `POLICIES` and replaying the same demand. The replay is fluid (work splits and moves
+    for free), so it is a lower bound on waiting for every account count alike; compare counts, not absolutes.
+  - A reading stands for 6 h (`CARRY_MS`); past that an account is unknown, never at a limit, never room. An account
+    added later is not room before its first reading. Waiting exists only since the holds log began, and the page says
+    so ("waiting measured since"). A misplaced stretch from before the moves log has cause `not-logged`, never a guess.
+  - An account with fewer than two full weekly windows is never suggested for dropping; it shows "verdict on <date>".
+    Every suggestion carries its numbers and its data window. One is shown: add, then use-better, then drop, then keep.
 - `server/store.ts` owns the one-time v0.1 `super-session` to `smart-session` directory migration.
   The old name is allowed only in that migration, its regression tests, and upgrade documentation.
 
