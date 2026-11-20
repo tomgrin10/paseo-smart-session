@@ -23,6 +23,7 @@
  */
 
 import { ZEROSUB_FIVE_HOUR_GATE } from "./subscriptions.ts";
+import { EXPIRING_FIRST, expiringFirst, poolForecast, type PlacementContext } from "./placement.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -326,9 +327,10 @@ export interface ReplayAccount {
 
 /**
  * A placement policy: the accounts to fill, best first. Accounts it leaves out get nothing;
- * full ones are skipped by the replay. Pure: same state, same answer.
+ * full ones are skipped by the replay. Pure: same state, same answer. `ctx` carries the forecast
+ * burn (`shared/placement.ts`); a policy that ignores it is today's kind.
  */
-export type PlacementPolicy = (accounts: ReplayAccount[], now: number) => number[];
+export type PlacementPolicy = (accounts: ReplayAccount[], now: number, ctx?: PlacementContext) => number[];
 
 export const hasRoom = (a: ReplayAccount) => a.usable && a.weeklyPct < LIMIT_PCT && a.sessionPct < LIMIT_PCT;
 
@@ -347,7 +349,18 @@ export const paceWithGate: PlacementPolicy = (accounts, now) => {
     .map(({ i }) => i);
 };
 
-export const POLICIES: Readonly<Record<string, PlacementPolicy>> = { "pace-5h-gate": paceWithGate };
+/**
+ * Every rule the replay can score. `expiring-first` is the new placement (`docs/placement.md`); the
+ * others are its variants, kept so the report can say which part earns its keep.
+ */
+export const POLICIES: Readonly<Record<string, PlacementPolicy>> = {
+  "pace-5h-gate": paceWithGate,
+  "expiring-first": expiringFirst(),
+  "expiring-first:look-ahead": expiringFirst({ ...EXPIRING_FIRST, lookAhead: true }),
+  "expiring-first:any-wall": expiringFirst({ ...EXPIRING_FIRST, wallHours: Infinity }),
+  "expiring-first:gate-80": expiringFirst({ ...EXPIRING_FIRST, feasibility: "gate" }),
+  "expiring-first:edf": expiringFirst({ ...EXPIRING_FIRST, score: "edf" }),
+};
 
 export interface DemandStep {
   readonly t: number;
@@ -361,6 +374,8 @@ export interface ReplaySpec {
   readonly size: number;
   readonly ratio: number;
   readonly usable: boolean;
+  /** When it joined (its first reading); not room before. Absent: there all along. */
+  readonly from?: number;
   /** Known weekly resets after the start, oldest first; past the last one, a window opens on first use. */
   readonly resets: number[];
   readonly start: { weeklyPct: number; weeklyResetAt: number | null; sessionPct: number; sessionResetAt: number | null };
@@ -395,11 +410,16 @@ export function replay(
   const expired: Record<string, number> = Object.fromEntries(specs.map((s) => [s.id, 0]));
   const short = { used: 0, held: 0, extra: 0 };
   let allOut = 0;
-  for (const step of demand) {
+  const joined = (i: number, t: number) => (specs[i]!.from ?? -Infinity) <= t;
+  // The forecast a policy sees: each account's burn over the last two hours of this replay.
+  const burnSteps = Math.round((2 * HOUR) / STEP_MS);
+  const took: number[][] = specs.map(() => []);
+  const pool = poolForecast(demand);
+  for (const [k, step] of demand.entries()) {
     const t = step.t;
     accounts.forEach((a, i) => {
       if (a.weeklyResetAt !== null && t >= a.weeklyResetAt) {
-        expired[a.id]! += Math.max(0, 100 - a.weeklyPct) * a.size;
+        if (joined(i, t)) expired[a.id]! += Math.max(0, 100 - a.weeklyPct) * a.size;
         a.weeklyPct = 0;
         const resets = specs[i]!.resets;
         while (nextReset[i]! < resets.length && resets[nextReset[i]!]! <= t) nextReset[i]! += 1;
@@ -407,14 +427,16 @@ export function replay(
       }
       if (a.sessionResetAt !== null && t >= a.sessionResetAt) { a.sessionPct = 0; a.sessionResetAt = null; }
     });
-    if (!accounts.some(hasRoom)) allOut += STEP_MS / HOUR;
-    const order = policy(accounts, t);
+    if (!accounts.some((a, i) => joined(i, t) && hasRoom(a))) allOut += STEP_MS / HOUR;
+    const burn = took.map((h) => h.slice(-burnSteps).reduce((s, x) => s + x, 0) / (Math.max(1, Math.min(burnSteps, h.length)) * (STEP_MS / HOUR)));
+    const order = policy(accounts, t, { sessionRate: rates.sessionRate, burn, poolRate: pool(k) });
+    const stepTook = specs.map(() => 0);
     for (const origin of ["used", "held", "extra"] as const) {
       let left = step[origin];
       for (const i of order) {
         if (left <= EPS) break;
         const a = accounts[i]!;
-        if (!hasRoom(a)) continue;
+        if (!hasRoom(a) || !joined(i, t)) continue;
         const cap = Math.min((100 - a.weeklyPct) * a.size, ((100 - a.sessionPct) * a.size) / a.ratio);
         const take = Math.min(left, Math.max(0, cap));
         if (take <= EPS) continue;
@@ -422,10 +444,12 @@ export function replay(
         a.sessionPct += (take * a.ratio) / a.size;
         a.weeklyResetAt ??= t + WEEK;
         a.sessionResetAt ??= t + FIVE_HOURS;
+        stepTook[i]! += take;
         left -= take;
       }
       if (left > EPS) short[origin] += left;
     }
+    stepTook.forEach((x, i) => took[i]!.push(x));
   }
   const waitingHours = (short.used + short.held) / rates.sessionRate;
   return {
@@ -634,6 +658,7 @@ function specOf(tl: Timeline, t0: number, ratio: number, usable: boolean, now: n
     ratio,
     usable,
     resets: sorted,
+    ...(i === 0 || tl.firstReading === null ? {} : { from: tl.firstReading }),
     start: i === 0
       ? { weeklyPct: tl.weeklyPct[0]!, weeklyResetAt: tl.weeklyResetAt[0]!, sessionPct: tl.sessionPct[0]!, sessionResetAt: tl.sessionResetAt[0]! }
       : { weeklyPct: 0, weeklyResetAt: sorted[0] ?? null, sessionPct: 0, sessionResetAt: null },
@@ -653,19 +678,14 @@ function verdictOf(tl: Timeline, now: number): { full: number; at: number | null
   return { full, at: start + VERDICT_WINDOWS * WEEK };
 }
 
-/** The report for one family. */
-export function accountsReport(input: ReportInput, settings: ReportSettings = DEFAULT_REPORT_SETTINGS, policyName = "pace-5h-gate"): AccountsReport {
+/** What every replay of one report starts from: the timelines, the demand and each account's spec. */
+function prepare(input: ReportInput, settings: ReportSettings) {
   const days = input.days ?? 14;
   const now = input.now;
   const steps = Math.max(1, Math.floor((days * DAY) / STEP_MS));
   const t0 = now - steps * STEP_MS;
-  const stepH = STEP_MS / HOUR;
-  const policy = POLICIES[policyName] ?? paceWithGate;
-  const window = { from: iso(t0), to: iso(now), days };
   const sizeOf = (id: string) => settings.sizes[id] ?? 1;
-
   const tls = input.accounts.map((a) => timelineOf(a, sizeOf(a.id), t0, steps));
-  const byIndex = (id: string) => input.accounts.findIndex((a) => a.id === id);
 
   // Running sessions per account per step, where the placement log covers it.
   const placement = [...input.placement].sort((a, b) => a.t - b.t);
@@ -690,6 +710,26 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
   const running = (id: string, i: number) => runningGrid.get(id)?.[i] ?? null;
 
   const { demand, sessionRate, dollarsPerPoint, heldOn, extraOn } = demandOf(tls, input, t0, steps, running);
+  const ratios = tls.map(ratioOf);
+  const knownRatios = ratios.filter((r): r is number => r !== null);
+  const pooledRatio = knownRatios.length > 0 ? knownRatios.reduce((s, r) => s + r, 0) / knownRatios.length : DEFAULT_SESSION_RATIO;
+  const specs = tls.map((tl, k) => specOf(tl, t0, ratios[k] ?? pooledRatio, !input.accounts[k]!.disabled, now));
+  return { days, now, steps, t0, tls, running, demand, sessionRate, dollarsPerPoint, heldOn, extraOn, pooledRatio, specs };
+}
+
+/** The replay's inputs for one report, so another rule (or the session replay) can score the same demand. */
+export function replayInputs(input: ReportInput, settings: ReportSettings = DEFAULT_REPORT_SETTINGS) {
+  const p = prepare(input, settings);
+  return { demand: p.demand, specs: p.specs, rates: { sessionRate: p.sessionRate, dollarsPerPoint: p.dollarsPerPoint }, pooledRatio: p.pooledRatio };
+}
+
+/** The report for one family. */
+export function accountsReport(input: ReportInput, settings: ReportSettings = DEFAULT_REPORT_SETTINGS, policyName = "pace-5h-gate"): AccountsReport {
+  const { days, now, steps, t0, tls, running, demand, sessionRate, dollarsPerPoint, heldOn, extraOn, pooledRatio, specs } = prepare(input, settings);
+  const stepH = STEP_MS / HOUR;
+  const policy = POLICIES[policyName] ?? paceWithGate;
+  const window = { from: iso(t0), to: iso(now), days };
+  const byIndex = (id: string) => input.accounts.findIndex((a) => a.id === id);
 
   // Per-account metrics from what happened.
   const room = (i: number, except: number) => tls.some((tl, k) => k !== except && !input.accounts[k]!.disabled && tl.known[i] && !tl.atLimit[i]);
@@ -815,10 +855,6 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
     .reduce((s, h) => s + Math.max(0, Math.min(h.to ?? now, now) - Math.max(h.from, t0)) / HOUR, 0);
 
   // Replays.
-  const ratios = tls.map(ratioOf);
-  const knownRatios = ratios.filter((r): r is number => r !== null);
-  const pooledRatio = knownRatios.length > 0 ? knownRatios.reduce((s, r) => s + r, 0) / knownRatios.length : DEFAULT_SESSION_RATIO;
-  const specs = tls.map((tl, k) => specOf(tl, t0, ratios[k] ?? pooledRatio, !input.accounts[k]!.disabled, now));
   const rates = { sessionRate, dollarsPerPoint };
   const same = replay(demand, specs, policy, rates);
   const sizes = specs.map((s) => s.size).sort((a, b) => a - b);

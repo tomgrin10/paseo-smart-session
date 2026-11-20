@@ -1,0 +1,1 @@
+- The accounts report's replay no longer counts an account you added recently as if it had been there all along, so its "with one account fewer or more" numbers match the accounts you actually had.
