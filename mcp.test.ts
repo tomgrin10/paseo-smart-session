@@ -49,13 +49,14 @@ async function listTools(options: { agentId?: string; scope?: string } = {}): Pr
   return response.result.tools.map((tool) => tool.name).sort();
 }
 
-test("MCP exposes only budget_status outside a Paseo agent", async () => {
-  assert.deepEqual(await listTools(), ["budget_status"]);
+test("MCP exposes only the host-wide reports outside a Paseo agent", async () => {
+  assert.deepEqual(await listTools(), ["accounts_report", "budget_status"]);
 });
 
 test("MCP can be explicitly hidden outside Paseo without hiding agent tools", async () => {
   assert.deepEqual(await listTools({ scope: "paseo" }), []);
   assert.deepEqual(await listTools({ agentId: "agent-123", scope: "paseo" }), [
+    "accounts_report",
     "budget_status",
     "checkpoint",
     "context_status",

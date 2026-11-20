@@ -8,6 +8,8 @@ import { smartSessionReporter } from "./server/report-issue-adapter.ts";
 import { reportTargets, sendReport, type ReportPaseo } from "./server/report-send.ts";
 import { reportIssueRpc, reportLinkRpc, reportSendRpc, reportTargetsRpc } from "./shared/report-issue.ts";
 import { budgetPool, subscriptionsView } from "./server/subscriptions.ts";
+import { accountsReports, forgetAccountsReport } from "./server/accounts-report.ts";
+import { reportLines } from "./shared/accounts-report.ts";
 import { displayPreferences } from "./shared/display";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import type { Invoke } from "./server/native-tools.ts";
@@ -31,6 +33,7 @@ import {
   setSettings,
   spendSummary,
   subscriptionsStatus,
+  accountsReportStatus,
   usageCardsStatus,
 } from "./shared/smart-session.ts";
 
@@ -171,6 +174,15 @@ export default function contribute(host: PluginServerContext) {
     }
   });
 
+  server.handle(accountsReportStatus, async () => {
+    try {
+      const reports = await accountsReports();
+      return { reports, lines: reports.flatMap((report, i) => [...(i > 0 ? [""] : []), ...reportLines(report)]), error: null };
+    } catch (error) {
+      return { reports: [], lines: [], error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   server.handle(contextStatus, async ({ agentId }) => {
     try {
       const rows = await withDaemon((client) => readAgents(client));
@@ -225,6 +237,8 @@ export default function contribute(host: PluginServerContext) {
 
   server.handle(setSettings, async (patch) => {
     const settings = await writeSettings(patch);
+    // New plan sizes or thresholds: the next report is computed with them, not served from cache.
+    if (patch.accountsReport !== undefined) forgetAccountsReport();
     // Reconciled here as well as on load, so turning the switch, or a feature that needs hooks, off
     // removes them immediately rather than at the next reload (`managedFor` in server/install.ts).
     if (patch.installHooks !== undefined || patch.enabled !== undefined || patch.publishAsMain !== undefined) {

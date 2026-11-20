@@ -115,9 +115,9 @@ export interface AccountSeries {
   readonly main: boolean;
   /** Set aside in ZeroSub: shown, but never counted as room. */
   readonly disabled: boolean;
-  readonly readings: readonly SeriesReading[];
+  readonly readings: SeriesReading[];
   /** Extra usage spent this month, as read (cumulative, minor units; drops at a month's start). */
-  readonly spend: readonly { readonly t: number; readonly minor: number }[];
+  readonly spend: { readonly t: number; readonly minor: number }[];
 }
 
 export interface HoldSpan {
@@ -143,10 +143,10 @@ export interface MoveEvent {
 
 export interface ReportInput {
   readonly family: "claude" | "codex";
-  readonly accounts: readonly AccountSeries[];
-  readonly holds: readonly HoldSpan[];
-  readonly placement: readonly PlacementSample[];
-  readonly moves: readonly MoveEvent[];
+  readonly accounts: AccountSeries[];
+  readonly holds: HoldSpan[];
+  readonly placement: PlacementSample[];
+  readonly moves: MoveEvent[];
   /** When each account-use log began; null when it has no rows yet. */
   readonly since: { readonly holds: number | null; readonly placement: number | null; readonly moves: number | null };
   readonly now: number;
@@ -328,7 +328,7 @@ export interface ReplayAccount {
  * A placement policy: the accounts to fill, best first. Accounts it leaves out get nothing;
  * full ones are skipped by the replay. Pure: same state, same answer.
  */
-export type PlacementPolicy = (accounts: readonly ReplayAccount[], now: number) => number[];
+export type PlacementPolicy = (accounts: ReplayAccount[], now: number) => number[];
 
 export const hasRoom = (a: ReplayAccount) => a.usable && a.weeklyPct < LIMIT_PCT && a.sessionPct < LIMIT_PCT;
 
@@ -362,7 +362,7 @@ export interface ReplaySpec {
   readonly ratio: number;
   readonly usable: boolean;
   /** Known weekly resets after the start, oldest first; past the last one, a window opens on first use. */
-  readonly resets: readonly number[];
+  readonly resets: number[];
   readonly start: { weeklyPct: number; weeklyResetAt: number | null; sessionPct: number; sessionResetAt: number | null };
 }
 
@@ -385,8 +385,8 @@ export interface ReplayResult {
 const EPS = 1e-9;
 
 export function replay(
-  demand: readonly DemandStep[],
-  specs: readonly ReplaySpec[],
+  demand: DemandStep[],
+  specs: ReplaySpec[],
   policy: PlacementPolicy,
   rates: { sessionRate: number; dollarsPerPoint: number | null },
 ): ReplayResult {
@@ -475,7 +475,7 @@ export interface AccountMetrics {
   readonly size: number;
   /** Mean share of each weekly window used by its reset, over windows that reset in the period; null with none. */
   readonly usedPct: number | null;
-  readonly closedWindows: readonly { readonly resetsAt: string; readonly pct: number }[];
+  readonly closedWindows: { readonly resetsAt: string; readonly pct: number }[];
   /** The open window now. */
   readonly openPct: number | null;
   readonly openResetsAt: string | null;
@@ -490,7 +490,7 @@ export interface AccountMetrics {
   readonly extraDollars: number;
   /** Weekly points that expired while work waited or paid elsewhere. */
   readonly idlePoints: number;
-  readonly strip: readonly StripDay[];
+  readonly strip: StripDay[];
   /** Full weekly windows observed. */
   readonly fullWindows: number;
   /** When it has enough full windows to judge; null once it has. */
@@ -515,7 +515,7 @@ export interface AccountsReport {
   readonly readings: number;
   /** When waiting started to be measured (the holds log); null when it hasn't. */
   readonly waitingSince: string | null;
-  readonly accounts: readonly AccountMetrics[];
+  readonly accounts: AccountMetrics[];
   readonly pooled: {
     readonly usedPct: number | null;
     readonly waitingHours: number;
@@ -529,11 +529,11 @@ export interface AccountsReport {
   /** Today's policy against the logged demand with one account fewer (each one dropped), the same, and one more. */
   readonly replay: {
     readonly policy: string;
-    readonly fewer: readonly (ReplayResult & { readonly without: string })[];
+    readonly fewer: (ReplayResult & { readonly without: string })[];
     readonly same: ReplayResult;
     readonly more: ReplayResult;
   };
-  readonly suggestions: readonly Suggestion[];
+  readonly suggestions: Suggestion[];
   /** The one to show: add, use-better, drop or keep, in that order. */
   readonly recommendation: Suggestion | null;
 }
@@ -547,7 +547,7 @@ const hours = (h: number) => (h < 0.05 ? "0 h" : h < 10 ? `${round1(h)} h` : `${
 const dollars = (d: number) => `$${d < 100 ? d.toFixed(d < 10 ? 2 : 0) : Math.round(d)}`;
 
 /** The step demand of the period, and the rates it is converted at. */
-function demandOf(tls: readonly Timeline[], input: ReportInput, t0: number, steps: number, running: (id: string, i: number) => number | null) {
+function demandOf(tls: Timeline[], input: ReportInput, t0: number, steps: number, running: (id: string, i: number) => number | null) {
   // A session-hour's points: measured where the placement log says how many sessions ran.
   let pts = 0;
   let sessionHours = 0;

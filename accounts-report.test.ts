@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { ACCOUNTS_REPORT_DESCRIPTION, AGENT_SCOPED, agentTools } from "./server/agent-tools.mjs";
+import { toolRow } from "./shared/chat.ts";
+import { reportInput, trustedMainRow } from "./server/accounts-report.ts";
+import type { UsageSample } from "./shared/usage.ts";
 import {
   DEFAULT_REPORT_SETTINGS, LIMIT_PCT, STEP_MS, accountsReport, normalizeReportSettings, paceWithGate, replay, reportLines,
   type AccountSeries, type HoldSpan, type PlacementSample, type ReplayAccount, type ReplaySpec, type ReportInput,
@@ -268,4 +272,29 @@ test("the text report carries every account, the pooled line, the replay and the
   assert.match(text, /Replay \(pace-5h-gate\): with 2: .*; with 3: /);
   assert.match(text, /^Recommendation: Keep 2 accounts\./m);
   assert.ok(LIMIT_PCT > 99 && LIMIT_PCT <= 100);
+});
+
+test("agent parity: smart_accounts_report gives an agent the same report as text, read-only, in one short line", async () => {
+  assert.ok(ACCOUNTS_REPORT_DESCRIPTION.length <= 150, ACCOUNTS_REPORT_DESCRIPTION);
+  assert.ok(!AGENT_SCOPED.has("accounts_report"), "a host-wide report needs no session");
+  const anchor = NOW - 20 * DAY;
+  const report = accountsReport(input([series("alice", { anchor, main: true, weekly: steady(0.5) }), series("bob", { anchor: anchor + 3 * DAY, weekly: steady(0.5) })]));
+  const calls: string[] = [];
+  const tools = agentTools({ agentId: null, call: async (method: string) => { calls.push(method); return { reports: [report], lines: reportLines(report), error: null }; } });
+  const text = await tools.accounts_report.run({});
+  assert.deepEqual(calls, ["smart-session.accounts.report"]);
+  assert.equal(text, reportLines(report).join("\n"));
+  const row = toolRow("mcp__paseo__smart_accounts_report", "completed", { input: {}, output: text }, null)!;
+  assert.equal(row.line, "Accounts report · Keep 2 accounts");
+});
+
+test("the main account's history is only rows that are the CLI login's: labelled, or upstream from before labels", () => {
+  const row = (src: string, extra: object = {}) => ({ at: iso(NOW), fetchedAt: null, src, account: null, windows: { seven_day: { pct: 50, resetsAt: iso(NOW + DAY) } }, credits: null, ...extra }) as unknown as UsageSample;
+  assert.equal(trustedMainRow(row("upstream")), true);
+  assert.equal(trustedMainRow(row("paseo")), false, "the paseo source mixed logins before labels");
+  assert.equal(trustedMainRow(row("paseo", { login: "cli", accountId: "claude-main" })), true);
+  const built = reportInput(null, { usage: [row("upstream"), row("paseo")], accounts: [], holds: [], placement: [], moves: [], credits: [] }, "claude", NOW)!;
+  assert.equal(built.accounts.length, 1);
+  assert.equal(built.accounts[0]!.readings.length, 1);
+  assert.equal(built.accounts[0]!.name, "Main");
 });

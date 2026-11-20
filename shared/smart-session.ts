@@ -495,3 +495,85 @@ export const historyShedRestore = defineRpc({
     z.object({ ok: z.literal(false), error: z.string() }),
   ]),
 });
+
+const ReplayResultSchema = z.object({
+  accounts: z.number(),
+  short: z.object({ used: z.number(), held: z.number(), extra: z.number() }),
+  waitingHours: z.number(),
+  extraPoints: z.number(),
+  extraDollars: z.number().nullable(),
+  allOutHours: z.number(),
+  expired: z.record(z.string(), z.number()),
+});
+
+const ReportWindowSchema = z.object({ from: z.string(), to: z.string(), days: z.number() });
+
+export const AccountSuggestionSchema = z.object({
+  kind: z.enum(["add", "drop", "use-better", "keep", "verdict"]),
+  title: z.string(),
+  reason: z.string(),
+  accountId: z.string().nullable(),
+  numbers: z.record(z.string(), z.union([z.number(), z.string(), z.null()])),
+  window: ReportWindowSchema,
+});
+
+/** One family's Accounts report (`shared/accounts-report.ts`). */
+export const AccountsReportSchema = z.object({
+  family: z.enum(["claude", "codex"]),
+  generatedAt: z.string(),
+  window: ReportWindowSchema,
+  readings: z.number(),
+  waitingSince: z.string().nullable(),
+  accounts: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    main: z.boolean(),
+    disabled: z.boolean(),
+    size: z.number(),
+    usedPct: z.number().nullable(),
+    closedWindows: z.array(z.object({ resetsAt: z.string(), pct: z.number() })),
+    openPct: z.number().nullable(),
+    openResetsAt: z.string().nullable(),
+    waitingHours: z.number(),
+    misplacedHours: z.number(),
+    misplacedDollars: z.number(),
+    limitWhileRoomHours: z.number(),
+    atLimitHours: z.number(),
+    extraDollars: z.number(),
+    idlePoints: z.number(),
+    strip: z.array(z.object({ day: z.string(), usedPct: z.number(), limitHours: z.number(), expiredPct: z.number(), knownHours: z.number() })),
+    fullWindows: z.number(),
+    verdictAt: z.string().nullable(),
+    readings: z.number(),
+  })),
+  pooled: z.object({
+    usedPct: z.number().nullable(),
+    waitingHours: z.number(),
+    misplacedHours: z.number(),
+    misplacedDollars: z.number(),
+    allOutHours: z.number(),
+    idlePoints: z.number(),
+    extraDollars: z.number(),
+  }),
+  rates: z.object({ sessionRate: z.number(), dollarsPerPoint: z.number().nullable() }),
+  replay: z.object({
+    policy: z.string(),
+    fewer: z.array(ReplayResultSchema.extend({ without: z.string() })),
+    same: ReplayResultSchema,
+    more: ReplayResultSchema,
+  }),
+  suggestions: z.array(AccountSuggestionSchema),
+  recommendation: AccountSuggestionSchema.nullable(),
+});
+
+/**
+ * How well the accounts are used over the last 14 days: per account and pooled metrics, the
+ * replay with one account fewer or more, and the suggestions. Read-only; the same numbers
+ * `smart_accounts_report` gives an agent.
+ */
+export const accountsReportStatus = defineRpc({
+  name: "smart-session.accounts.report",
+  input: z.object({}),
+  /** `lines`: the same reports as text (`reportLines`), for agents. */
+  output: z.object({ reports: z.array(AccountsReportSchema), lines: z.array(z.string()), error: z.string().nullable() }),
+});
