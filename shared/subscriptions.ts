@@ -145,6 +145,32 @@ export function subscriptionName(
 export const sessionWindow = (account: Subscription) => account.windows.find((w) => w.id === "five_hour") ?? null;
 export const weeklyWindow = (account: Subscription) => account.windows.find((w) => w.id === "seven_day") ?? null;
 
+/**
+ * Where an account's 5-hour window stands: `none` when its readings have windows but no 5-hour one
+ * (a Codex plan here reports only its week), `not-started` when the provider reports it with no
+ * reset (nothing has opened one since the last reset), `rolled` when its reset passed with no newer
+ * reading, `open` otherwise; `unknown` before any reading.
+ */
+export type SessionWindowState = "none" | "not-started" | "rolled" | "open" | "unknown";
+export function sessionWindowState(account: Subscription, now: number): SessionWindowState {
+  const s5 = sessionWindow(account);
+  if (s5 === null) return account.windows.length > 0 ? "none" : "unknown";
+  if (s5.resetsAt === null) return s5.pct === 0 ? "not-started" : "open";
+  return Date.parse(s5.resetsAt) <= now ? "rolled" : "open";
+}
+
+/**
+ * The reset words beside one window's meter: "resets Sun 6:00 AM"; a reset that passed with no
+ * newer reading is past tense and says so ("Wed 3:59 PM · no reading since"), never a "resets" in the
+ * past; a 5-hour window that hasn't started says it opens at first use.
+ */
+export function windowResetText(w: Pick<SubscriptionWindow, "id" | "pct" | "resetsAt">, now: number, hour12?: boolean): string {
+  if (w.resetsAt === null) return w.id === "five_hour" && w.pct === 0 ? "starts at first use" : "";
+  const at = Date.parse(w.resetsAt);
+  if (!Number.isFinite(at)) return "";
+  return at <= now ? `${formatMoment(w.resetsAt, now, hour12)} · no reading since` : `resets ${formatMoment(w.resetsAt, now, hour12)}`;
+}
+
 /** How old the reading is, when that is worth saying; null while it is fresh. */
 export function readingAge(account: Subscription, now: number): number | null {
   const at = time(account.readAt);
@@ -471,7 +497,10 @@ export function poolHeadline(pool: PoolForecast, accounts: readonly Subscription
       : "No reset reported yet";
     return { title, detail: join(back, roughly), tone: "danger" };
   }
-  const moves = pool.takeovers.slice(0, 2).map((m, i) => `${i === 0 ? "" : "then "}${name(m.accountId)} ${i === 0 ? "takes over" : ""} at ${at(m.at)}`.replace(/ {2}/g, " "));
+  // Several streams can hand work to the same account minutes apart: the chain names each account
+  // once, at the first moment it takes work over, in that order.
+  const chain = pool.takeovers.filter((m, i, all) => all.findIndex((x) => x.accountId === m.accountId) === i);
+  const moves = chain.slice(0, 2).map((m, i) => `${i === 0 ? "" : "then "}${name(m.accountId)} ${i === 0 ? "takes over" : ""} at ${at(m.at)}`.replace(/ {2}/g, " "));
   if (pool.runsOutAt !== null) {
     const soon = pool.runsOutAt - now <= 30 * MINUTE;
     const lead = pool.usable <= 1 ? `${fam} runs out around ${at(pool.runsOutAt)}` : `${fam} · ${usable} last until about ${at(pool.runsOutAt)}`;

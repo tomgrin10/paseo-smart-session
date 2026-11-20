@@ -101,14 +101,17 @@ export function forecastWindow(window: WindowReading, now = Date.now()): WindowF
 const rounded = (value: number) => (value >= 10 ? Math.round(value) : Math.round(value * 10) / 10);
 const until = (iso: string, now: number) => formatDuration(Date.parse(iso) - now);
 
-/** A clock within the next day, else a weekday and clock: "9:21 PM", "Sat 11:00 PM". */
+/** A clock within the next day, else a weekday and clock, else a date: "9:21 PM", "Sat 11:00 PM", "Nov 27 4:00 AM". */
 export function formatMoment(iso: string, now = Date.now(), hour12?: boolean): string {
   const at = Date.parse(iso);
   const clock = formatClock(iso, hour12);
   const sameDay = new Date(at).toDateString() === new Date(now).toDateString();
   if (sameDay || (at > now && at - now < 12 * HOUR)) return clock;
+  // Six days or more away a weekday names two days (on a Friday, "Fri 4:00 AM" read as this
+  // morning's reset while it meant next week's): the date says which.
+  const far = Math.abs(at - now) >= 6 * 24 * HOUR;
   try {
-    return `${new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(new Date(at))} ${clock}`;
+    return `${new Intl.DateTimeFormat(undefined, far ? { month: "short", day: "numeric" } : { weekday: "short" }).format(new Date(at))} ${clock}`;
   } catch {
     return clock;
   }

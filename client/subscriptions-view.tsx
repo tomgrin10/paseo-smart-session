@@ -5,7 +5,7 @@ import { Pressable, Text, View } from "react-native";
 import { formatDay, formatDuration, isInteresting } from "../shared/format";
 import { budgetLine, forecastWindow, formatMoment, paceLine, resetLine } from "../shared/forecast";
 import {
-  accountOutlook, accountSections, extraUsageLine, extraUsagePct, familyName, limitedWindow, poolHeadline, sessionWindow, showsMainChip, subscriptionState,
+  accountOutlook, accountSections, extraUsageLine, extraUsagePct, familyName, limitedWindow, poolHeadline, sessionWindow, sessionWindowState, showsMainChip, subscriptionState, windowResetText,
   type LaneKind, type PoolForecast, type Subscription, type SubscriptionWindow,
 } from "../shared/subscriptions";
 import { Meter, PastWindows, WindowChart, ink } from "./charts";
@@ -113,10 +113,10 @@ function MiniWindow({ theme, label, w, now, stale, full = false, compact }: { th
       <Text style={{ ...t.meta, color: c.foreground }}>{label}</Text>
       <Text style={{ ...t.label, ...tabular, color: f.tone === "default" ? c.foreground : toneColor(c, f.tone) }}>{pct === null ? "reset" : `${pct}%`}</Text>
       <View style={{ flex: 1 }} />
-      <Text numberOfLines={1} style={t.small}>{reset === null ? "" : rolled ? `was ${formatMoment(w.resetsAt!, now)}` : `resets ${formatMoment(w.resetsAt!, now)}`}</Text>
+      <Text numberOfLines={1} style={t.small}>{windowResetText(w, now)}</Text>
     </View>
     <Meter theme={theme} pct={pct ?? 0} tone={f.tone} projected={f.atResetPct} pace={f.elapsed === null || rolled ? null : f.elapsed * 100} height={6}
-      label={`${label}: ${pct === null ? "reset since the last reading" : `${pct}% used`}`} />
+      label={`${label}: ${pct === null ? `reset ${formatMoment(w.resetsAt!, now)}, no reading since` : `${pct}% used`}`} />
   </View>;
 }
 
@@ -139,15 +139,19 @@ function AccountDetails({ theme, account, now, compact, guardPct, stale, full }:
   const t = text(c);
   const has = accountSections(account);
   const s5 = sessionWindow(account);
-  const rolled = s5?.resetsAt ? Date.parse(s5.resetsAt) <= now : false;
-  const f = s5 && !rolled ? forecastWindow({ ...s5, pct: full ? Math.max(100, s5.pct) : s5.pct, burnPctPerHour: stale ? null : s5.burnPctPerHour }, now) : null;
+  const session = sessionWindowState(account, now);
+  const rolled = session === "rolled";
+  const f = s5 && session === "open" ? forecastWindow({ ...s5, pct: full ? Math.max(100, s5.pct) : s5.pct, burnPctPerHour: stale ? null : s5.burnPctPerHour }, now) : null;
   const pace = f ? paceLine(f, now) : "";
   const budget = f ? budgetLine(f) : null;
   const extra = account.extraUsage ?? null;
   const extraPct = extra ? extraUsagePct(extra) : null;
   const rec = account.recorded;
   return <View style={{ gap: 16, paddingTop: 4, paddingLeft: compact ? 0 : 22 }}>
-    <Detail theme={theme} title={has.chart && f !== null ? null : "This session window"} empty={!has.chart || f === null ? (s5 && rolled ? "Reset since the last reading" : "No readings of the open window yet") : null}>
+    {/* A plan with only a weekly limit has no session windows to show, rather than "none yet". */}
+    {session === "none" ? <Detail theme={theme} title="Session windows" empty="This plan reports only a weekly limit, no 5-hour window" /> : <>
+    <Detail theme={theme} title={has.chart && f !== null ? null : "This session window"} empty={!has.chart || f === null
+      ? (rolled ? "Reset since the last reading" : session === "not-started" ? "None open. The next one starts at first use" : "No readings of the open window yet") : null}>
       {f ? <View style={{ gap: 6 }}>
         <WindowChart theme={theme} forecast={f} history={account.history ?? []} now={now} compact={compact} guardPct={guardPct} />
         <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 10, rowGap: 2 }}>
@@ -160,6 +164,7 @@ function AccountDetails({ theme, account, now, compact, guardPct, stale, full }:
     <Detail theme={theme} title="Earlier session windows, last 14 days" empty={has.past ? null : "None recorded yet"}>
       <PastWindows theme={theme} past={account.past ?? []} now={now} compact={compact} />
     </Detail>
+    </>}
     {account.family === "claude" ? <Detail theme={theme} title="Extra usage" empty={extra === null ? "Not reported for this account" : null}>
       {extra ? <View style={{ gap: 4 }}>
         <Text style={{ ...t.meta, color: c.foreground, ...tabular }}>{extraUsageLine(extra)}</Text>

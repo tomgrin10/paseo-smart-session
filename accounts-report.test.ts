@@ -6,7 +6,7 @@ import { toolRow } from "./shared/chat.ts";
 import { reportInput, trustedMainRow } from "./server/accounts-report.ts";
 import type { UsageSample } from "./shared/usage.ts";
 import {
-  DEFAULT_REPORT_SETTINGS, LIMIT_PCT, STEP_MS, accountsReport, normalizeReportSettings, paceWithGate, replay, reportLines,
+  DEFAULT_REPORT_SETTINGS, LIMIT_PCT, STEP_MS, accountsReport, normalizeReportSettings, paceWithGate, replay, reportBasis, reportLines,
   type AccountSeries, type HoldSpan, type PlacementSample, type ReplayAccount, type ReplaySpec, type ReportInput,
 } from "./shared/accounts-report.ts";
 
@@ -202,7 +202,9 @@ test("an account added mid-window counts as there all along for add, drop and ke
   assert.notEqual(report.recommendation?.kind, "add", report.recommendation?.reason);
   assert.equal(report.recommendation?.kind, "verdict");
   assert.equal(report.recommendation?.accountId, "carol");
-  assert.match(report.recommendation!.reason, /^Your new account Carol would have covered \d+ h of the waiting\. Verdict on [A-Z][a-z]{2} \d+\.$/);
+  // The title carries the verdict date; the body doesn't repeat it, and never says "account Carol".
+  assert.match(report.recommendation!.title, /^Verdict on Carol on [A-Z][a-z]{2} \d+$/);
+  assert.match(report.recommendation!.reason, /^Carol is new\. It would have covered \d+ h of the waiting\.$/);
   assert.ok(!report.suggestions.some((x) => x.kind === "add"));
   assert.equal(report.suggestions.filter((x) => x.kind === "verdict" && x.accountId === "carol").length, 1, "one verdict for carol, not two");
 });
@@ -222,6 +224,30 @@ test("add waits for a new account's verdict even when the pool would still fall 
   assert.ok(!report.suggestions.some((x) => x.kind === "add"), JSON.stringify(report.suggestions.map((x) => x.kind)));
   assert.equal(report.recommendation?.kind, "verdict");
   assert.equal(report.recommendation?.accountId, "carol");
+});
+
+test("an account there since the history began isn't new, it lacks history; every span says the same days", () => {
+  // Live (Codex): one account, readings from day 2 of the 14. It read "Main is new: 1 of the 2 full
+  // weekly windows a verdict needs. Verdict on Nov 25." beside "Replay over 12 days" and "Based on 14 days".
+  const anchor = NOW - 9 * DAY;
+  const solo = series("alice", { anchor, main: true, from: NOW - 12 * DAY, weekly: steady(0.2) });
+  const report = accountsReport(input([solo]));
+  assert.equal(report.historyDays, 12);
+  assert.equal(report.historySince, iso(NOW - 12 * DAY));
+  const verdict = report.suggestions.find((s) => s.kind === "verdict" && s.accountId === "alice")!;
+  assert.ok(verdict, "the account still awaits its verdict");
+  assert.doesNotMatch(verdict.reason, /\bnew\b/);
+  assert.match(verdict.reason, /^Not enough history yet: \d of the 2 full weeks a verdict needs\.$/);
+  const keep = report.suggestions.find((s) => s.kind === "keep")!;
+  assert.match(keep.reason, /^Replay over 12 days: /);
+  const text = reportLines(report).join("\n");
+  assert.match(text, /readings over 12 days/);
+  const day = (iso: string) => iso.slice(5, 10);
+  assert.equal(reportBasis(report, day), `Based on ${report.readings.toLocaleString("en-US")} readings over 12 days (since ${day(iso(NOW - 12 * DAY))}) · waiting isn't measured yet`);
+  assert.match(reportBasis({ ...report, historyDays: 14, historySince: report.window.from }, day), /^Based on 14 days and [\d,]+ readings/);
+  // A second account whose readings begin with the first's is not new either.
+  const pair = accountsReport(input([solo, series("bob", { anchor, from: NOW - 12 * DAY + 15 * MIN, weekly: steady(0.2) })]));
+  assert.ok(!pair.suggestions.some((s) => s.kind === "verdict" && /new/.test(s.reason)), JSON.stringify(pair.suggestions.map((s) => s.reason)));
 });
 
 test("Drop names the account that costs least; one still being judged is never dropped, its verdict date shown", () => {

@@ -75,6 +75,8 @@ function isRollover(current: string | null, next: string | null): boolean {
 interface OpenBlock {
   windowId: string;
   resetsAt: string | null;
+  /** Opened by a reading after the last window reset, with no new window begun yet. */
+  notStarted?: boolean;
   scope?: string;
   points: BlockPoint[];
   gaps: Gap[];
@@ -130,8 +132,18 @@ export function segmentBlocks(
       }
 
       if (isRollover(current.resetsAt, window.resetsAt)) {
-        sealed.push(seal(current));
+        // A stretch with no window open gives way to the window that starts; it held nothing.
+        if (!(current.notStarted && current.points.every((p) => p.pct === 0))) sealed.push(seal(current));
         open.set(windowId, startBlock(windowId, window, t));
+        continue;
+      }
+
+      // No reset reported after the held window's reset passed: that window is over and no new one
+      // has started (the provider says 0% with no reset until the next use). Keeping the reading in
+      // the old block showed a fresh reading as "reset · was Wed 3:59 PM".
+      if (window.resetsAt === null && current.resetsAt !== null && Date.parse(t) >= Date.parse(current.resetsAt)) {
+        sealed.push(seal(current));
+        open.set(windowId, { ...startBlock(windowId, window, t), notStarted: true });
         continue;
       }
 
@@ -164,6 +176,9 @@ function startBlock(windowId: string, window: WindowSample, t: string): OpenBloc
   };
 }
 
+/** The shortest stretch a rate is measured over: one whole percent in less reads as a sprint. */
+export const MIN_RATE_SPAN_MS = 10 * 60 * 1000;
+
 /**
  * Burn rate in percentage points per hour over *at least* the block's most recent
  * `spanMs`.
@@ -174,7 +189,12 @@ function startBlock(windowId: string, window: WindowSample, t: string): OpenBloc
  * the span zero and the rate unreportable exactly when the answer is "flat".
  */
 export function burnRatePctPerHour(block: Block, spanMs = 30 * 60 * 1000): number | null {
-  const points = block.points;
+  // A window is at 0% when it opens: when the first reading came later, the opening is a reading
+  // too. Without it a window minutes old was measured over one integer step (0% then 1% a minute
+  // apart read as 60%/h, and the overview said an account at 1% would run out within the hour).
+  const opened = block.startAt !== null && Date.parse(block.startAt) < Date.parse(block.points[0]!.t)
+    ? [{ t: block.startAt, pct: 0 }] : [];
+  const points = [...opened, ...block.points];
   if (points.length < 2) return null;
   const last = points[points.length - 1]!;
   const cutoff = Date.parse(last.t) - spanMs;
@@ -185,7 +205,8 @@ export function burnRatePctPerHour(block: Block, spanMs = 30 * 60 * 1000): numbe
 
   const first = points[index]!;
   const hours = (Date.parse(last.t) - Date.parse(first.t)) / 3_600_000;
-  if (hours <= 0) return null;
+  // Whole percents over a few minutes are noise, not a pace.
+  if (hours < MIN_RATE_SPAN_MS / 3_600_000) return null;
   return (last.pct - first.pct) / hours;
 }
 

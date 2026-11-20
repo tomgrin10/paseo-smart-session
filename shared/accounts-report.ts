@@ -538,6 +538,10 @@ export interface AccountsReport {
   readonly generatedAt: string;
   readonly window: { readonly from: string; readonly to: string; readonly days: number };
   readonly readings: number;
+  /** The first reading in the window (the window's start when the history is older); null without readings. */
+  readonly historySince: string | null;
+  /** The whole days from `historySince` to now: the span every suggestion and the page name. */
+  readonly historyDays: number;
   /** When waiting started to be measured (the holds log); null when it hasn't. */
   readonly waitingSince: string | null;
   readonly accounts: AccountMetrics[];
@@ -648,7 +652,7 @@ function ratioOf(tl: Timeline): number | null {
   return w >= 5 && s > 0 ? s / w : null;
 }
 
-function specOf(tl: Timeline, t0: number, ratio: number, usable: boolean, now: number): ReplaySpec {
+function specOf(tl: Timeline, t0: number, ratio: number, usable: boolean, now: number, joinedLater: boolean): ReplaySpec {
   const first = tl.known.indexOf(true);
   const i = first === 0 ? 0 : -1;
   const resets = new Set<number>();
@@ -664,7 +668,7 @@ function specOf(tl: Timeline, t0: number, ratio: number, usable: boolean, now: n
     ratio,
     usable,
     resets: sorted,
-    ...(i === 0 || tl.firstReading === null ? {} : { from: tl.firstReading }),
+    ...(i === 0 || tl.firstReading === null || !joinedLater ? {} : { from: tl.firstReading }),
     start: i === 0
       ? { weeklyPct: tl.weeklyPct[0]!, weeklyResetAt: tl.weeklyResetAt[0]!, sessionPct: tl.sessionPct[0]!, sessionResetAt: tl.sessionResetAt[0]! }
       : { weeklyPct: 0, weeklyResetAt: sorted[0] ?? null, sessionPct: 0, sessionResetAt: null },
@@ -733,8 +737,13 @@ function prepare(input: ReportInput, settings: ReportSettings) {
   const ratios = tls.map(ratioOf);
   const knownRatios = ratios.filter((r): r is number => r !== null);
   const pooledRatio = knownRatios.length > 0 ? knownRatios.reduce((s, r) => s + r, 0) / knownRatios.length : DEFAULT_SESSION_RATIO;
-  const specs = tls.map((tl, k) => specOf(tl, t0, ratios[k] ?? pooledRatio, !input.accounts[k]!.disabled, now));
-  return { days, now, steps, t0, tls, running, demand, sessionRate, dollarsPerPoint, heldOn, extraOn, pooledRatio, specs };
+  // An account is new only when it joined after the history began: one there from the first readings
+  // (the only account, or one read alongside it) just lacks history, and is never called new.
+  const firsts = tls.map((tl) => tl.firstReading).filter((t): t is number => t !== null);
+  const historyStart = firsts.length === 0 ? null : Math.min(...firsts);
+  const joinedLater = (tl: Timeline) => historyStart !== null && tl.firstReading !== null && tl.firstReading > historyStart + CARRY_MS;
+  const specs = tls.map((tl, k) => specOf(tl, t0, ratios[k] ?? pooledRatio, !input.accounts[k]!.disabled, now, joinedLater(tl)));
+  return { days, now, steps, t0, tls, running, demand, sessionRate, dollarsPerPoint, heldOn, extraOn, pooledRatio, specs, historyStart };
 }
 
 /** The replay's inputs for one report, so another rule (or the session replay) can score the same demand. */
@@ -745,7 +754,7 @@ export function replayInputs(input: ReportInput, settings: ReportSettings = DEFA
 
 /** The report for one family. */
 export function accountsReport(input: ReportInput, settings: ReportSettings = DEFAULT_REPORT_SETTINGS, policyName = "pace-5h-gate"): AccountsReport {
-  const { days, now, steps, t0, tls, running, demand, sessionRate, dollarsPerPoint, heldOn, extraOn, pooledRatio, specs } = prepare(input, settings);
+  const { days, now, steps, t0, tls, running, demand, sessionRate, dollarsPerPoint, heldOn, extraOn, pooledRatio, specs, historyStart } = prepare(input, settings);
   const stepH = STEP_MS / HOUR;
   const policy = POLICIES[policyName] ?? paceWithGate;
   const window = { from: iso(t0), to: iso(now), days };
@@ -887,11 +896,10 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
   const more = replay(demand, [...current, extraSpec], policy, rates);
   const fewer = current.length < 2 ? [] : current.map((s) => ({ ...replay(demand, current.filter((o) => o !== s), policy, rates), without: s.id }));
 
-  const periodDays = (() => {
-    const firsts = tls.map((tl) => tl.firstReading).filter((t): t is number => t !== null);
-    if (firsts.length === 0) return days;
-    return Math.max(1, Math.min(days, (now - Math.max(t0, Math.min(...firsts))) / DAY));
-  })();
+  // The days the readings cover: every span the report names (the replay, the page's "Based on",
+  // the text header) is this one, so a history that began after the window's start reads alike.
+  const historySince = historyStart === null ? null : Math.max(t0, historyStart);
+  const periodDays = historySince === null ? days : Math.max(1, Math.min(days, (now - historySince) / DAY));
   const perWeek = (x: number) => (x * 7) / periodDays;
 
   const suggestions: Suggestion[] = [];
@@ -974,7 +982,8 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
     suggestions.push({
       kind: "verdict",
       title: `Verdict on ${m.name} on ${date}`,
-      reason: covered >= 0.05 ? `Your new account ${m.name} would have covered ${hours(covered)} of the waiting. Verdict on ${date}.` : `${m.name} is new: ${m.fullWindows} of the ${VERDICT_WINDOWS} full weekly windows a verdict needs. Verdict on ${date}.`,
+      // The title carries the verdict date; the body says what the account did so far.
+      reason: covered >= 0.05 ? `${m.name} is new. It would have covered ${hours(covered)} of the waiting.` : `${m.name} is new: ${m.fullWindows} of the ${VERDICT_WINDOWS} full weeks a verdict needs.`,
       accountId: m.id,
       numbers: { coveredWaitHours: covered, historicalWaitHours: round1(historical.waitingHours), withItWaitHours: round1(same.waitingHours), fullWindows: m.fullWindows, verdictAt: m.verdictAt },
       window,
@@ -985,7 +994,7 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
     suggestions.push({
       kind: "verdict",
       title: `Verdict on ${m.name} on ${shortDay(Date.parse(m.verdictAt))}`,
-      reason: `${m.name} has ${m.fullWindows} of the ${VERDICT_WINDOWS} full weekly windows a verdict needs.`,
+      reason: `Not enough history yet: ${m.fullWindows} of the ${VERDICT_WINDOWS} full weeks a verdict needs.`,
       accountId: m.id,
       numbers: { fullWindows: m.fullWindows, verdictAt: m.verdictAt },
       window,
@@ -1021,6 +1030,8 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
     generatedAt: iso(now),
     window,
     readings: tls.reduce((s, tl) => s + tl.readingsInPeriod, 0),
+    historySince: historySince === null ? null : iso(historySince),
+    historyDays: Math.round(periodDays),
     waitingSince: holdsSince === null ? null : iso(Math.max(holdsSince, t0)),
     accounts: metrics,
     pooled: {
@@ -1039,11 +1050,23 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
   };
 }
 
+/**
+ * What a recommendation stands on, under it on the page: the days the readings cover (the same
+ * span its replay names), how many readings, and since when waiting is measured.
+ */
+export function reportBasis(report: Pick<AccountsReport, "window" | "readings" | "historySince" | "historyDays" | "waitingSince">, day: (iso: string) => string): string {
+  const late = report.historySince !== null && report.historyDays < Math.round(report.window.days);
+  const span = late ? `${report.historyDays} days (since ${day(report.historySince!)})` : `${Math.round(report.window.days)} days`;
+  const count = `${report.readings.toLocaleString("en-US")} readings`;
+  return `Based on ${late ? `${count} over ${span}` : `${span} and ${count}`}${report.waitingSince ? ` · waiting measured since ${day(report.waitingSince)}` : " · waiting isn't measured yet"}`;
+}
+
 /** The report as lines, for `smart_accounts_report` and anything else that reads text. */
 export function reportLines(report: AccountsReport): string[] {
   const lines: string[] = [];
   const w = report.window;
-  lines.push(`${report.family === "claude" ? "Claude" : "Codex"} accounts, ${shortDay(Date.parse(w.from))} to ${shortDay(Date.parse(w.to))} (${w.days} days, ${report.readings} readings).`);
+  const covered = report.historyDays < w.days && report.historySince !== null ? `readings over ${report.historyDays} days, since ${shortDay(Date.parse(report.historySince))}` : `${w.days} days`;
+  lines.push(`${report.family === "claude" ? "Claude" : "Codex"} accounts, ${shortDay(Date.parse(w.from))} to ${shortDay(Date.parse(w.to))} (${covered}, ${report.readings} readings).`);
   for (const m of report.accounts) {
     const parts = [
       m.usedPct === null ? "no window has reset yet" : `used ${Math.round(m.usedPct)}% of its windows`,

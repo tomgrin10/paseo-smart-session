@@ -526,6 +526,8 @@ export const AccountsReportSchema = z.object({
   generatedAt: z.string(),
   window: ReportWindowSchema,
   readings: z.number(),
+  historySince: z.string().nullable(),
+  historyDays: z.number(),
   waitingSince: z.string().nullable(),
   accounts: z.array(z.object({
     id: z.string(),

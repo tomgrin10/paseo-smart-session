@@ -3,7 +3,7 @@ import { formatMoment } from "./shared/forecast.ts";
 import assert from "node:assert/strict";
 
 import {
-  atTheLimit, leadPool, poolForecast, poolHeadline, poolTrailing, roomLeft, subscriptionName, subscriptionState, type Subscription,
+  atTheLimit, leadPool, poolForecast, poolHeadline, poolTrailing, roomLeft, sessionWindowState, subscriptionName, subscriptionState, windowResetText, type Subscription,
 } from "./shared/subscriptions.ts";
 
 const NOW = Date.parse("2026-11-05T15:00:00Z");
@@ -182,6 +182,54 @@ test("pool: lasting at this pace names the next account and keeps a normal tone"
   const head = poolHeadline(pool, accounts, NOW);
   assert.match(head.title, /^Claude · 2 subscriptions last past /, "a time, even when the pool outlasts the forecast");
   assert.equal(head.tone, "default");
+});
+
+test("headline: each account is named once in the hand-off chain, in the order it takes over", () => {
+  // Two accounts fill and both hand their work to the same account a few minutes apart: two
+  // takeovers onto "team". The chain read "team takes over at …, then team at …".
+  const accounts = [
+    account("claude-main", { p5: 90, rate: 10, agents: 1 }),
+    account("personal", { p5: 88, rate: 10, agents: 1 }),
+    account("team", { p5: 0, week: 0 }),
+    account("spare", { p5: 60, week: 60 }),
+  ];
+  const pool = poolForecast(accounts, "claude", NOW, { autoSwitch: true });
+  assert.ok(pool.takeovers.filter((m) => m.accountId === "team").length >= 2, "the simulation keeps every stream's move");
+  const head = poolHeadline(pool, accounts, NOW);
+  const named = head.detail.split(" · ")[0]!;
+  assert.equal(named.match(/\bteam\b/g)?.length, 1, named);
+  assert.match(named, /^team takes over at /);
+  assert.doesNotMatch(named, /then team/);
+});
+
+test("a reset in the past is never shown as the next reset; a window not started says so", () => {
+  // Live: "5h reset · was Wed 3:59 PM" on a fresh reading whose 5-hour window had not started.
+  const notStarted = account("seat", { p5: 0, r5: null, week: 0 });
+  assert.equal(sessionWindowState(notStarted, NOW), "not-started");
+  assert.equal(windowResetText(notStarted.windows[0]!, NOW), "starts at first use");
+  // A stale reading past its reset: past tense, and that nothing was read since.
+  const rolled = account("seat", { p5: 40, r5: NOW - 2 * H });
+  assert.equal(sessionWindowState(rolled, NOW), "rolled");
+  const said = windowResetText(rolled.windows[0]!, NOW);
+  assert.match(said, /no reading since$/);
+  assert.doesNotMatch(said, /resets|was /);
+  assert.match(windowResetText(account("seat").windows[0]!, NOW), /^resets /);
+  // Codex here reports only its week: no 5-hour window at all, not "none recorded yet".
+  const codex: Subscription = { ...account("codex-main", { family: "codex" }), windows: [{ id: "seven_day", pct: 3, resetsAt: iso(NOW + 5 * 24 * H), burnPctPerHour: null }] };
+  assert.equal(sessionWindowState(codex, NOW), "none");
+  assert.equal(sessionWindowState({ ...codex, windows: [] }, NOW), "unknown");
+});
+
+test("pool: a reset in the past refills the account; nothing hands over at a moment already gone", () => {
+  // An account whose week and 5-hour window reset since its last reading has room now.
+  const accounts = [
+    account("claude-main", { p5: 90, rate: 20, agents: 1 }),
+    account("seat", { p5: 100, r5: NOW - 2 * 24 * H, week: 100, wr: NOW - 5 * H }),
+  ];
+  const pool = poolForecast(accounts, "claude", NOW, { autoSwitch: true });
+  assert.equal(pool.withRoom, 2);
+  assert.equal(pool.takeovers[0]!.accountId, "seat");
+  assert.ok(pool.takeovers.every((m) => m.at > NOW));
 });
 
 test("lead: the family in trouble leads, Claude on a tie", () => {
