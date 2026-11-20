@@ -52,6 +52,19 @@
   rows were sometimes a seat's (weekly resets interleaved between two logins) and every row said `account: null`.
   Each row now carries `login: "cli"` and `accountId` (ZeroSub's id, `claude-main`; null without ZeroSub). Rows from
   before 3.8.0-beta.9 have neither: readers treat them as unknown, never as another account (`account-log.test.ts`).
+- **Invariant: a window's reset is never shown as the next reset once it has passed (`past-reset`).** A reading with
+  no reset after the held window's reset is a new window not yet started (`segmentBlocks` seals the old block; the
+  row says "starts at first use"); a reset that passed with no newer reading is past tense with "no reading since"
+  (`windowResetText`); a moment six days or more away names its date (`formatMoment`). Root cause it fixes
+  (2026-11): ZeroSub's fresh `five_hour {pct: 0, resetsAt: null}` joined Wednesday's block, so a fresh reading read
+  "5h reset · was Wed 3:59 PM", and next Friday's weekly reset read "resets Fri 4:00 AM" on a Friday morning.
+- **Invariant: a pace is never measured over less than `MIN_RATE_SPAN_MS` (10 min), and a window's opening counts as
+  a 0% reading** (`burnRatePctPerHour`). Whole percents a minute apart read as 20-60%/h, so an account at 1% "ran out"
+  within the hour in the pool forecast (`blocks.test.ts`).
+- The pool headline names each account once in its hand-off chain, at the first moment it takes work over
+  (`poolHeadline`); the simulation still keeps every stream's takeover for the per-account sentences.
+- A plan whose readings carry windows but no 5-hour one (Codex here reports only its week) shows "only a weekly
+  limit" in place of the session-window blocks (`sessionWindowState` `none`), not "none recorded yet".
 - **Invariant: every account shows everything the main account shows (`account-parity`).** One per-account model,
   `Subscription` (`shared/subscriptions.ts`), carries every window under the recorder's ids (`claudeWindowId`: ZeroSub's
   `seven_day_opus` is `weekly_model:opus`), the open window's chart points, 14 days of earlier session windows, Extra
@@ -112,6 +125,14 @@
     added later is not room before its first reading. Waiting exists only since the holds log began, and the page says
     so ("waiting measured since"). A misplaced stretch from before the moves log has cause `not-logged`, never a guess.
   - An account with fewer than two full weekly windows is never suggested for dropping; it shows "verdict on <date>".
+    It is "new" only when its first reading came after the family's history began (more than `CARRY_MS` later); one
+    there from the first readings just lacks history ("Not enough history yet"). The verdict date lives in the
+    suggestion's title, never repeated in its body. Every span the report names (the replay, the page's basis line,
+    the text header) is `historyDays`, the days the readings cover, so a history younger than 14 days reads alike.
+  - **Invariant: the page and `smart_accounts_report` say the same words.** Suggestions, the basis line
+    (`reportBasis`) and the placement line (`placementFacts`, which `placementLine` wraps) are built in `shared/`
+    and only drawn by the client. Root cause it fixes (2026-11): the client had its own placement sentence, which
+    said "placed 0 of 0 new sessions elsewhere" and left out the rebalances the text reported.
     While one added mid-window awaits its verdict, "add" never fires: the report says how much of the waiting that
     account alone would have covered and its verdict date. Every suggestion carries its numbers and its data window.
     One is shown: add, then use-better, then drop, then keep.

@@ -1,7 +1,7 @@
 process.env.TZ = "UTC";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { budgetLine, contextOutlook, contextRing, forecastWindow, headline, leadWindow, paceLine, resetLine, windowLength } from "./shared/forecast.ts";
+import { budgetLine, contextOutlook, contextRing, forecastWindow, formatMoment, headline, leadWindow, paceLine, resetLine, windowLength } from "./shared/forecast.ts";
 
 const NOW = Date.parse("2026-11-04T19:00:00Z");
 const HOUR = 3_600_000;
@@ -92,4 +92,16 @@ test("a reset that has passed without a newer reading is named, not just called 
   assert.equal(headline(f, NOW, false).detail, "Reset was 18:30 · waiting for the provider to report the new window");
   const ahead = forecastWindow({ id: "five_hour", pct: 100, resetsAt: iso(NOW + 90 * 60_000), burnPctPerHour: 0 }, NOW);
   assert.equal(headline(ahead, NOW, false).detail, "Back at the 20:30 reset · in 1h 30m");
+});
+
+test("a moment a week away names its date, not a weekday that is also today's", () => {
+  // Live, on a Friday morning: "Week 0% · resets Fri 4:00 AM" was next Friday's reset, read as this
+  // morning's (already past).
+  const friday = new Date(2026, 10, 20, 9, 1).getTime();
+  const nextFriday = new Date(2026, 10, 27, 4, 0).toISOString();
+  const moment = formatMoment(nextFriday, friday, true);
+  assert.doesNotMatch(moment, /^Fri/);
+  assert.match(moment, /27/);
+  assert.match(formatMoment(new Date(2026, 10, 24, 12, 0).toISOString(), friday, true), /^Tue /, "within the week a weekday is enough");
+  assert.equal(formatMoment(new Date(2026, 10, 20, 13, 0).toISOString(), friday, true), "1:00 PM");
 });

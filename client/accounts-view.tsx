@@ -4,7 +4,8 @@ import { Platform, Text, View } from "react-native";
 import type { z } from "zod";
 
 import { formatDay } from "../shared/format";
-import { shortDay } from "../shared/accounts-report";
+import { reportBasis, shortDay } from "../shared/accounts-report";
+import { placementFacts } from "../shared/placement-shadow";
 import type { AccountsReportSchema } from "../shared/smart-session";
 import { ink } from "./charts";
 import { Card, CardRow, Chip, SectionHead, text } from "./kit";
@@ -129,7 +130,7 @@ function Recommendation({ theme, report, compact, first }: { theme: Theme; repor
   const t = text(c);
   const s = report.recommendation;
   if (s === null) return null;
-  const basis = `Based on ${Math.round(report.window.days)} days and ${report.readings.toLocaleString()} readings${report.waitingSince ? ` · waiting measured since ${formatDay(report.waitingSince)}` : " · waiting isn't measured yet"}`;
+  const basis = reportBasis(report, formatDay);
   return <CardRow theme={theme} first={first} style={{ gap: 6, paddingVertical: compact ? 14 : 16 }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
       <Icon name={ICON[s.kind]} size={16} color={c.foreground} />
@@ -155,20 +156,6 @@ function PooledRow({ theme, report }: { theme: Theme; report: Report }) {
       {[factsLine(p, report.waitingSince !== null), `${hoursText(p.allOutHours)} all out`, p.idlePoints >= 1 ? `${Math.round(p.idlePoints)}% of a week idle` : null].filter(Boolean).join(" · ")}
     </Text>
   </CardRow>;
-}
-
-/** The one smart-placement line: what the rule would have done (shadow) or did (live), beside what happened. */
-export function placementFacts(p: NonNullable<Report["placement"]>): { label: string; facts: string } {
-  const live = p.mode === "live" && p.liveRefusal === null;
-  const label = p.mode === "off" ? "Off" : live ? "Live" : "Shadow";
-  if (p.mode === "off") return { label, facts: "ZeroSub places every session on its own." };
-  if (p.since === null) return { label, facts: "Watching. Nothing to compare yet." };
-  const sessions = (n: number) => `${n} ${n === 1 ? "session" : "sessions"}`;
-  const moved = live
-    ? `It moved ${sessions(p.moves.aheadOfWall)} before a 5-hour limit.`
-    : `It would have moved ${sessions(p.moves.aheadOfWall)} before a 5-hour limit and placed ${p.placed.differently} of ${p.placed.total} new sessions elsewhere.`;
-  const seen = p.forced.total > 0 ? ` It saw ${p.forced.foreseen} of ${p.forced.total} forced moves coming.` : " No forced moves.";
-  return { label, facts: `${moved}${seen} What happened: ${p.actual.cutOffs} ${p.actual.cutOffs === 1 ? "turn" : "turns"} stopped at a limit, ${hoursText(p.actual.waitingHours)} waiting.` };
 }
 
 function PlacementRow({ theme, p }: { theme: Theme; p: NonNullable<Report["placement"]> }) {

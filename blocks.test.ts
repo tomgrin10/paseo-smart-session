@@ -104,6 +104,57 @@ test("burn rate and projected exhaustion", () => {
   );
 });
 
+test("a window minutes old is measured from its start, not from one integer step", () => {
+  // The provider reports whole percents. A window opened at 06:50 read 0% at 06:58, 1% at 06:59
+  // and 1% at 07:01: one step over three minutes read as 20%/h ("on pace for ~97%"), and over one
+  // minute as 60%/h ("runs out ~8:40"). The window was 0% when it opened, so that is a reading too.
+  const reset = "2026-09-05T11:50:00Z";
+  const [block] = segmentBlocks([
+    sample("2026-09-05T06:58:48Z", 0, reset),
+    sample("2026-09-05T06:59:48Z", 1, reset),
+    sample("2026-09-05T07:01:48Z", 1, reset),
+  ]);
+  const rate = burnRatePctPerHour(block!)!;
+  assert.ok(Math.abs(rate - 1 / (11.8 / 60)) < 0.01, `1 point over the window's 11.8 minutes, not ${rate}`);
+  // Under ten minutes of window there is nothing to extrapolate yet.
+  const [young] = segmentBlocks([sample("2026-09-05T06:51:00Z", 0, reset), sample("2026-09-05T06:53:00Z", 1, reset)]);
+  assert.equal(burnRatePctPerHour(young!), null);
+  // Without a reset time the start is unknown: the same ten-minute floor holds.
+  const [unknown] = segmentBlocks([sample("2026-09-05T06:51:00Z", 0, null), sample("2026-09-05T06:53:00Z", 1, null)]);
+  assert.equal(burnRatePctPerHour(unknown!), null);
+});
+
+test("a window reported with no reset after the held one reset is a new window not yet started", () => {
+  // Wednesday's window reset at 15:59; on Friday the provider reports the 5-hour window as 0% with
+  // no reset (nothing has started one). That reading used to join Wednesday's block, so the account
+  // row said "5h reset · was Wed 3:59 PM" on a fresh reading.
+  const blocks = segmentBlocks([
+    sample("2026-11-18T12:00:00Z", 30, "2026-11-18T13:59:00Z"),
+    sample("2026-11-18T13:00:00Z", 45, "2026-11-18T13:59:00Z"),
+    sample("2026-11-20T07:00:00Z", 0, null),
+    sample("2026-11-20T07:01:00Z", 0, null),
+  ]);
+  assert.equal(blocks.length, 2);
+  assert.equal(blocks[0]!.resetsAt, "2026-11-18T13:59:00.000Z");
+  assert.equal(blocks[0]!.peakPct, 45);
+  const open = blocks[1]!;
+  assert.equal(open.resetsAt, null, "the open window has not started");
+  assert.equal(open.finalPct, 0);
+  // When it starts, the not-started stretch gives way to it: no empty window among the earlier ones.
+  const started = segmentBlocks([
+    sample("2026-11-18T12:00:00Z", 30, "2026-11-18T13:59:00Z"),
+    sample("2026-11-20T07:00:00Z", 0, null),
+    sample("2026-11-20T08:10:00Z", 2, "2026-11-20T13:10:00Z"),
+  ]);
+  assert.deepEqual(started.map((b) => [b.resetsAt, b.peakPct]), [["2026-11-18T13:59:00.000Z", 30], ["2026-11-20T13:10:00.000Z", 2]]);
+  // A reset not reported while the held window is still open changes nothing.
+  const same = segmentBlocks([
+    sample("2026-11-18T12:00:00Z", 30, "2026-11-18T13:59:00Z"),
+    sample("2026-11-18T12:30:00Z", 31, null),
+  ]);
+  assert.equal(same.length, 1);
+});
+
 test("nothing is projected when the window rolls over first", () => {
   const [block] = segmentBlocks([
     sample("2026-09-05T09:00:00Z", 10, "2026-09-05T11:00:00Z"),

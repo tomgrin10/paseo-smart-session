@@ -9,7 +9,7 @@ import { toolRow } from "./shared/chat.ts";
 import type { HoldRow, MoveRow } from "./shared/account-log.ts";
 import type { ZeroSubSnapshot } from "./shared/guard/zerosub.ts";
 import {
-  EMPTY_SHADOW, MOVE_SPACING_MS, isForced, liveRefusal, placementLine, placementMode, placementSummary, shadowTick,
+  EMPTY_SHADOW, MOVE_SPACING_MS, isForced, liveRefusal, placementFacts, placementLine, placementMode, placementSummary, shadowTick,
   type DecisionRow, type ShadowAgent, type ShadowState,
 } from "./shared/placement-shadow.ts";
 
@@ -86,6 +86,23 @@ test("shadow: a new session ZeroSub placed is logged beside the rule's pick; a f
   assert.ok(isForced("auto") && isForced("limit") && !isForced("pace") && !isForced("user"));
 });
 
+test("the placement line folds zero counts and names every move the summary counted", () => {
+  // Live: "placed 0 of 0 new sessions elsewhere", and the text said "1 rebalance" the page didn't.
+  const base = { mode: "shadow" as const, liveRefusal: null, since: iso(NOW - HOUR), forced: { total: 0, foreseen: 0 }, actual: { cutOffs: 0, waitingHours: 0 } };
+  const quiet = { ...base, placed: { total: 0, differently: 0 }, moves: { aheadOfWall: 0, rebalance: 0 } };
+  assert.equal(placementFacts(quiet).facts, "Nothing to compare yet: no new sessions, no moves, nothing stopped at a limit.");
+  const rebalanced = { ...base, placed: { total: 0, differently: 0 }, moves: { aheadOfWall: 0, rebalance: 1 } };
+  const said = placementFacts(rebalanced).facts;
+  assert.equal(said, "It would have rebalanced 1 session. It saw no new sessions. No forced moves. Nothing stopped at a limit.");
+  assert.doesNotMatch(said, /0 of 0/);
+  assert.match(placementLine(rebalanced), /rebalanced 1 session/);
+  const agreed = { ...base, placed: { total: 3, differently: 0 }, moves: { aheadOfWall: 0, rebalance: 0 } };
+  assert.match(placementFacts(agreed).facts, /^It agreed with ZeroSub on all 3 new sessions\./);
+  const live = { ...base, mode: "live" as const, placed: { total: 1, differently: 1 }, moves: { aheadOfWall: 2, rebalance: 1 } };
+  assert.match(placementFacts(live).facts, /^It moved 2 sessions before a 5-hour limit and rebalanced 1 session\./);
+  assert.equal(placementFacts(live).label, "Live");
+});
+
 test("the summary sets what the rule would have done beside what happened, over the report's window", () => {
   const rows: DecisionRow[] = [
     { at: iso(NOW - 2 * HOUR), kind: "move", mode: "shadow", agentId: "a", from: "claude-main", to: "claude-bob", reason: "five-hour", gain: 1, cost: 0.05 },
@@ -99,7 +116,8 @@ test("the summary sets what the rule would have done beside what happened, over 
   const holds = [hold("p1", "start", NOW - 90 * MIN), hold("p1", "end", NOW - 60 * MIN), hold("p2", "start", NOW - 90 * MIN, "idle")];
   const s = placementSummary(rows, holds, NOW - 14 * 24 * HOUR, NOW, "shadow", null);
   assert.deepEqual([s.moves, s.forced, s.placed, s.actual], [{ aheadOfWall: 1, rebalance: 0 }, { total: 2, foreseen: 1 }, { total: 2, differently: 1 }, { cutOffs: 1, waitingHours: 0.5 }]);
-  assert.equal(placementLine(s), "Smart placement (shadow, since Mar 15): would have moved 1 session ahead of a 5-hour wall; 1 of 2 forced moves seen coming; 1 of 2 new sessions placed elsewhere. Actual: 1 turn stopped at a limit, 0.5 h waiting.");
+  assert.equal(placementLine(s), "Smart placement (shadow, since Mar 15): It would have moved 1 session before a 5-hour limit. It would have placed 1 of 2 new sessions elsewhere. It saw 1 of 2 forced moves coming. What happened: 1 turn stopped at a limit, 0.5 h waiting.");
+  assert.equal(placementFacts(s).facts, placementLine(s).replace(/^Smart placement \(shadow, since Mar 15\): /, ""), "the page and the text say the same");
   const refused = placementSummary([], [], 0, NOW, "live", "Live placement needs ZeroSub's move_before_limit, which the installed ZeroSub doesn't have. Staying in shadow.");
   assert.match(placementLine(refused), /^Smart placement \(shadow\): watching.*Staying in shadow\.$/);
   assert.equal(placementLine(placementSummary(rows, holds, 0, NOW, "off", null)), "Smart placement: off.");

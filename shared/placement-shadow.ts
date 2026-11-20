@@ -289,20 +289,44 @@ export function placementSummary(rows: readonly DecisionRow[], holds: readonly H
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** The Accounts section's one line, and the text report's. */
+const hoursText = (h: number) => (h < 0.05 ? "0 h" : h < 10 ? `${Math.round(h * 10) / 10} h` : `${Math.round(h)} h`);
+
+/**
+ * What the rule did or would have done beside what happened, in sentences: the Accounts section
+ * and the text report both say exactly this. A zero count is folded, never "0 of 0".
+ */
+export function placementFacts(s: PlacementSummary): { label: "Off" | "Live" | "Shadow"; facts: string } {
+  const live = s.mode === "live" && s.liveRefusal === null;
+  const label = s.mode === "off" ? "Off" : live ? "Live" : "Shadow";
+  if (s.mode === "off") return { label, facts: "ZeroSub places every session on its own." };
+  if (s.since === null) return { label, facts: "Watching. Nothing to compare yet." };
+  const happened = s.actual.cutOffs === 0 && s.actual.waitingHours < 0.05
+    ? "Nothing stopped at a limit."
+    : `What happened: ${plural(s.actual.cutOffs, "turn")} stopped at a limit, ${hoursText(s.actual.waitingHours)} waiting.`;
+  const { aheadOfWall, rebalance } = s.moves;
+  if (aheadOfWall === 0 && rebalance === 0 && s.placed.total === 0 && s.forced.total === 0 && happened === "Nothing stopped at a limit.") {
+    return { label, facts: "Nothing to compare yet: no new sessions, no moves, nothing stopped at a limit." };
+  }
+  const would = live ? "" : "would have ";
+  const acts = [
+    aheadOfWall > 0 ? `moved ${plural(aheadOfWall, "session")} before a 5-hour limit` : null,
+    rebalance > 0 ? `rebalanced ${plural(rebalance, "session")}` : null,
+  ].filter((x): x is string => x !== null);
+  const moved = acts.length === 0 ? null : `It ${would}${acts.join(" and ")}.`;
+  const placed = s.placed.total === 0 ? "It saw no new sessions."
+    : s.placed.differently === 0 ? `It agreed with ZeroSub on ${s.placed.total === 1 ? "the 1 new session" : `all ${s.placed.total} new sessions`}.`
+      : `It would have placed ${s.placed.differently} of ${plural(s.placed.total, "new session")} elsewhere.`;
+  const seen = s.forced.total > 0 ? `It saw ${s.forced.foreseen} of ${plural(s.forced.total, "forced move")} coming.` : "No forced moves.";
+  return { label, facts: [moved, placed, seen, happened].filter((x) => x !== null).join(" ") };
+}
+
+/** The Accounts section's one line, and the text report's: the same facts, with mode and date. */
 export function placementLine(s: PlacementSummary): string {
   if (s.mode === "off") return "Smart placement: off.";
-  const verb = s.mode === "live" && s.liveRefusal === null ? "moved" : "would have moved";
-  if (s.since === null) return `Smart placement (${s.mode === "live" && s.liveRefusal === null ? "live" : "shadow"}): watching; nothing to compare yet.${s.mode === "live" && s.liveRefusal !== null ? ` ${s.liveRefusal}` : ""}`;
-  const parts = [
-    `${verb} ${plural(s.moves.aheadOfWall, "session")} ahead of a 5-hour wall`,
-    s.forced.total > 0 ? `${s.forced.foreseen} of ${plural(s.forced.total, "forced move")} seen coming` : "no forced moves",
-    `${s.placed.differently} of ${plural(s.placed.total, "new session")} placed elsewhere`,
-  ];
-  if (s.moves.rebalance > 0) parts.push(`${plural(s.moves.rebalance, "rebalance")}`);
-  const actual = `Actual: ${plural(s.actual.cutOffs, "turn")} stopped at a limit, ${s.actual.waitingHours} h waiting.`;
+  const { label, facts } = placementFacts(s);
   const refused = s.mode === "live" && s.liveRefusal !== null ? ` ${s.liveRefusal}` : "";
-  return `Smart placement (${s.mode === "live" && s.liveRefusal === null ? "live" : "shadow"}, since ${shortDate(s.since)}): ${parts.join("; ")}. ${actual}${refused}`;
+  if (s.since === null) return `Smart placement (${label.toLowerCase()}): watching; nothing to compare yet.${refused}`;
+  return `Smart placement (${label.toLowerCase()}, since ${shortDate(s.since)}): ${facts}${refused}`;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
