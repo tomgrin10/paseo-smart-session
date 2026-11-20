@@ -17,6 +17,7 @@ import {
   placementRow,
   type CreditsRow,
   type HoldRow,
+  type MoveRow,
   type PlacedAgent,
 } from "../shared/account-log.ts";
 import type { Pause } from "../shared/guard/policy.ts";
@@ -43,7 +44,7 @@ async function creditsBaseline(now: number): Promise<Map<string, string>> {
  * One minute's account-use rows. `agents` is the recorder's listing (closed ones are
  * skipped); `snapshot` null means no ZeroSub, where only placement is logged.
  */
-export async function logAccountUse(snapshot: ZeroSubSnapshot | null, agents: readonly PlacedAgent[], now = Date.now()): Promise<void> {
+export async function logAccountUse(snapshot: ZeroSubSnapshot | null, agents: readonly PlacedAgent[], now = Date.now()): Promise<MoveRow[]> {
   const at = new Date(now).toISOString();
   const placement = placementRow(snapshot, agents, lastPlacement, at);
   if (placement.row !== null) await appendAccountLog("placement", placement.row);
@@ -51,9 +52,10 @@ export async function logAccountUse(snapshot: ZeroSubSnapshot | null, agents: re
 
   if (snapshot === null) {
     lastSessions = null;
-    return;
+    return [];
   }
-  for (const row of moveEvents(lastSessions, snapshot, at)) await appendAccountLog("moves", row);
+  const moves = moveEvents(lastSessions, snapshot, at);
+  for (const row of moves) await appendAccountLog("moves", row);
   lastSessions = { ...snapshot.sessions };
 
   lastCredits ??= await creditsBaseline(now);
@@ -61,6 +63,7 @@ export async function logAccountUse(snapshot: ZeroSubSnapshot | null, agents: re
     await appendAccountLog("credits", row);
     lastCredits.set(row.accountId, creditsKey(row));
   }
+  return moves;
 }
 
 /** Session Guard saved its state: log the holds that started or ended. Never throws. */

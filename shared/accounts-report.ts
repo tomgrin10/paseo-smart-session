@@ -24,6 +24,7 @@
 
 import { ZEROSUB_FIVE_HOUR_GATE } from "./subscriptions.ts";
 import { EXPIRING_FIRST, expiringFirst, poolForecast, type PlacementContext } from "./placement.ts";
+import type { PlacementSummary } from "./placement-shadow.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -563,6 +564,8 @@ export interface AccountsReport {
   readonly suggestions: Suggestion[];
   /** The one to show: add, use-better, drop or keep, in that order. */
   readonly recommendation: Suggestion | null;
+  /** Smart placement beside what happened (`shared/placement-shadow.ts`); Claude only, set by the server. */
+  readonly placement?: PlacementSummary & { readonly line: string };
 }
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
@@ -1064,5 +1067,6 @@ export function reportLines(report: AccountsReport): string[] {
   if (Math.abs(r.historical.waitingHours - r.same.waitingHours) >= 0.05) lines.push(`  as it happened (accounts from when they joined): ${fmt(r.historical)}.`);
   for (const f of r.fewer) lines.push(`  without ${f.without}: ${fmt(f)}.`);
   for (const s of report.suggestions) lines.push(`${s === report.recommendation ? "Recommendation" : "Also"}: ${s.title}. ${s.reason}`);
+  if (report.placement !== undefined) lines.push(report.placement.line);
   return lines;
 }
