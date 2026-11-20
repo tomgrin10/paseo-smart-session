@@ -1,0 +1,2 @@
+- The Accounts recommendation now judges adding or dropping an account against the accounts you have now. An account you added during the 14 days counts as there all along, so it no longer asks you to add the account you just added.
+- While a new account is under two weeks old, the report says how much of the waiting it would have covered and when its verdict is ready, instead of suggesting another account.

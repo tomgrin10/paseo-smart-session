@@ -561,6 +561,8 @@ export const AccountsReportSchema = z.object({
     fewer: z.array(ReplayResultSchema.extend({ without: z.string() })),
     same: ReplayResultSchema,
     more: ReplayResultSchema,
+    // The accounts as they were (one added mid-window only from its first reading); absent before 3.8.0-beta.13.
+    historical: ReplayResultSchema.optional(),
   }),
   suggestions: z.array(AccountSuggestionSchema),
   recommendation: AccountSuggestionSchema.nullable(),

@@ -99,14 +99,18 @@
     main account is only `login: "cli"` rows, or `src: "upstream"` rows from before the labels (`trustedMainRow`);
     the `paseo` source mixed logins and is never read here.
   - The replay places that demand on N-1, N and N+1 accounts through a `PlacementPolicy` (a pure function: accounts
-    in, preference order out). Today's behaviour is `paceWithGate` (pace score, the 5-hour gate at 80%); a new placement
+    in, preference order out). Add, drop and keep are judged against the accounts there now, each present for the whole
+    window (`presentAllAlong`; an account added mid-window counts as there all along). `replay.historical` replays the
+    accounts as they joined and only describes what happened; it never drives a suggestion. Today's behaviour is `paceWithGate` (pace score, the 5-hour gate at 80%); a new placement
     rule is scored by adding it to `POLICIES` and replaying the same demand. The replay is fluid (work splits and moves
     for free), so it is a lower bound on waiting for every account count alike; compare counts, not absolutes.
   - A reading stands for 6 h (`CARRY_MS`); past that an account is unknown, never at a limit, never room. An account
     added later is not room before its first reading. Waiting exists only since the holds log began, and the page says
     so ("waiting measured since"). A misplaced stretch from before the moves log has cause `not-logged`, never a guess.
   - An account with fewer than two full weekly windows is never suggested for dropping; it shows "verdict on <date>".
-    Every suggestion carries its numbers and its data window. One is shown: add, then use-better, then drop, then keep.
+    While one added mid-window awaits its verdict, "add" never fires: the report says how much of the waiting that
+    account alone would have covered and its verdict date. Every suggestion carries its numbers and its data window.
+    One is shown: add, then use-better, then drop, then keep.
 - **Placing sessions (`placement`).** `shared/placement.ts` is pure like the report; `docs/placement.md` has the math
   and the benchmark (`placement-bench.ts`, fictional scenarios only). The shipped rule is `expiring-first`: the pace
   score, with an account whose 5-hour wall comes within `WALL_HOURS` (1 h, by `forecastWindow`) behind the rest, and

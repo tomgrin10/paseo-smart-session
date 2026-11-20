@@ -554,8 +554,11 @@ export interface AccountsReport {
   readonly replay: {
     readonly policy: string;
     readonly fewer: (ReplayResult & { readonly without: string })[];
+    /** The accounts there are now, each there all along: what add, drop and keep are judged against. */
     readonly same: ReplayResult;
     readonly more: ReplayResult;
+    /** The accounts as they were: one added mid-window takes work only from its first reading. */
+    readonly historical: ReplayResult;
   };
   readonly suggestions: Suggestion[];
   /** The one to show: add, use-better, drop or keep, in that order. */
@@ -663,6 +666,20 @@ function specOf(tl: Timeline, t0: number, ratio: number, usable: boolean, now: n
       ? { weeklyPct: tl.weeklyPct[0]!, weeklyResetAt: tl.weeklyResetAt[0]!, sessionPct: tl.sessionPct[0]!, sessionResetAt: tl.sessionResetAt[0]! }
       : { weeklyPct: 0, weeklyResetAt: sorted[0] ?? null, sessionPct: 0, sessionResetAt: null },
   };
+}
+
+/**
+ * An account added mid-window, counted as there all along: its weekly resets carried back a week
+ * at a time to the period's start. Add, drop and keep compare the accounts you have now, so the
+ * waiting from before one joined isn't read as a reason to add another.
+ */
+function presentAllAlong(spec: ReplaySpec, t0: number): ReplaySpec {
+  if (spec.from === undefined) return spec;
+  const resets = [...spec.resets];
+  const first = resets[0];
+  if (first !== undefined) for (let r = first - WEEK; r > t0; r -= WEEK) resets.unshift(r);
+  const { from: _joined, ...rest } = spec;
+  return { ...rest, resets, start: { weeklyPct: 0, weeklyResetAt: resets[0] ?? null, sessionPct: 0, sessionResetAt: null } };
 }
 
 /** When an account will have `VERDICT_WINDOWS` full weekly windows; null when it has them. */
@@ -856,14 +873,16 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
 
   // Replays.
   const rates = { sessionRate, dollarsPerPoint };
-  const same = replay(demand, specs, policy, rates);
+  const historical = replay(demand, specs, policy, rates);
+  const current = specs.map((s) => presentAllAlong(s, t0));
+  const same = replay(demand, current, policy, rates);
   const sizes = specs.map((s) => s.size).sort((a, b) => a - b);
   const extraSpec: ReplaySpec = {
     id: "added", size: sizes[Math.floor((sizes.length - 1) / 2)] ?? 1, ratio: pooledRatio, usable: true, resets: [],
     start: { weeklyPct: 0, weeklyResetAt: null, sessionPct: 0, sessionResetAt: null },
   };
-  const more = replay(demand, [...specs, extraSpec], policy, rates);
-  const fewer = specs.length < 2 ? [] : specs.map((s) => ({ ...replay(demand, specs.filter((o) => o !== s), policy, rates), without: s.id }));
+  const more = replay(demand, [...current, extraSpec], policy, rates);
+  const fewer = current.length < 2 ? [] : current.map((s) => ({ ...replay(demand, current.filter((o) => o !== s), policy, rates), without: s.id }));
 
   const periodDays = (() => {
     const firsts = tls.map((tl) => tl.firstReading).filter((t): t is number => t !== null);
@@ -880,7 +899,13 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
 
   const savedWait = Math.max(0, same.waitingHours - more.waitingHours);
   const savedDollars = same.extraDollars === null || more.extraDollars === null ? null : Math.max(0, same.extraDollars - more.extraDollars);
-  const addBy = perWeek(savedWait) >= settings.addWaitHoursPerWeek || (savedDollars !== null && perWeek(savedDollars) >= settings.addDollarsPerWeek);
+  // An account added in the window that still awaits its verdict: no "add" until it's judged.
+  const joined = specs.filter((s) => s.from !== undefined).map((s) => metrics.find((m) => m.id === s.id)!).filter((m) => m.verdictAt !== null && !m.disabled);
+  const addWanted = perWeek(savedWait) >= settings.addWaitHoursPerWeek || (savedDollars !== null && perWeek(savedDollars) >= settings.addDollarsPerWeek);
+  const addBy = joined.length === 0 && addWanted;
+  // "Add" judged against the accounts as they were: the case a new account already answers.
+  const addedSaved = Math.max(0, historical.waitingHours - replay(demand, [...specs, extraSpec], policy, rates).waitingHours);
+  const newAnswersAdd = joined.length > 0 && (addWanted || perWeek(addedSaved) >= settings.addWaitHoursPerWeek);
   if (addBy) {
     suggestions.push({
       kind: "add",
@@ -934,8 +959,26 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
     });
   }
 
+  // Each new account's share: the waiting that goes away when only it is counted as there all along.
+  const coveredBy = (id: string) => round1(Math.max(0, historical.waitingHours
+    - replay(demand, specs.map((s) => (s.id === id ? presentAllAlong(s, t0) : s)), policy, rates).waitingHours));
+  // The newest first: it is the one the person just added.
+  const joinedAt = (id: string) => specs.find((s) => s.id === id)?.from ?? 0;
+  joined.sort((a, b) => joinedAt(b.id) - joinedAt(a.id));
+  for (const m of joined) {
+    const covered = coveredBy(m.id);
+    const date = shortDay(Date.parse(m.verdictAt!));
+    suggestions.push({
+      kind: "verdict",
+      title: `Verdict on ${m.name} on ${date}`,
+      reason: covered >= 0.05 ? `Your new account ${m.name} would have covered ${hours(covered)} of the waiting. Verdict on ${date}.` : `${m.name} is new: ${m.fullWindows} of the ${VERDICT_WINDOWS} full weekly windows a verdict needs. Verdict on ${date}.`,
+      accountId: m.id,
+      numbers: { coveredWaitHours: covered, historicalWaitHours: round1(historical.waitingHours), withItWaitHours: round1(same.waitingHours), fullWindows: m.fullWindows, verdictAt: m.verdictAt },
+      window,
+    });
+  }
   for (const m of metrics) {
-    if (m.verdictAt === null || m.disabled) continue;
+    if (m.verdictAt === null || m.disabled || joined.includes(m)) continue;
     suggestions.push({
       kind: "verdict",
       title: `Verdict on ${m.name} on ${shortDay(Date.parse(m.verdictAt))}`,
@@ -962,8 +1005,11 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
     });
   }
 
+  // A new account's verdict stands where "add" would: the waiting it already covers is the answer.
+  const newVerdict = newAnswersAdd ? suggestions.find((s) => s.kind === "verdict" && joined.some((m) => m.id === s.accountId)) : undefined;
   const order: Suggestion["kind"][] = ["add", "use-better", "drop", "keep"];
-  const recommendation = order.map((k) => suggestions.find((s) => s.kind === k)).find((s) => s !== undefined) ?? null;
+  const recommendation = suggestions.find((s) => s.kind === "add") ?? newVerdict
+    ?? order.map((k) => suggestions.find((s) => s.kind === k)).find((s) => s !== undefined) ?? null;
 
   const closedAll = metrics.flatMap((m) => m.closedWindows.map((w) => ({ pct: w.pct, size: m.size })));
   const holdsSince = input.since.holds;
@@ -984,7 +1030,7 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
       extraDollars: Math.round(metrics.reduce((s, m) => s + m.extraDollars, 0) * 100) / 100,
     },
     rates: { sessionRate: Math.round(sessionRate * 1000) / 1000, dollarsPerPoint: dollarsPerPoint === null ? null : Math.round(dollarsPerPoint * 1000) / 1000 },
-    replay: { policy: policyName in POLICIES ? policyName : "pace-5h-gate", fewer, same, more },
+    replay: { policy: policyName in POLICIES ? policyName : "pace-5h-gate", fewer, same, more, historical },
     suggestions,
     recommendation,
   };
@@ -1014,7 +1060,8 @@ export function reportLines(report: AccountsReport): string[] {
   lines.push(report.waitingSince === null ? "Waiting isn't measured yet (no holds logged)." : `Waiting measured since ${shortDay(Date.parse(report.waitingSince))}.`);
   const r = report.replay;
   const fmt = (x: ReplayResult) => `${hours(x.waitingHours)} waiting, ${x.extraDollars === null ? "Extra usage unpriced" : dollars(x.extraDollars)}, ${hours(x.allOutHours)} all out`;
-  lines.push(`Replay (${r.policy}): with ${r.same.accounts}: ${fmt(r.same)}; with ${r.more.accounts}: ${fmt(r.more)}.`);
+  lines.push(`Replay (${r.policy}), the accounts you have now: with ${r.same.accounts}: ${fmt(r.same)}; with ${r.more.accounts}: ${fmt(r.more)}.`);
+  if (Math.abs(r.historical.waitingHours - r.same.waitingHours) >= 0.05) lines.push(`  as it happened (accounts from when they joined): ${fmt(r.historical)}.`);
   for (const f of r.fewer) lines.push(`  without ${f.without}: ${fmt(f)}.`);
   for (const s of report.suggestions) lines.push(`${s === report.recommendation ? "Recommendation" : "Also"}: ${s.title}. ${s.reason}`);
   return lines;
