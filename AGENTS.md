@@ -107,6 +107,24 @@
     so ("waiting measured since"). A misplaced stretch from before the moves log has cause `not-logged`, never a guess.
   - An account with fewer than two full weekly windows is never suggested for dropping; it shows "verdict on <date>".
     Every suggestion carries its numbers and its data window. One is shown: add, then use-better, then drop, then keep.
+- **Placing sessions (`placement`).** `shared/placement.ts` is pure like the report; `docs/placement.md` has the math
+  and the benchmark (`placement-bench.ts`, fictional scenarios only). The shipped rule is `expiring-first`: the pace
+  score, with an account whose 5-hour wall comes within `WALL_HOURS` (1 h, by `forecastWindow`) behind the rest, and
+  the pace score deciding again when none passes. Moves: a session ahead of an imminent wall (gain beats the cost),
+  otherwise today's 1.5x rebalance, under today's guards. Rules:
+  - A new rule or variant is scored in both replays before it ships: the fluid `replay` (free moves, a lower bound)
+    and `replaySessions` (sessions stay put; a session its account can't serve is cut off and moved, a forced move
+    costing Session Guard's grace). Compare against `pace-5h-gate` with the 1.5x rebalance, on fictional scenarios in
+    tests and on the real logs locally; real numbers never go into the repository.
+  - **Invariant: a 5-hour wall never outranks expiring weekly budget.** The 5-hour check only reorders accounts
+    within the pace score's tiers, and only for a wall within `WALL_HOURS`; the strict check (any wall before the
+    window resets) kept work off expiring budget and lost far more waiting than the moves it saved
+    (`placement.test.ts`).
+  - **Invariant: the replay never counts an account as room before its first reading** (`ReplaySpec.from`). Root
+    cause it fixes (2026-11): `specOf` started an account added mid-period as empty and usable from the period's
+    start, so with a seat added two days ago the report replayed 14 days with it and showed no waiting.
+  - Nothing places a real session yet. A live placement goes only through ZeroSub's levers (create metadata, a
+    one-agent pin, `move_before_limit`), never a default flip or a reconcile.
 - `server/store.ts` owns the one-time v0.1 `super-session` to `smart-session` directory migration.
   The old name is allowed only in that migration, its regression tests, and upgrade documentation.
 
