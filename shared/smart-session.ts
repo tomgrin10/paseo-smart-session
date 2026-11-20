@@ -211,6 +211,15 @@ export const SettingsSchema = z.object({
   /** "Move old history aside". Off unless the person turns it on. */
   shedHistory: z.boolean(),
   shedThresholds: z.object({ minMb: z.number(), minCompactions: z.number() }),
+  /** The Accounts report's thresholds and per-account plan sizes (`shared/accounts-report.ts`). */
+  accountsReport: z.object({
+    sizes: z.record(z.string(), z.number()),
+    addWaitHoursPerWeek: z.number(),
+    addDollarsPerWeek: z.number(),
+    dropWaitHoursPerWeek: z.number(),
+    dropDollarsPerWeek: z.number(),
+    misplacedHoursPerWeek: z.number(),
+  }),
 });
 
 /**
