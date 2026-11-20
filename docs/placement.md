@@ -97,8 +97,20 @@ is against how many accounts, which no placement rule changes.
 
 The report scores any rule in `POLICIES` on the same demand; `expiring-first` is the shipped one.
 
-## Not yet
+## Running beside ZeroSub
 
-Nothing here places a real session. Running the rule beside ZeroSub (shadow mode: log what it
-would do), and then through ZeroSub's own levers (create metadata, pins, `move_before_limit`), is
-the next step, never a default flip or a reconcile.
+Settings → Accounts → Smart placement, or `smart_accounts_report` with `placement_mode`:
+
+- **Shadow** (the default) runs the rule every minute on the real state and writes what it would
+  have done to `decisions-YYYY-MM.jsonl`: where it would have put each new session, which session it
+  would have moved and why, and, for every move ZeroSub was forced into at a limit, whether the rule
+  had flagged that session in the hour before. It changes nothing.
+- **Live** sends the rule's moves to ZeroSub's `move_before_limit`, one session at a time, under the
+  same guards. It is refused unless the installed ZeroSub has that RPC and its own weekly pacing is
+  off, since two rebalancers would fight. New sessions keep ZeroSub's pick: Paseo's create call
+  carries no metadata the rule could set.
+- **Off** runs nothing.
+
+The Accounts section shows one line over the report's window: turns cut off at a limit, forced
+moves and how many of them the rule saw coming, and the waiting. That is the evidence for turning
+live on, on your own usage rather than the benchmark's.

@@ -220,6 +220,8 @@ export const SettingsSchema = z.object({
     dropDollarsPerWeek: z.number(),
     misplacedHoursPerWeek: z.number(),
   }),
+  /** Smart placement (`shared/placement-shadow.ts`): off, shadow (log only, the default) or live. */
+  placement: z.object({ mode: z.enum(["off", "shadow", "live"]) }),
 });
 
 /**
@@ -259,7 +261,8 @@ export const getSettings = defineRpc({
 export const setSettings = defineRpc({
   name: "smart-session.settings.set",
   input: SettingsSchema.partial(),
-  output: z.object({ settings: SettingsSchema }),
+  /** `refused`: a change that wasn't made, with the reason (live placement where ZeroSub can't take it). */
+  output: z.object({ settings: SettingsSchema, refused: z.string().optional() }),
 });
 
 
@@ -566,6 +569,17 @@ export const AccountsReportSchema = z.object({
   }),
   suggestions: z.array(AccountSuggestionSchema),
   recommendation: AccountSuggestionSchema.nullable(),
+  /** Smart placement beside what happened: Claude only, absent before 3.8.0-beta.13. */
+  placement: z.object({
+    mode: z.enum(["off", "shadow", "live"]),
+    liveRefusal: z.string().nullable(),
+    since: z.string().nullable(),
+    placed: z.object({ total: z.number(), differently: z.number() }),
+    moves: z.object({ aheadOfWall: z.number(), rebalance: z.number() }),
+    forced: z.object({ total: z.number(), foreseen: z.number() }),
+    actual: z.object({ cutOffs: z.number(), waitingHours: z.number() }),
+    line: z.string(),
+  }).optional(),
 });
 
 /**

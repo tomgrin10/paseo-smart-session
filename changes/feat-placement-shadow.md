@@ -1,0 +1,3 @@
+- New setting Settings → Accounts → Smart placement: Shadow (the default) logs where the placement rule would have put and moved your Claude sessions, without changing anything. Live lets it move idle sessions ahead of a 5-hour limit.
+- Live is offered only when your ZeroSub can take the moves and its own weekly pacing is off; otherwise the setting says why and stays as it was.
+- The Accounts section adds one line comparing the rule with what happened: turns cut off at a limit, forced moves and how many the rule saw coming, and waiting.

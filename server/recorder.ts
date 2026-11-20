@@ -18,6 +18,7 @@ import { scanSpend } from "./backfill.ts";
 import { listReports } from "./builtin-usage.ts";
 
 import { forgetAccountUse, logAccountUse } from "./account-log.ts";
+import { forgetPlacement, runPlacement } from "./placement.ts";
 import { readAgents, readProviderUsage, withDaemon } from "./daemon.ts";
 import { readZeroSub } from "./guard/zerosub.ts";
 import { onUsageListing } from "./usage-source.ts";
@@ -226,7 +227,8 @@ async function pollDaemon(snapshot: ZeroSubSnapshot | null): Promise<void> {
     if (entries !== null) await onUsageListing(client, entries).catch((error) => console.error("[smart-session] usage card alignment failed", String(error)));
 
     const agents = await readAgents(client);
-    await logAccountUse(snapshot, agents).catch((error) => console.error("[smart-session] could not log account use", String(error)));
+    const moves = await logAccountUse(snapshot, agents).catch((error) => { console.error("[smart-session] could not log account use", String(error)); return []; });
+    await runPlacement(snapshot, agents, moves, (pluginId, method, input) => client.invokePluginRpc(pluginId, method, input));
     for (const agent of agents) {
       if (agent.usedTokens === null || agent.maxTokens === null) continue;
       if (lastContext.get(agent.id) === agent.usedTokens) continue;
@@ -295,6 +297,7 @@ function startRecorder(): void {
     clearCaches();
     forgetAccounts();
     forgetAccountUse();
+    forgetPlacement();
     cliAccountId = null;
   });
 }

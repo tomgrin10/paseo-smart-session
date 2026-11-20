@@ -21,6 +21,13 @@ import { Button, errorText } from "./kit";
 import { refreshPills } from "./pill-store";
 import { openReportSheet } from "./report-request";
 
+const PLACEMENT_HINT = {
+  off: "Off. ZeroSub places and moves sessions on its own.",
+  shadow: "Shadow. Records what it would do; ZeroSub still places and moves every session.",
+  live: "Live. Moves a session through ZeroSub before it hits a limit. New sessions keep ZeroSub's pick.",
+} as const;
+const PLACEMENT_SAVED = { off: "Smart placement off", shadow: "Smart placement in shadow", live: "Smart placement live" } as const;
+
 /** Settings → Help → Report a bug: Follow-up's words. */
 export const REPORT_HINT = "Or an idea or feedback. An agent writes it up and shows you the issue before filing it.";
 
@@ -86,10 +93,11 @@ export function makeSettings(client: PluginClientContext) {
     async function save(patch: Parameters<typeof write>[0], message: string) {
       setSaving(true);
       try {
-        await write(patch);
+        const result = await write(patch);
         await refreshPills(() => readEnrolment({}));
         await queryClient.invalidateQueries({ queryKey: ["smart-session"] });
-        toast.show(message);
+        if (result.refused) toast.error(result.refused);
+        else toast.show(message);
       } catch (error) {
         toast.error(errorText(error));
       } finally {
@@ -265,6 +273,15 @@ export function makeSettings(client: PluginClientContext) {
           {publishMatters && settings.publishAsMain ? <SettingsRow label="Recent publishes" hint={runsHint} /> : null}
         </SettingsCard>
       </SettingsSection>
+
+      {publishMatters ? <SettingsSection title="Accounts" info="Smart placement picks the account for each Claude session: the weekly budget that expires first, never into a 5-hour limit within the hour, and a move before that limit. Shadow only records what it would do, beside what ZeroSub did, under How your accounts were used.">
+        <SettingsCard>
+          <SettingsSelect label="Smart placement" hint={PLACEMENT_HINT[settings.placement.mode]}
+            value={settings.placement.mode} options={[{ label: "Off", value: "off" }, { label: "Shadow", value: "shadow" }, { label: "Live", value: "live" }]}
+            disabled={saving}
+            onValueChange={(mode) => void save({ placement: { mode: mode as "off" | "shadow" | "live" } }, PLACEMENT_SAVED[mode as "off" | "shadow" | "live"])} />
+        </SettingsCard>
+      </SettingsSection> : null}
 
       <HistoryShedSection enabled={settings.shedHistory} thresholds={settings.shedThresholds} saving={saving}
         onToggle={(shedHistory) => void save({ shedHistory }, shedHistory ? "Old history moves aside at each agent's next load" : "Old history stays in place")} />

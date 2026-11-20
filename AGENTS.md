@@ -88,6 +88,10 @@
   - `credits-YYYY-MM.jsonl`, per ZeroSub account (the CLI login included) when its Extra usage, credits or limit state
     changes: `{at, accountId, family, fetchedAt, extraUsage: {enabled, spend, limit, currency}|null, credits: {balance,
     unlimited}|null, limitedUntil, limitKind, signedIn, disabled}`; money in minor units.
+  - `decisions-YYYY-MM.jsonl`, the placement rule's decisions while `placement.mode` isn't `off` (written by
+    `server/placement.ts`, rules in `shared/placement-shadow.ts`), each with `{at, kind, mode, agentId}`: `place` (a
+    new session: ZeroSub's `actual` and the rule's `pick`), `move` (`from`, `to`, `reason`, `gain`, `cost`, live only
+    `outcome`), `forced` (a limit move: `from`, `to`, `foreseen` when the rule flagged it in the hour before).
   - Read back with `readAccountLog`, which skips a torn line or a row without a valid `at`.
 - **The Accounts report: how well the accounts were used (`accounts-report`).** `shared/accounts-report.ts` is pure and
   deterministic (no clock, file or setting inside; `accounts-report.test.ts` uses small fictional histories);
@@ -127,8 +131,17 @@
   - **Invariant: the replay never counts an account as room before its first reading** (`ReplaySpec.from`). Root
     cause it fixes (2026-11): `specOf` started an account added mid-period as empty and usable from the period's
     start, so with a seat added two days ago the report replayed 14 days with it and showed no waiting.
-  - Nothing places a real session yet. A live placement goes only through ZeroSub's levers (create metadata, a
-    one-agent pin, `move_before_limit`), never a default flip or a reconcile.
+  - The rule runs beside ZeroSub on the recorder's minute tick (`server/placement.ts`), `settings.placement.mode`
+    `off`, `shadow` (default) or `live`. The Accounts section and `smart_accounts_report` set its decisions beside
+    what happened over the report's window (`placementSummary`): turns cut off at a limit, forced moves and how many
+    the rule saw coming, waiting.
+  - **Invariant: shadow mode changes nothing.** It reads the snapshot and the agent listing it is given and writes
+    only `decisions-*.jsonl`; no RPC, no pin, no ZeroSub file (`placement-shadow.test.ts`).
+  - **Invariant: live acts only through `move_before_limit`, one agent at a time, under the same guards, never a
+    default flip or a reconcile.** New sessions keep ZeroSub's pick (Paseo's create config carries no metadata).
+    Live is refused (the setting keeps its old value and says why) unless the installed ZeroSub has the lever, found
+    by its RPC name in its files, not by version, and ZeroSub's own pacing (`paceWeeklyUsage`) is off: two
+    rebalancers would fight. A refusal found later runs the tick as shadow.
 - `server/store.ts` owns the one-time v0.1 `super-session` to `smart-session` directory migration.
   The old name is allowed only in that migration, its regression tests, and upgrade documentation.
 

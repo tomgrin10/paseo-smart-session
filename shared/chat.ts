@@ -182,7 +182,9 @@ export function toolRow(name: string, status: string, detail: unknown, error: un
       return { tool, state: running ? "running" : "done", line: running ? "Handing the report over…" : clip(oneLine(output.split("\n")[0] ?? ""), 120), detail: clip(output, 1500) };
     case "accounts_report": {
       const recommendation = /^Recommendation: (.+?)\./m.exec(output)?.[1];
-      return { tool, state: running ? "running" : "done", line: running ? "Reading the accounts report…" : `Accounts report${recommendation ? ` · ${clip(recommendation, 90)}` : ""}`, detail: clip(output, 2000) };
+      const mode = /^Saved\. Smart placement: (off|shadow|live)\./.exec(output)?.[1];
+      const line = mode ? `Smart placement set to ${mode}` : /^Not changed: /.test(output) ? "Smart placement unchanged" : `Accounts report${recommendation ? ` · ${clip(recommendation, 90)}` : ""}`;
+      return { tool, state: running ? "running" : "done", line: running ? "Reading the accounts report…" : line, detail: clip(output, 2000) };
     }
   }
 }

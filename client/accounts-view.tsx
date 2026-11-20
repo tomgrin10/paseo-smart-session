@@ -157,6 +157,36 @@ function PooledRow({ theme, report }: { theme: Theme; report: Report }) {
   </CardRow>;
 }
 
+/** The one smart-placement line: what the rule would have done (shadow) or did (live), beside what happened. */
+export function placementFacts(p: NonNullable<Report["placement"]>): { label: string; facts: string } {
+  const live = p.mode === "live" && p.liveRefusal === null;
+  const label = p.mode === "off" ? "Off" : live ? "Live" : "Shadow";
+  if (p.mode === "off") return { label, facts: "ZeroSub places every session on its own." };
+  if (p.since === null) return { label, facts: "Watching. Nothing to compare yet." };
+  const sessions = (n: number) => `${n} ${n === 1 ? "session" : "sessions"}`;
+  const moved = live
+    ? `It moved ${sessions(p.moves.aheadOfWall)} before a 5-hour limit.`
+    : `It would have moved ${sessions(p.moves.aheadOfWall)} before a 5-hour limit and placed ${p.placed.differently} of ${p.placed.total} new sessions elsewhere.`;
+  const seen = p.forced.total > 0 ? ` It saw ${p.forced.foreseen} of ${p.forced.total} forced moves coming.` : " No forced moves.";
+  return { label, facts: `${moved}${seen} What happened: ${p.actual.cutOffs} ${p.actual.cutOffs === 1 ? "turn" : "turns"} stopped at a limit, ${hoursText(p.actual.waitingHours)} waiting.` };
+}
+
+function PlacementRow({ theme, p }: { theme: Theme; p: NonNullable<Report["placement"]> }) {
+  const c = theme.colors;
+  const t = text(c);
+  const { label, facts } = placementFacts(p);
+  return <CardRow theme={theme} first={false} style={{ gap: 2 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+      <Icon name="Shuffle" size={14} color={c.foregroundMuted} />
+      <Text style={t.label}>Smart placement</Text>
+      <Chip theme={theme} label={label} />
+      {p.since !== null ? <Text style={t.small}>{`since ${formatDay(p.since)}`}</Text> : null}
+    </View>
+    <Text style={{ ...t.meta, paddingLeft: 20 }}>{facts}</Text>
+    {p.mode === "live" && p.liveRefusal !== null ? <Text style={{ ...t.small, paddingLeft: 20, color: c.statusWarning }}>{p.liveRefusal}</Text> : null}
+  </CardRow>;
+}
+
 function StripKey({ theme }: { theme: Theme }) {
   const c = theme.colors;
   const t = text(c);
@@ -195,6 +225,7 @@ export function AccountsUseSection({ theme, compact, reports, error }: { theme: 
         {rows.map((m) => <AccountUseRow key={m.id} theme={theme} m={m} report={report} scale={scale} compact={compact} />)}
         {rows.length > 1 ? <PooledRow theme={theme} report={report} /> : null}
         <StripKey theme={theme} />
+        {report.placement !== undefined && rows.length > 1 ? <PlacementRow theme={theme} p={report.placement} /> : null}
       </Card>;
     })}
   </View>;
