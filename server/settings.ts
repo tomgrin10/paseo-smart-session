@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { dataDir } from "./store.ts";
 import { DEFAULT_THRESHOLDS, normalizeThresholds, type Thresholds } from "../shared/thresholds.ts";
 import { DEFAULT_SHED_THRESHOLDS, normalizeShedThresholds, type ShedThresholds } from "../shared/history-shed.ts";
+import { DEFAULT_REPORT_SETTINGS, normalizeReportSettings, type ReportSettings } from "../shared/accounts-report.ts";
 
 export interface Settings {
   /**
@@ -85,6 +86,11 @@ export interface Settings {
   readonly shedHistory: boolean;
   /** When a transcript is worth it: at least `minMb`, or at least `minCompactions` compactions. */
   readonly shedThresholds: ShedThresholds;
+  /**
+   * The Accounts report's thresholds and plan sizes (`shared/accounts-report.ts`): when to suggest
+   * adding or dropping an account or placing work better, and each account's relative plan size.
+   */
+  readonly accountsReport: ReportSettings;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -99,6 +105,7 @@ export const DEFAULT_SETTINGS: Settings = {
   publishAsExtraUsage: false,
   shedHistory: false,
   shedThresholds: DEFAULT_SHED_THRESHOLDS,
+  accountsReport: DEFAULT_REPORT_SETTINGS,
 };
 
 const filePath = () => join(dataDir(), "settings.json");
@@ -124,6 +131,7 @@ export async function readSettings(): Promise<Settings> {
       publishAsExtraUsage: raw.publishAsExtraUsage === true,
       shedHistory: raw.shedHistory === true,
       shedThresholds: normalizeShedThresholds(raw.shedThresholds),
+      accountsReport: normalizeReportSettings(raw.accountsReport),
     };
   } catch {
     cached = DEFAULT_SETTINGS;
@@ -145,6 +153,7 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
     publishAsExtraUsage: next.publishAsExtraUsage === true,
     shedHistory: next.shedHistory === true,
     shedThresholds: normalizeShedThresholds(next.shedThresholds),
+    accountsReport: normalizeReportSettings(next.accountsReport),
   };
   await mkdir(dataDir(), { recursive: true });
   const target = filePath();

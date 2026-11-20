@@ -13,6 +13,7 @@ export type AgentTool = {
 };
 export declare const AGENT_SCOPED: Set<string>;
 export declare const REPORT_DESCRIPTION: string;
-export declare function agentTools(context: AgentToolsContext): Record<"context_status" | "budget_status" | "checkpoint" | "request_compaction" | "defer_compaction" | "report_issue" | "report_send", AgentTool>;
+export declare const ACCOUNTS_REPORT_DESCRIPTION: string;
+export declare function agentTools(context: AgentToolsContext): Record<"context_status" | "budget_status" | "checkpoint" | "request_compaction" | "defer_compaction" | "report_issue" | "report_send" | "accounts_report", AgentTool>;
 export declare const TOOL_SHAPES: { name: string; description: string; inputSchema: Record<string, unknown> }[];
 export declare function named(text: string, native?: boolean): string;

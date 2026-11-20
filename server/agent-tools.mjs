@@ -27,6 +27,9 @@ export const AGENT_SCOPED = new Set(["context_status", "checkpoint", "request_co
  */
 export const REPORT_DESCRIPTION = "Report a bug, feature request or feedback about Smart Session to its GitHub. Call with kind+summary first; the reply has the procedure.";
 
+/** `accounts_report`'s one line (at most 150 characters; `accounts-report.test.ts` holds it). */
+export const ACCOUNTS_REPORT_DESCRIPTION = "How well your Claude accounts were used over 14 days (used, waiting, misplaced, all out) and whether to add or drop one. Read-only.";
+
 /**
  * @param {{ agentId: string | null, call: (method: string, input: unknown) => Promise<any>, home?: string, stateFile?: string, native?: boolean }} context
  */
@@ -274,6 +277,17 @@ export function agentTools(context) {
         }
         lines.push(...guard);
         return lines.join("\n");
+      },
+    },
+
+    accounts_report: {
+      description: ACCOUNTS_REPORT_DESCRIPTION,
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      async run() {
+        const result = await callPlugin("smart-session.accounts.report", {});
+        if (result?.error) return `Could not build the accounts report: ${result.error}`;
+        const lines = Array.isArray(result?.lines) ? result.lines.filter((line) => typeof line === "string") : [];
+        return lines.length > 0 ? lines.join("\n") : "No account readings recorded yet, so there is nothing to report.";
       },
     },
 
