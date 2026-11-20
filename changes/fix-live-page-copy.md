@@ -1,7 +1,9 @@
 - The Subscriptions headline names each account once when it says who takes over next. It used to say "Account 2 takes over at 11:29 AM · then Account 2 at 11:31 AM" when two accounts handed their work to the same one.
-- An account whose 5-hour window hasn't started since its last reset now says "starts at first use" instead of "reset · was Wed 3:59 PM". A reset that passed with no newer reading says "no reading since", and a reset a week away shows its date ("Nov 27 4:00 AM") instead of a weekday that is also today's.
+- An account whose 5-hour window hasn't started since its last reset now says "starts at first use" instead of "reset · was Wed 3:59 PM". A reset that passed with no newer reading says "no reading since".
+- A reset a week away shows its date ("Nov 27 4:00 AM") instead of a weekday that is also today's.
 - A 5-hour window only minutes old is no longer projected from a single 1% step. An account at 1% no longer "runs out" within the hour or shows "on pace for ~97%".
 - A Codex plan that reports only a weekly limit says so in its details, instead of "No readings of the open window yet" and "None recorded yet".
-- The Accounts recommendation no longer repeats its verdict date or says "account Account 3": "Account 3 is new. It would have covered 15 h of the waiting." An account that has been there since the history began is no longer called new; it says "Not enough history yet".
+- The Accounts recommendation no longer repeats its verdict date or says "account Account 3": "Account 3 is new. It would have covered 15 h of the waiting."
+- An account that has been there since the history began is no longer called new. It says "Not enough history yet".
 - The Smart placement line folds zero counts ("It saw no new sessions" instead of "placed 0 of 0 new sessions elsewhere") and shows the same facts as `smart_accounts_report`, rebalances included.
 - When the readings cover fewer days than the report's 14, the page and the text report both say how many ("Based on 6,099 readings over 12 days (since Nov 8)"), matching "Replay over 12 days".
