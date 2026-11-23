@@ -46,6 +46,12 @@ export function owedSince(item, events) {
   return Date.parse(confirmed) - Date.parse(item.settledAt) <= LANDS_WITHIN_MS ? confirmed : null;
 }
 
+/** Mirrors `supersededBy` in `server/compaction-tick.ts`: a newer delivered compaction of the agent supersedes this one. */
+export function supersededIn(item, mine) {
+  const at = Date.parse(item?.settledAt ?? "");
+  return mine.some((other) => other !== item && other?.state === "sent" && typeof other.settledAt === "string" && Date.parse(other.settledAt) > at);
+}
+
 /** Mirrors `LANDS_WITHIN_MS` in `shared/governor.ts` (tested). */
 export const LANDS_WITHIN_MS = 15 * 60_000;
 
@@ -59,8 +65,9 @@ export function continuationNotice(event, { now = Date.now(), env = process.env 
     if (typeof agentId !== "string" || agentId === "") return null;
     if (typeof event.prompt === "string" && /^\s*\/compact\b/.test(event.prompt)) return null;
     const events = compactionEvents();
-    const owed = compactions()
-      .filter((item) => item?.agentId === agentId)
+    const mine = compactions().filter((item) => item?.agentId === agentId);
+    const owed = mine
+      .filter((item) => !supersededIn(item, mine))
       .map((item) => ({ item, since: owedSince(item, events) }))
       .filter(({ since }) => since !== null && now - Date.parse(since) <= CONTINUATION_CAP_MS)
       .sort((a, b) => Date.parse(b.since) - Date.parse(a.since))[0];

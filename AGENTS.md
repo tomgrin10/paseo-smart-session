@@ -341,7 +341,8 @@
   `UserPromptSubmit` through `detached.mjs`: "answer this message first, then carry on"); or `CONTINUATION_CAP_MS`
   (2 h) after the compaction passes, when it is dropped and logged. Whoever creates
   `continuations/<requestId>.json` (exclusive create, `server/hooklib/continuation.mjs`) delivers it, so the hook and
-  the governor never both do; the queue records which (`resumedVia`: `sent`, `prompt`, `stale`) and the popover's
+  the governor never both do; only the agent's newest delivered compaction can owe one (`supersededBy`; an older owed
+  row is dropped as `stale`: beta.19 sent an agent two after its install); the queue records which (`resumedVia`: `sent`, `prompt`, `stale`) and the popover's
   Last compaction says it (`continuationNote`). Only queue rows owe one: a `/compact` a person typed is followed by
   nothing, and a hook record more than `LANDS_WITHIN_MS` after a delivery the governor never saw land doesn't confirm
   it. Root cause it fixes (2026-11-23): landing was checked only while the agent was idle, within 5 minutes of

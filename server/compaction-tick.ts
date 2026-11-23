@@ -158,6 +158,15 @@ function mayOwe(item: CompactionRequest): boolean {
   return Date.now() - Date.parse(item.settledAt) < CONTINUATION_CAP_MS + GRADE_WINDOW_MS + OWED_SLACK_MS;
 }
 
+/**
+ * The agent's newer delivered compaction request, or null. Only the newest compaction's continuation can be owed.
+ * Mirrored in `hooks/continuation.mjs` (tested).
+ */
+export function supersededBy(item: CompactionRequest, all: readonly CompactionRequest[]): CompactionRequest | null {
+  return all.find((other) => other.id !== item.id && other.agentId === item.agentId && other.state === "sent" && other.settledAt !== null
+    && item.settledAt !== null && Date.parse(other.settledAt) > Date.parse(item.settledAt)) ?? null;
+}
+
 /** A compaction itself can take minutes; a row this far past its cap is never owed anything. */
 const OWED_SLACK_MS = 60 * 60_000;
 
@@ -174,10 +183,21 @@ const sendFailed = new Set<string>();
  */
 async function continueOwed<C>(io: TickIo<C>, client: C, agents: Map<string, AgentRow>, events: readonly CompactionEvent[]): Promise<Set<string>> {
   const sentTo = new Set<string>();
-  for (const item of (await queue.list()).filter(mayOwe)) {
+  const all = await queue.list();
+  for (const item of all.filter(mayOwe)) {
     const confirmed = continuationOwed(item, events);
     if (confirmed === null) continue;
     const who = item.agentId.slice(0, 8);
+
+    // A newer compaction of the same agent supersedes this one: its continuation (or its choice of none) is the
+    // current one. Root cause (2026-11-23, beta.19): an agent with two owed rows was sent the older one too.
+    if (supersededBy(item, all) !== null) {
+      if (readClaim(item.id) === null && claimContinuation(item.id, "stale")) {
+        console.log(`[smart-session] dropped ${who}'s older continuation: a newer compaction supersedes it`);
+      }
+      await queue.update(item.id, { resumedVia: "stale" });
+      continue;
+    }
     if (item.confirmedAt === null) await queue.update(item.id, { confirmedAt: confirmed });
 
     // Someone already has it: record who, and never deliver it again.

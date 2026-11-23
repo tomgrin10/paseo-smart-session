@@ -265,3 +265,33 @@ test("the hook's mirrors match the governor's rules", () => {
     assert.equal(hook.owedSince(item, events), continuationOwed(item, events), JSON.stringify(patch));
   }
 });
+
+test("a newer compaction supersedes an older owed continuation: only the newest goes out, by the governor or the prompt", async () => {
+  const dir = home();
+  const { io, sends } = daemon();
+  const older = new Date(Date.now() - 40 * 60_000).toISOString();
+  const newer = new Date(Date.now() - 5 * 60_000).toISOString();
+  // Two confirmed compactions of one agent, neither continued yet (what beta.19 found live after its install).
+  seed(dir, [
+    request({ id: "req-old", state: "sent", settledAt: older, createdAt: older, continuationMessage: "Old task." }),
+    request({ id: "req-new", state: "sent", settledAt: newer, createdAt: newer, continuationMessage: "New task." }),
+  ]);
+  compacted(dir, new Date(Date.parse(older) + 60_000).toISOString());
+  compacted(dir, new Date(Date.parse(newer) + 60_000).toISOString());
+  await tick(io);
+  await tick(io);
+  await tick(io);
+  assert.deepEqual(sends, ["New task."], "the older one is never sent");
+  const rows = await items();
+  assert.equal(rows.find((r) => r.id === "req-old")?.resumedVia, "stale");
+  assert.equal(rows.find((r) => r.id === "req-new")?.resumedVia, "sent");
+
+  // The prompt route picks the newest too, and never the superseded one.
+  const dir2 = home();
+  seed(dir2, [
+    request({ id: "p-old", state: "sent", settledAt: older, createdAt: older, continuationMessage: "Old task." }),
+    request({ id: "p-new", state: "sent", settledAt: newer, createdAt: newer, continuationMessage: "New task.", continueAfterCompaction: false }),
+  ]);
+  compacted(dir2, new Date(Date.parse(older) + 60_000).toISOString());
+  assert.equal(await prompt(dir2), "", "the newest asked for no continuation, so nothing rides the prompt");
+});
