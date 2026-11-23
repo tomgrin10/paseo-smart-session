@@ -49,6 +49,12 @@ export const CompactionRequestSchema = z.object({
    * the default or agent-supplied follow-up once and records that it did.
    */
   resumedAt: z.string().nullable(),
+  /**
+   * How the continuation went: `sent` by the governor at an idle moment, `prompt` added to the next message that
+   * reached the session (`hooks/continuation.mjs`), `stale` dropped because the session stayed busy past
+   * `CONTINUATION_CAP_MS` after the compaction. Null while it waits, when none was asked for, and on older rows.
+   */
+  resumedVia: z.enum(["sent", "prompt", "stale"]).nullable(),
   /** 0 for a request an agent or person made; n for the governor's nth retry of a cancelled one. */
   attempt: z.number(),
   /** The cancelled request this one retries, or null. */
@@ -160,7 +166,61 @@ export function compactionLine(item: CompactionRequest | undefined, now: number)
   }
   const when = formatRelative(confirmed, now);
   const sizes = item.preTokens !== null && item.postTokens !== null ? ` · ${formatCompactTokens(item.preTokens)} → ${formatCompactTokens(item.postTokens)}` : "";
-  return `${when}${sizes}${item.attempt > 0 ? ` · on retry ${item.attempt}` : ""}`;
+  const continued = continuationNote(item, Date.parse(confirmed), now);
+  return `${when}${sizes}${item.attempt > 0 ? ` · on retry ${item.attempt}` : ""}${continued === null ? "" : ` · ${continued}`}`;
+}
+
+/** How the continuation of a confirmed compaction went, in the popover's words, or null when none was asked for. */
+export function continuationNote(item: Pick<CompactionRequest, "continueAfterCompaction" | "resumedVia" | "resumedAt">, confirmedMs: number, now: number): string | null {
+  if (!item.continueAfterCompaction) return null;
+  switch (item.resumedVia) {
+    case "sent": return "continuation sent";
+    case "prompt": return "continuation added to the next message";
+    case "stale": return "continuation dropped as stale";
+  }
+  // Rows from before `resumedVia` say only `resumedAt`; one older than the cap with neither is history nobody can
+  // tell apart, so it says nothing rather than promise a send.
+  if (item.resumedAt !== null) return "continuation sent";
+  return now - confirmedMs <= CONTINUATION_CAP_MS ? "continuation sent when idle" : null;
+}
+
+/**
+ * How long after a confirmed compaction its continuation may still go out. A session busy or idle for longer than this
+ * gets no task restart from hours ago; the governor logs and drops it (`resumedVia: "stale"`). Mirrored in
+ * `hooks/continuation.mjs` (tested).
+ */
+export const CONTINUATION_CAP_MS = 2 * 60 * 60_000;
+
+/**
+ * When the compaction whose continuation is still owed was confirmed, or null when nothing is owed.
+ *
+ * Invariant: a confirmed compaction's continuation is never silently dropped. It is owed from the moment the
+ * compaction is confirmed (whatever the agent is doing) until the governor sends it at an idle moment, the next
+ * prompt carries it (`hooks/continuation.mjs`), or `CONTINUATION_CAP_MS` passes. Only queue rows owe one, so a
+ * `/compact` a person typed is never followed by anything. Mirrored by `owedSince` in `hooks/continuation.mjs`.
+ */
+export function continuationOwed(
+  item: CompactionRequest,
+  events: readonly { agentId?: unknown; event?: unknown; at?: unknown }[] = [],
+): string | null {
+  if (!item.continueAfterCompaction || item.resumedAt !== null || item.resumedVia !== null) return null;
+  if (item.cancelledAt !== null || item.retriedBy !== null || item.error !== null) return null;
+  const confirmed = confirmation(item, events);
+  // Recorded by the governor, or read from the hook's record of a compaction soon after delivery: a person's own
+  // `/compact` hours after a delivery whose watch a reload lost is not this request landing.
+  if (confirmed === null || item.confirmedAt !== null || item.postTokens !== null) return confirmed;
+  return Date.parse(confirmed) - Date.parse(item.settledAt ?? "") <= LANDS_WITHIN_MS ? confirmed : null;
+}
+
+/** A hook record this long after delivery isn't taken as the request landing, when the governor didn't see it land. */
+export const LANDS_WITHIN_MS = 15 * 60_000;
+
+/**
+ * What the next prompt is told when it arrives before the continuation went out. The continuation rides that turn
+ * instead of a second message. Mirrored in `hooks/continuation.mjs` (tested).
+ */
+export function promptContinuation(continuation: string): string {
+  return `Smart Compact: before compacting you asked to carry on with: ${continuation} Answer this message first, then carry on with that if it still applies.`;
 }
 
 /** The retry of a cancelled request: the same ask, queued again. */
@@ -180,6 +240,7 @@ export function retryRequest(item: CompactionRequest, id: string, createdAt: str
     preTokens: null,
     postTokens: null,
     resumedAt: null,
+    resumedVia: null,
     attempt: item.attempt + 1,
     retryOf: item.id,
     retriedBy: null,

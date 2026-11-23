@@ -10,11 +10,13 @@
  * instance (`detachedOnce`).
  *
  * On `UserPromptSubmit` it also looks for a `/compact` the prompt just cancelled (`cancelled.mjs`) and for
- * background jobs a session restart killed (`killed-jobs.mjs`).
+ * background jobs a session restart killed (`killed-jobs.mjs`), and carries a confirmed compaction's continuation the
+ * governor has not sent yet (`continuation.mjs`).
  */
 
 import { BRIDGE } from "./ask.mjs";
 import { noteCancelledCompaction } from "./cancelled.mjs";
+import { continuationNotice } from "./continuation.mjs";
 import { detachedOnce, isPublishHelper, markDetachedTold } from "./context.mjs";
 import { killedJobsNotice, markKilledTold } from "./killed-jobs.mjs";
 
@@ -40,8 +42,10 @@ async function main() {
   const cancelled = name === "UserPromptSubmit" ? noteCancelledCompaction(event, { prompting: true }) : null;
   // The first prompt after a restart: name the background jobs it killed.
   const killed = name === "UserPromptSubmit" ? killedJobsNotice(event) : null;
+  // A prompt that arrived after a compaction, before its continuation went out: the continuation rides this turn.
+  const continuation = name === "UserPromptSubmit" ? continuationNotice(event) : null;
   const notice = detachedOnce(BRIDGE);
-  const text = [killed?.text ?? null, cancelled, notice?.text ?? null].filter((part) => part !== null).join("\n\n");
+  const text = [killed?.text ?? null, cancelled, continuation, notice?.text ?? null].filter((part) => part !== null).join("\n\n");
   if (text === "") return;
   process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: name, additionalContext: text }, suppressOutput: true })}\n`);
   if (notice !== null) markDetachedTold(notice.instance);

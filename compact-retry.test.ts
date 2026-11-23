@@ -49,6 +49,7 @@ function request(patch: Partial<CompactionRequest> = {}): CompactionRequest {
     preTokens: 307_740,
     postTokens: null,
     resumedAt: null,
+    resumedVia: null,
     attempt: 0,
     retryOf: null,
     retriedBy: null,
@@ -147,7 +148,7 @@ test("every way a request ends is said in the popover, and the retry carries the
   assert.equal(lines.limit, "Interrupted · retry limit reached");
   assert.equal(lines.queued, "Interrupted · newer one queued");
   assert.match(lines.stopped, /^Stopped · not retried · /);
-  assert.match(lines.landedOnRetry, / · on retry 1$/);
+  assert.match(lines.landedOnRetry, / · on retry 1 · continuation sent when idle$/);
   for (const verdict of ["retry", "queued", "limit", "stopped"] as const) assert.match(cancelledError(verdict), verdict === "retry" ? /Retried/ : /Not retried/);
 
   // The timeline card says it is a retry, and still reads the agent's reason and state file.
@@ -233,7 +234,8 @@ test("nothing is read or recorded without a delivered, unconfirmed /compact", as
   const cases: [string, CompactionRequest[]][] = [
     ["no request", []],
     ["still queued", [request({ ...recent, state: "pending", settledAt: null })]],
-    ["confirmed", [request({ ...recent, confirmedAt: at(30_000), postTokens: 40_000 })]],
+    // Its continuation already went out, so nothing rides this prompt either (`continuation.test.ts`).
+    ["confirmed", [request({ ...recent, confirmedAt: at(30_000), postTokens: 40_000, resumedAt: at(31_000), resumedVia: "sent" })]],
     ["another agent's", [request({ ...recent, agentId: "b" })]],
     ["already settled", [request({ ...recent, error: "x" })]],
   ];

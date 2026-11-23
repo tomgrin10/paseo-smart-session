@@ -323,9 +323,9 @@
   `server/hooklib/asks.mjs` (ledger), so they never disagree about whether to speak. A saved settings file
   without `now` keeps its `compact` as the lower line and gains the default distance above it.
   User-facing words for both lines live in `shared/compact-lines.ts`.
-- Smart Compact sends an agent at most two things, and `sendToAgent` has exactly two call sites: the
-  `/compact` the agent asked for, and, when that agent requests one, a continuation message after it
-  lands. Anything else it needs to hear comes from a hook. Adding a third is a design change, not a
+- Smart Compact sends an agent at most two things, and `sendToAgent` has exactly two call sites (both in
+  `server/compaction-tick.ts`, through the tick's `io`): the `/compact` the agent asked for, and, when that agent
+  requests one, a continuation message after it lands. Anything else it needs to hear comes from a hook. Adding a third is a design change, not a
   patch — if you think you need one, check `RESEARCH.md` §3.4 first, because it probably records why
   the hook route you are about to reimplement does not work. Session Guard's messages are separate
   and are listed in its own section.
@@ -333,6 +333,20 @@
   chooses whether to send it and may supply its exact text; omission preserves the state-aware
   default for compatibility. It is sent only for queue-originated compactions, so a `/compact` a
   person typed is never overridden.
+- **Invariant: a confirmed compaction's continuation is never silently dropped.** A compaction the session's
+  PostCompact/SessionStart:compact hook recorded after delivery is confirmed at once, whatever the agent is doing (the
+  token-drop check still needs idle). From then its continuation is owed (`continuationOwed`, read from the queue, so
+  a reload or a long turn doesn't lose it) until one of three things: the governor sends it at the next idle moment;
+  a prompt that reached the session first carries it as `additionalContext` (`hooks/continuation.mjs`, on
+  `UserPromptSubmit` through `detached.mjs`: "answer this message first, then carry on"); or `CONTINUATION_CAP_MS`
+  (2 h) after the compaction passes, when it is dropped and logged. Whoever creates
+  `continuations/<requestId>.json` (exclusive create, `server/hooklib/continuation.mjs`) delivers it, so the hook and
+  the governor never both do; the queue records which (`resumedVia`: `sent`, `prompt`, `stale`) and the popover's
+  Last compaction says it (`continuationNote`). Only queue rows owe one: a `/compact` a person typed is followed by
+  nothing, and a hook record more than `LANDS_WITHIN_MS` after a delivery the governor never saw land doesn't confirm
+  it. Root cause it fixes (2026-11-23): landing was checked only while the agent was idle, within 5 minutes of
+  delivery; a person's message right after the compaction kept it busy, the watch ran out, `settleUnlanded`
+  confirmed it from the hook's record and the continuation was never sent (`continuation.test.ts`).
 - Deliver only at a turn boundary, only when task state on disk is current, and never retry a `/compact` whose send
   a restart interrupted (`recoverInterrupted`): it is destructive and not idempotent, and nobody knows whether it ran.
   A `/compact` Claude Code reports cancelled is different: no compaction ran, so it is retried (below).
