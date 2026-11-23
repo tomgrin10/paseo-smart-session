@@ -7,4 +7,4 @@
  * (`package.json`), which is how `resolvePluginDir()` tells the install that is running
  * from a stale one during an update. `version.test.ts` keeps it equal to `package.json`.
  */
-export const PLUGIN_VERSION = "3.8.0-beta.15";
+export const PLUGIN_VERSION = "3.8.0-beta.16";
