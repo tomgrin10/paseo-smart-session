@@ -43,13 +43,15 @@ class ZeroSub {
   opened: Record<string, number> = {};
   readings: Record<string, Reading> = {};
   autoSwitch = true;
+  /** ZeroSub's bindings: why each agent is where it is (`source: "user"` is a pin). */
+  bindings: Record<string, { accountId: string; source: string; at: string }> = {};
   constructor(accounts: Acct[]) { this.accounts = accounts; }
   account(id: string) { return this.accounts.find(a => a.id === id)!; }
   state() {
     return {
       version: 1,
       accounts: this.accounts.map(a => ({ label: `${a.id}@example.com`, autoLabel: true, home: a.kind === "main" ? null : `/nowhere/${a.id}`, email: `${a.id}@example.com`, signedIn: true, disabled: false, limitedUntil: null, createdAt: iso(T0 - 86_400_000), ...a })),
-      defaults: { claude: null, codex: null }, bindings: {},
+      defaults: { claude: null, codex: null }, bindings: this.bindings,
       sessions: Object.fromEntries(Object.entries(this.sessions).map(([agentId, accountId]) => [agentId, { accountId, family: accountId.split("-")[0], openedAt: iso(this.opened[agentId] ?? T0) }])),
       continuations: {},
     };
@@ -899,4 +901,161 @@ test("seam D: the chat card for a move continuation says it moved", () => {
   assert.equal(promptCard(PolicySchema.parse({}).continuation)?.kind, "guard-continue");
   // A custom continuation keeps its own words after the move's lead.
   assert.equal(continuationText(PolicySchema.parse({ continuation: "Carry on." }), true), `${MOVED_LEAD} Carry on.`);
+});
+
+// --------------------------------------------------------------------------- held-background-work
+
+// 2026-11-22: an account hit its limit; two held sessions each had one background job, so ZeroSub's
+// move waited for them, and they sat stopped for up to 43 minutes while another account had room.
+// Invariant (`held-background-work`): waiting for background work is right only while it's short.
+// The guard waits up to its grace (10 min), unless the session's own account resets within it,
+// then stops the work and moves the session; the continuation names what it stopped.
+const { HELD_LABELS, heldLabel, moveWaitLine } = hold;
+const TEST_JOB = { kind: "shell", description: "Run the test suite", command: "npm test" };
+/** ZeroSub with `stopBackgroundWork` (1.5.1-pace.14): waits for the agent's jobs unless asked to stop them. */
+function zerosubWithJobs(f: () => { zs: ZeroSub; now: number }, jobs: { kind: string; description: string | null; command: string | null }[]) {
+  const calls: { stop: boolean }[] = [];
+  const rpc = async (method: string, input: { agentId: string; accountId: string; stopBackgroundWork?: boolean }) => {
+    assert.equal(method, MOVE_RPC);
+    calls.push({ stop: input.stopBackgroundWork === true });
+    if (jobs.length > 0 && !input.stopBackgroundWork) return { outcome: "waiting", detail: "It moves once its background jobs end.", waitingFor: "background", backgroundWork: jobs, stopped: [] };
+    f().zs.move(input.agentId, input.accountId, f().now + 1_000);
+    const stopped = jobs.splice(0);
+    return { outcome: "moved", detail: null, waitingFor: null, backgroundWork: [], stopped };
+  };
+  return { rpc, calls };
+}
+/** A at 92% resetting at `aResets`, B with room; both read at `at`. */
+function heldOnA(zs: ZeroSub, at: number, aResets = T0 + 47 * MIN) {
+  zs.read("claude-a", { at, fiveHour: 92, fiveResets: aResets, weekly: 60 });
+  zs.read("claude-b", { at, fiveHour: 6, fiveResets: T0 + 5 * HOUR, weekly: 40 });
+}
+async function heldWithJobs(t: Parameters<typeof fixture>[0], jobs: { kind: string; description: string | null; command: string | null }[] = [{ ...TEST_JOB }], opts: { aResets?: number; policy?: Partial<Policy> } = {}) {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  const zerosub = zerosubWithJobs(() => f, jobs);
+  f = await fixture(t, { native: true, policy: { thresholdPct: 90, ...opts.policy }, rpc: (m, i) => zerosub.rpc(m, i) });
+  f.engine.zerosubPluginId = async () => "zerosub";
+  f.zs.sessions.x = "claude-a";
+  heldOnA(f.zs, T0, opts.aResets);
+  const tickAt = async (ms: number) => { f.at(ms); heldOnA(f.zs, ms, opts.aResets); await f.engine.tick(); };
+  return { f, zerosub, tickAt, jobs };
+}
+
+test("held-background-work invariant: past the grace, with the reset further away, the guard stops the work and moves the session", async t => {
+  const { f, zerosub, tickAt } = await heldWithJobs(t);
+  await tickAt(T0);
+  const [pause] = await f.pauses();
+  assert.deepEqual(pause!.moveWait, { since: iso(T0), jobs: [TEST_JOB], plan: "move", at: iso(T0 + 10 * MIN) });
+  assert.equal(heldLabel(pause!), HELD_LABELS.moving);
+  assert.equal(moveWaitLine(pause!, T0, (at: string) => at), `Moves at ${iso(T0 + 10 * MIN)} unless its background job "Run the test suite" ends first`);
+  await tickAt(T0 + 9 * MIN);
+  assert.ok(zerosub.calls.every(c => !c.stop), "no job is stopped within the grace");
+  await tickAt(T0 + 10 * MIN);
+  assert.deepEqual(zerosub.calls.at(-1), { stop: true }, "at the grace's end ZeroSub is asked to stop the work and move it");
+  assert.equal(f.zs.sessions.x, "claude-b");
+  assert.equal(f.sent.length, 0);
+  await tickAt(T0 + 10 * MIN + 30_000);
+  assert.equal(f.sent.length, 1, "continued on B");
+  assert.match(f.sent[0]!, /^Your previous turn was paused at the usage limit, and this session has since moved/);
+  assert.match(f.sent[0]!, /stopped the background job it had running: "Run the test suite" \(shell\)\. Start again any you still need\./);
+  assert.equal((await f.pauses())[0]!.phase, "resumed");
+});
+
+test("held-background-work: a job that ends within the grace moves the session without stopping anything", async t => {
+  const { f, zerosub, tickAt, jobs } = await heldWithJobs(t);
+  await tickAt(T0);
+  await tickAt(T0 + 3 * MIN);
+  jobs.splice(0); // The test run finished; ZeroSub's upkeep moves the session then.
+  f.zs.move("x", "claude-b", T0 + 4 * MIN);
+  await tickAt(T0 + 4 * MIN + 30_000);
+  assert.ok(zerosub.calls.every(c => !c.stop));
+  assert.equal(f.sent.length, 1);
+  assert.doesNotMatch(f.sent[0]!, /stopped/);
+});
+
+test("held-background-work: when the account resets within the grace, the session waits for the reset and no job is stopped", async t => {
+  const { f, zerosub, tickAt } = await heldWithJobs(t, undefined, { aResets: T0 + 15 * MIN });
+  await tickAt(T0);
+  const [pause] = await f.pauses();
+  assert.deepEqual(pause!.moveWait, { since: iso(T0), jobs: [TEST_JOB], plan: "reset", at: iso(T0 + 15 * MIN) });
+  assert.equal(heldLabel(pause!), HELD_LABELS.reset);
+  assert.equal(moveWaitLine(pause!, T0, (at: string) => at), `Waits for the ${iso(T0 + 15 * MIN)} reset, so its background job "Run the test suite" keeps running`);
+  await tickAt(T0 + 12 * MIN);
+  assert.ok(zerosub.calls.every(c => !c.stop));
+  assert.equal(f.zs.sessions.x, "claude-a");
+});
+
+test("held-background-work: work that only watches moves at once", async t => {
+  const { f, zerosub, tickAt } = await heldWithJobs(t, [{ kind: "monitor", description: "Watch CI", command: null as string | null }]);
+  await tickAt(T0);
+  assert.equal((await f.pauses())[0]!.moveWait?.at, iso(T0));
+  await tickAt(T0 + 15_000);
+  assert.deepEqual(zerosub.calls.at(-1), { stop: true });
+  assert.equal(f.zs.sessions.x, "claude-b");
+});
+
+test("held-background-work: never stopped for a pinned session, a protection override, the setting at 0, or automatic switching off", async t => {
+  const cases: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void> | void, Partial<Policy>?][] = [
+    ["pinned", f => { f.zs.bindings.x = { accountId: "claude-a", source: "user", at: iso(T0 - HOUR) }; }],
+    ["override", async f => { await f.engine.setProtection("x", true, "test"); }],
+    ["setting", () => undefined, { stopBackgroundWorkAfterMinutes: 0 }],
+    ["autoSwitch", () => undefined],
+  ];
+  for (const [why, arrange, policy] of cases) {
+    const { f, zerosub, tickAt } = await heldWithJobs(t, undefined, { policy });
+    await arrange(f);
+    await tickAt(T0);
+    if (why === "autoSwitch") f.zs.autoSwitch = false;
+    else assert.equal((await f.pauses())[0]!.moveWait?.why, why, why);
+    await tickAt(T0 + 15 * MIN);
+    await tickAt(T0 + 30 * MIN);
+    assert.ok(zerosub.calls.every(c => !c.stop), `${why}: nothing stopped`);
+    assert.equal(f.zs.sessions.x, "claude-a", why);
+  }
+});
+
+test("held-background-work: a closed or archived session is never moved or woken", async t => {
+  for (const change of [(a: Agent) => { a.status = "closed"; }, (a: Agent) => { a.archivedAt = iso(T0 + MIN); }]) {
+    const { f, zerosub, tickAt } = await heldWithJobs(t);
+    await tickAt(T0);
+    change(f.agent);
+    await tickAt(T0 + 10 * MIN);
+    await tickAt(T0 + 11 * MIN);
+    assert.ok(zerosub.calls.every(c => !c.stop));
+    assert.equal(f.sent.length, 0);
+  }
+});
+
+test("held-background-work: Move now stops the work and moves the session at once", async t => {
+  const { f, zerosub, tickAt } = await heldWithJobs(t);
+  await tickAt(T0);
+  const [pause] = await f.pauses();
+  assert.deepEqual(await f.engine.moveNow("x", pause!.id), { outcome: "moved", detail: null });
+  assert.deepEqual(zerosub.calls.at(-1), { stop: true });
+  await tickAt(T0 + MIN);
+  assert.match(f.sent[0]!, /"Run the test suite" \(shell\)/);
+});
+
+test("held-background-work: a ZeroSub without the option waits for the work, says so honestly, and Move now explains", async t => {
+  let asked = 0;
+  const f = await fixture(t, { native: true, policy: { thresholdPct: 90 }, rpc: async (_m, input) => { asked++; assert.equal(input.stopBackgroundWork, undefined); return { outcome: "waiting", detail: "It moves once its turn and background jobs end." }; } });
+  f.engine.zerosubPluginId = async () => "zerosub";
+  f.zs.sessions.x = "claude-a";
+  heldOnA(f.zs, T0);
+  await f.engine.tick();
+  const [pause] = await f.pauses();
+  assert.equal(pause!.moveWait?.why, "unsupported");
+  assert.equal(heldLabel(pause!), HELD_LABELS.jobs);
+  assert.equal(moveWaitLine(pause!, T0, (at: string) => at), "Moves to an account with room once its turn or background work ends");
+  for (const at of [T0 + 10 * MIN, T0 + 20 * MIN]) { f.at(at); heldOnA(f.zs, at); await f.engine.tick(); }
+  assert.ok(asked <= 3, "an older ZeroSub is asked once per grace at most");
+  assert.equal(f.zs.sessions.x, "claude-a");
+  await assert.rejects(f.engine.moveNow("x", pause!.id), /can't stop background work/);
+});
+
+test("held-background-work: the continuation names stopped jobs without their secrets", () => {
+  const text = hold.continuationText(PolicySchema.parse({}), true, [{ kind: "shell", description: null, command: "DEPLOY_TOKEN=abc123 ./deploy.sh --password hunter2" }]);
+  assert.doesNotMatch(text, /abc123|hunter2/);
+  assert.match(text, /`DEPLOY_TOKEN=… \.\/deploy\.sh --password …` \(shell\)/);
+  assert.equal(promptCard(text)?.kind, "guard-moved", "the chat card still reads it as a move");
 });
