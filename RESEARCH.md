@@ -288,6 +288,10 @@ also got a message 1.5 s later, while its status was still `running`.
 This is why `hooks/cancelled.mjs` reads the transcript on `UserPromptSubmit` (and on `Stop` as a fallback) and the
 governor re-queues the request.
 
+The same `UserPromptSubmit` `additionalContext` carries a compaction's continuation when a prompt reaches the session
+after the compaction and before the governor could send it (`hooks/continuation.mjs`). Re-checked against 2.1.323's
+binary (2026-11-23): its hook-output schema still has `{ hookEventName: "UserPromptSubmit", additionalContext }`.
+
 ### 3.7 A session reopen kills background jobs — measured on Paseo 0.16.0-beta.1 and Claude Code 2.1.322 (2026-11-11)
 
 - Paseo closes the agent's Claude process whenever it reopens a session (`reloadAgentSessionInternal`:
