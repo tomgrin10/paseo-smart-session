@@ -286,6 +286,7 @@
   adding no pace. Rows, the lead, the runway and the popover all read their times from that one
   simulation, so they never disagree. `client/subscriptions.ts` is the one poll; without ZeroSub
   (or with a single login) every view stays as it was.
+- The usage source registers only the Claude provider hint, since it discovers only Claude accounts. Reports preserve their reading time in `observedAt`; known session and weekly windows carry `durationSeconds`.
 - Paseo 0.16's usage card (`shared/usage-source.ts`, `server/usage-source.ts`): one source, `smart-session`, never
   `claude`. Invariant: **Paseo's own Claude card is shown only when it may know something ours doesn't.** Ours takes
   the newer of ZeroSub's reading and the built-in's for the login (`shared/builtin-usage.ts`; read from the daemon's

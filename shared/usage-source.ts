@@ -45,6 +45,7 @@ export interface UsageWindowOut {
   usedPct: number | null;
   remainingPct: number | null;
   resetsAt: string | null;
+  durationSeconds?: number;
   runsOutAt?: string | null;
   shortfallPct?: number | null;
   tone?: UsageTone;
@@ -58,7 +59,7 @@ export interface UsageDetailOut {
 }
 
 export type UsageReportOut =
-  | { status: "available"; planLabel?: string; windows: UsageWindowOut[]; balances?: []; details?: UsageDetailOut[] }
+  | { status: "available"; observedAt?: string; planLabel?: string; windows: UsageWindowOut[]; balances?: []; details?: UsageDetailOut[] }
   | { status: "error"; error: string };
 
 export interface UsageAccountOut {
@@ -204,11 +205,14 @@ const ORDER = (id: string) => (id === "five_hour" ? 0 : id === "weekly" ? 1 : 2)
 export function reportWindow(window: SubscriptionWindow, stale: boolean, now: number, zerosubLabel?: string): UsageWindowOut {
   const named = paseoWindow(window.id, zerosubLabel);
   const used = Math.min(100, Math.max(0, window.pct));
+  const durationSeconds = window.id === "five_hour" ? 5 * 3600
+    : named.id === "weekly" || named.id.startsWith("weekly_") ? 7 * 24 * 3600 : undefined;
   const out: UsageWindowOut = {
     ...named,
     usedPct: used,
     remainingPct: 100 - used,
     resetsAt: window.resetsAt,
+    ...(durationSeconds === undefined ? {} : { durationSeconds }),
   };
   if (named.shortLabel === "") delete out.shortLabel;
   if (stale) {
@@ -328,7 +332,7 @@ export function buildReport(state: SourceState, input: UsageInput, now: number):
     const at = rec.readAt === null ? NaN : Date.parse(rec.readAt);
     const stale = !Number.isFinite(at) || now - at > STALE_MS;
     const details = [stale ? readingDetail(rec.readAt, now) : null, extraDetail(rec.extraUsage)].filter((d): d is UsageDetailOut => d !== null);
-    return { status: "available", windows: windowsOf(rec.windows, stale, now, {}), balances: [], details };
+    return { status: "available", ...observation(rec.readAt), windows: windowsOf(rec.windows, stale, now, {}), balances: [], details };
   }
 
   const zs = state.zerosub;
@@ -358,12 +362,18 @@ export function buildReport(state: SourceState, input: UsageInput, now: number):
   const age = stale && account.readAt ? `${formatDuration(now - Date.parse(account.readAt))} old` : null;
   return {
     status: "available",
+    ...observation(account.readAt),
     // Stale, the badge says so: it is the most visible slot a card gives us.
     planLabel: age ? `${account.name} · ${age}` : badge(account.name, extras?.plan ?? null),
     windows,
     balances: [],
     details,
   };
+}
+
+/** Preserve measurement time rather than making cached usage look freshly observed. */
+function observation(at: string | null): { observedAt?: string } {
+  return at !== null && Number.isFinite(Date.parse(at)) ? { observedAt: at } : {};
 }
 
 const STALE_MS = 30 * 60_000;
