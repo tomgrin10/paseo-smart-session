@@ -161,8 +161,8 @@
   - **Invariant: live acts only through `move_before_limit`, one agent at a time, under the same guards, never a
     default flip or a reconcile.** New sessions keep ZeroSub's pick (Paseo's create config carries no metadata).
     Live is refused (the setting keeps its old value and says why) unless the installed ZeroSub has the lever, found
-    by its RPC name in its files, not by version, and ZeroSub's own pacing (`paceWeeklyUsage`) is off: two
-    rebalancers would fight. A refusal found later runs the tick as shadow.
+    by its RPC name in its files, not by version, and ZeroSub's own pacing is off (the fork's `paceWeeklyUsage`,
+    default on; upstream's `balanceNewAgents`, "Spread new agents across accounts", default off): two rebalancers would fight. A refusal found later runs the tick as shadow.
 - `server/store.ts` owns the one-time v0.1 `super-session` to `smart-session` directory migration.
   The old name is allowed only in that migration, its regression tests, and upgrade documentation.
 

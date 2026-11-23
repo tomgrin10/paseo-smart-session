@@ -65,10 +65,13 @@ export async function readLevers(home = paseoHome()): Promise<LiveLevers | null>
   if (id === null) return null;
   const entry = record(record(record(await readJson(join(home, "config.json")))?.plugins)?.[id]);
   const path = typeof entry?.path === "string" ? entry.path : null;
-  const found = path === null ? new Set<string>() : await mentions(path, [MOVE_RPC, "paceWeeklyUsage"]);
+  const found = path === null ? new Set<string>() : await mentions(path, [MOVE_RPC, "paceWeeklyUsage", "balanceNewAgents"]);
   const values = record(record(await readJson(join(home, "plugin-settings", id, "preferences.json")))?.values);
-  // The fork's pacing defaults to on where the setting exists.
-  const ownRebalancing = found.has("paceWeeklyUsage") && values?.paceWeeklyUsage !== false;
+  // The fork's pacing defaults to on where the setting exists. Upstream ZeroSub (1.2x+) spreads agents across
+  // accounts under "Spread new agents across accounts" (`balanceNewAgents`, off by default), also on a refresh.
+  const forkPacing = found.has("paceWeeklyUsage") && values?.paceWeeklyUsage !== false;
+  const upstreamSpread = found.has("balanceNewAgents") && values?.balanceNewAgents === true;
+  const ownRebalancing = forkPacing || upstreamSpread;
   return { moveBeforeLimit: found.has(MOVE_RPC), ownRebalancing };
 }
 

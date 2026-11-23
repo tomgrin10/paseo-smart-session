@@ -213,3 +213,22 @@ test("agent parity: smart_accounts_report reads the placement line and sets the 
   assert.equal(toolRow("mcp__paseo__smart_accounts_report", "completed", { input: { placement_mode: "off" }, output: saved }, null)!.line, "Smart placement set to off");
   assert.equal(toolRow("mcp__paseo__smart_accounts_report", "completed", { input: { placement_mode: "live" }, output: refused }, null)!.line, "Smart placement unchanged");
 });
+
+test("live is refused while upstream ZeroSub spreads agents (balanceNewAgents on), allowed with it off or unset", async () => {
+  const { readLevers } = await import("./server/placement.ts");
+  const upstreamHome = async (values: Record<string, unknown>) => {
+    const dir = await mkdtemp(join(tmpdir(), "placement-up-"));
+    const zs = join(dir, "zs");
+    await mkdir(join(zs, "server"), { recursive: true });
+    await writeFile(join(zs, "package.json"), JSON.stringify({ name: "@kapybara/zerosub" }));
+    // Upstream names no paceWeeklyUsage; its spreading lives under balanceNewAgents.
+    await writeFile(join(zs, "server", "service.ts"), 'export const m = "zerosub.agents.move_before_limit";\nexport const d = { balanceNewAgents: false };\n');
+    await writeFile(join(dir, "config.json"), JSON.stringify({ plugins: { zerosub: { enabled: true, path: zs } } }));
+    await mkdir(join(dir, "plugin-settings", "zerosub"), { recursive: true });
+    await writeFile(join(dir, "plugin-settings", "zerosub", "preferences.json"), JSON.stringify({ version: 1, values }));
+    return dir;
+  };
+  assert.deepEqual(await readLevers(await upstreamHome({ balanceNewAgents: true })), { moveBeforeLimit: true, ownRebalancing: true });
+  assert.deepEqual(await readLevers(await upstreamHome({ balanceNewAgents: false })), { moveBeforeLimit: true, ownRebalancing: false });
+  assert.deepEqual(await readLevers(await upstreamHome({})), { moveBeforeLimit: true, ownRebalancing: false }, "upstream's default is off");
+});
