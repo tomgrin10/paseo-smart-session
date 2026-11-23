@@ -17,6 +17,7 @@ const ICONS: Record<ToolRow["tool"], string> = {
   publish_as: "Upload",
   publish_as_settings: "Settings",
   accounts_report: "Users",
+  guard_move_now: "ArrowLeftRight",
 };
 
 const mono = () => (Platform.OS === "ios" ? "Menlo" : Platform.OS === "android" ? "monospace" : "ui-monospace, SFMono-Regular, Menlo, monospace");

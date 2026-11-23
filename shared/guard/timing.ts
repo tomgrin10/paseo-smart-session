@@ -1,14 +1,14 @@
 import { PolicySchema, type Policy } from "./policy.ts";
 
 /** The limit-timing fields, as typed. Nothing is saved until every one parses. */
-export type Timing = { thresholdPct: string; pollSeconds: string; resetGraceSeconds: string; resumeSpacingSeconds: string; continuation: string; providerIds: string; windowIds: string };
-const NUMERIC = ["thresholdPct", "pollSeconds", "resetGraceSeconds", "resumeSpacingSeconds"] as const;
+export type Timing = { thresholdPct: string; pollSeconds: string; resetGraceSeconds: string; resumeSpacingSeconds: string; stopBackgroundWorkAfterMinutes: string; continuation: string; providerIds: string; windowIds: string };
+const NUMERIC = ["thresholdPct", "pollSeconds", "resetGraceSeconds", "resumeSpacingSeconds", "stopBackgroundWorkAfterMinutes"] as const;
 const LISTS = ["providerIds", "windowIds"] as const;
 
 export function timingOf(policy: Policy): Timing {
   return {
     thresholdPct: String(policy.thresholdPct), pollSeconds: String(policy.pollSeconds), resetGraceSeconds: String(policy.resetGraceSeconds),
-    resumeSpacingSeconds: String(policy.resumeSpacingSeconds), continuation: policy.continuation, providerIds: policy.providerIds.join(", "), windowIds: policy.windowIds.join(", "),
+    resumeSpacingSeconds: String(policy.resumeSpacingSeconds), stopBackgroundWorkAfterMinutes: String(policy.stopBackgroundWorkAfterMinutes), continuation: policy.continuation, providerIds: policy.providerIds.join(", "), windowIds: policy.windowIds.join(", "),
   };
 }
 const list = (value: string) => [...new Set(value.split(",").map((s) => s.trim()).filter(Boolean))];
@@ -20,6 +20,7 @@ export function checkTiming(draft: Timing): { values: Partial<Policy>; errors: P
   const range: Record<(typeof NUMERIC)[number], string> = {
     thresholdPct: "Enter a number from 1 to 100.", pollSeconds: "Enter whole seconds from 5 to 300.",
     resetGraceSeconds: "Enter whole seconds from 0 to 600.", resumeSpacingSeconds: "Enter whole seconds from 0 to 300.",
+    stopBackgroundWorkAfterMinutes: "Enter whole minutes from 0 to 120.",
   };
   for (const key of NUMERIC) {
     const raw = draft[key].trim();

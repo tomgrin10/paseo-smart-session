@@ -19,7 +19,23 @@ import {
   isPending, protects, resetReady, sessionWindow, timestamp, usedPct,
   type Agent, type Pause, type Policy, type State, type Usage,
 } from "../../shared/guard/policy.ts";
-import { continuationText, continuesAtReset, freezesIdle, heldUntil, holdKind, messageArrived, messageWaiting, ZEROSUB_MOVE_GRACE_MS, zerosubCanMove, ZeroSubMoves } from "../../shared/guard/hold.ts";
+import { continuationText, continuesAtReset, freezesIdle, heldUntil, holdKind, messageArrived, messageWaiting, moveWaitPlan, ZEROSUB_MOVE_GRACE_MS, zerosubCanMove, ZeroSubMoves } from "../../shared/guard/hold.ts";
+import type { BackgroundJob, MoveWait } from "../../shared/guard/policy.ts";
+
+/**
+ * ZeroSub's reply to `move_before_limit`. `waitingFor`, `backgroundWork` and `stopped` come from a
+ * ZeroSub that can stop background work to move (its `stopBackgroundWork` option); an older one
+ * answers `outcome` and `detail` only, and ignores the option.
+ */
+export interface MoveReply {
+  outcome?: string;
+  detail?: string | null;
+  waitingFor?: "turn" | "background" | "held" | null;
+  backgroundWork?: BackgroundJob[];
+  stopped?: BackgroundJob[];
+}
+/** How often the guard asks again about a held session's waiting move, to learn why it waits, when ZeroSub says. */
+const ASK_AGAIN_MS = 60_000;
 
 /** The first 8 characters of a pause id: enough to find it in state.json. */
 const short = (id: string) => id.slice(0, 8);
@@ -65,28 +81,67 @@ export class Engine {
   /** When the guard last asked ZeroSub to move each agent: once per grace, never twice in a row. */
   private readonly askedMove = new Map<string, number>();
   /**
+   * Whether the installed ZeroSub says why a move waits and can stop background work to move
+   * (`stopBackgroundWork`), learned from its replies: null until one came. Feature-detected, never
+   * by version: an older ZeroSub's reply has no `waitingFor`.
+   */
+  zerosubStopsWork: boolean | null = null;
+  /**
    * Seam C. The guard stops a session at its own threshold, below ZeroSub's 100%, where ZeroSub sees
    * no limit and would never move it: so it asks ZeroSub to (`zerosub.agents.move_before_limit`),
    * to the account `moveTarget` names. Invariant: the guard never holds a session at its threshold
    * while ZeroSub could move it. A ZeroSub that can't be asked (older than 1.5.1-pace.13) leaves the
-   * grace and the hold as they were.
+   * grace and the hold as they were. `stop` asks ZeroSub to stop the session's background work and
+   * move it now (`held-background-work`); only `moveHeld` and Move now pass it.
    */
-  private async askMove(client: GuardClient, agentId: string, provider: string) {
+  private async askMove(client: GuardClient, agentId: string, provider: string, options: { stop?: boolean } = {}): Promise<MoveReply | null> {
     const accounts = this.accounts;
-    if (!accounts || !client.invokePluginRpc || !zerosubCanMove(provider)) return;
+    if (!accounts || !client.invokePluginRpc || !zerosubCanMove(provider)) return null;
     const last = this.askedMove.get(agentId);
-    if (last !== undefined && this.now() - last < ZEROSUB_MOVE_GRACE_MS) return;
+    const every = this.zerosubStopsWork ? ASK_AGAIN_MS : ZEROSUB_MOVE_GRACE_MS;
+    if (!options.stop && last !== undefined && this.now() - last < every) return null;
     const target = accounts.moveTarget(agentId, provider);
-    if (!target) return;
+    if (!target) return null;
     const pluginId = await this.zerosubPluginId().catch(() => null);
-    if (!pluginId) return;
+    if (!pluginId) return null;
     this.askedMove.set(agentId, this.now());
     try {
-      const reply = await client.invokePluginRpc(pluginId, "zerosub.agents.move_before_limit", { agentId, accountId: target }) as { outcome?: string } | null;
-      this.trace(`ask-move ${agentId} -> ${target}: ${reply?.outcome ?? "?"}`);
+      const input = options.stop ? { agentId, accountId: target, stopBackgroundWork: true } : { agentId, accountId: target };
+      const reply = await client.invokePluginRpc(pluginId, "zerosub.agents.move_before_limit", input) as MoveReply | null;
+      if (reply && typeof reply === "object") this.zerosubStopsWork = "waitingFor" in reply;
+      const why = reply?.outcome === "waiting" ? ` (${reply.waitingFor ?? "turn or work"}${reply.backgroundWork?.length ? `, ${reply.backgroundWork.length} job(s)` : ""})` : "";
+      const stopped = reply?.stopped?.length ? ` stopped ${reply.stopped.length} job(s)` : "";
+      this.trace(`ask-move ${agentId} -> ${target}${options.stop ? " stop-work" : ""}: ${reply?.outcome ?? "?"}${why}${stopped}`);
+      return reply ?? null;
     } catch (error) {
       this.trace(`ask-move ${agentId} -> ${target}: failed (${error instanceof Error ? error.message : String(error)})`);
+      return null;
     }
+  }
+  /**
+   * What the guard does about a held session whose move waits for background work
+   * (`moveWaitPlan`), from what it knows now: never stops work for a session pinned to its account,
+   * one whose protection a person set by hand, or a ZeroSub that can't stop work.
+   */
+  private planMoveWait(pause: Pause, state: State, policy: Policy, since: number, jobs: BackgroundJob[]): MoveWait {
+    const blocked: MoveWait["why"] | null = this.accounts?.pinned(pause.agentId) ? "pinned"
+      : state.overrides[pause.agentId] !== undefined ? "override"
+        : this.zerosubStopsWork !== true ? "unsupported" : null;
+    const plan = moveWaitPlan({ since, now: this.now(), afterMinutes: policy.stopBackgroundWorkAfterMinutes, resetsAt: timestamp(pause.anchorResetsAt), jobs, blocked });
+    return { since: new Date(since).toISOString(), jobs, plan: plan.plan, at: plan.at, ...(plan.why ? { why: plan.why } : {}) };
+  }
+  /** Writes ZeroSub's reply onto the hold: why its move waits, or the jobs stopped to move it. True when the hold changed. */
+  private noteMoveReply(pause: Pause, reply: MoveReply | null, state: State, policy: Policy): boolean {
+    if (!reply) return false;
+    const before = JSON.stringify([pause.moveWait, pause.stoppedJobs]);
+    if (reply.outcome === "waiting" && (reply.waitingFor === "background" || reply.waitingFor === undefined)) {
+      const since = timestamp(pause.moveWait?.since) ?? this.now();
+      pause.moveWait = this.planMoveWait(pause, state, policy, since, reply.backgroundWork ?? pause.moveWait?.jobs ?? []);
+    } else if (reply.outcome === "moved") {
+      if (reply.stopped?.length) pause.stoppedJobs = reply.stopped;
+      delete pause.moveWait;
+    } else if (reply.outcome === "refused" || reply.outcome === "already") delete pause.moveWait;
+    return JSON.stringify([pause.moveWait, pause.stoppedJobs]) !== before;
   }
   private trace(line: string) {
     try { this.log(`[smart-session] guard ${line}`); } catch { /* Tracing never breaks a hold. */ }
@@ -382,6 +437,81 @@ export class Engine {
       });
     });
   }
+  /**
+   * Invariant (`held-background-work`): a held session whose move to an account with room waits for
+   * its background work waits only while that is short. The guard learns from ZeroSub why the move
+   * waits (asking again each `ASK_AGAIN_MS`), keeps the plan on the hold (`moveWait`, which the label,
+   * the page and the chat show), and when the plan's time comes asks ZeroSub to stop the work and move
+   * it (`stopBackgroundWork`); the continuation then names each stopped job. Never for a frozen, idle,
+   * closed or archived session (nothing is woken), a session pinned to its account, one whose
+   * protection was set by hand, with the setting at 0, or a ZeroSub without the option (it then waits,
+   * and says so). True when the hold changed.
+   */
+  private async moveHeld(client: GuardClient, state: State, policy: Policy, pause: Pause, agent: Agent, isReady: boolean): Promise<boolean> {
+    const accounts = this.accounts;
+    if (!accounts || pause.phase !== "waiting" || pause.suspension || pause.idle || pause.demo || pause.manualResume || pause.wasQuotaFailure ||
+      pause.stoppedByUser || isReady || !zerosubCanMove(pause.provider) || !accounts.failsOver(pause.agentId, pause.provider) ||
+      agent.status === "closed" || agent.archivedAt) {
+      if (!pause.moveWait) return false;
+      delete pause.moveWait; return true;
+    }
+    let changed = false;
+    // Ask again while it waits, to learn why and which jobs (a turn that was just stopped may still
+    // read as running the first time). A ZeroSub that doesn't say why is asked once per grace, as before.
+    if (this.zerosubStopsWork !== false && (!pause.moveWait || pause.moveWait.plan !== "move")) {
+      changed = this.noteMoveReply(pause, await this.askMove(client, pause.agentId, pause.provider), state, policy) || changed;
+    }
+    const wait = pause.moveWait;
+    if (!wait) return changed;
+    // Settings, overrides, pins and the reset move: the plan is read again each pass.
+    const replanned = this.planMoveWait(pause, state, policy, timestamp(wait.since) ?? this.now(), wait.jobs);
+    if (JSON.stringify(replanned) !== JSON.stringify(wait)) { pause.moveWait = replanned; changed = true; }
+    if (replanned.plan !== "move" || replanned.at === null || this.now() < Date.parse(replanned.at)) return changed;
+    // The grace ran out with the reset still further away: stop the work and move it now.
+    const latest = (await client.fetchAgent(pause.agentId))?.agent;
+    if (!latest || latest.status !== "idle" || latest.archivedAt || (latest.lastUserMessageAt ?? null) !== pause.lastUserMessageAt) return changed;
+    this.trace(`move-held ${pause.agentId} pause ${short(pause.id)} stopping ${wait.jobs.length} job(s) after ${policy.stopBackgroundWorkAfterMinutes}m`);
+    if (!this.moving.has(pause.id)) this.moving.set(pause.id, this.now());
+    this.noteMoveReply(pause, await this.askMove(client, pause.agentId, pause.provider, { stop: true }), state, policy);
+    return true;
+  }
+  /**
+   * Move now, from the page or an agent: stop the held session's background work and move it to an
+   * account with room at once, where it continues (`held-background-work`). Refused, saying why, when
+   * ZeroSub can't (no account with room, a session pinned to its account, a ZeroSub without the option).
+   */
+  async moveNow(agentId: string, pauseId: string): Promise<{ outcome: string; detail: string | null }> {
+    return this.exclusive(async () => {
+      const state = await this.store.read();
+      const policy = await this.policy();
+      const pause = state.pauses.find(p => p.id === pauseId && p.agentId === agentId);
+      if (!pause || !isPending(pause)) throw new Error("That session isn't held any more.");
+      if (pause.phase !== "waiting") throw new Error("Check this session before moving it.");
+      const accounts = this.accounts;
+      if (!accounts || !zerosubCanMove(pause.provider) || !accounts.failsOver(agentId, pause.provider)) throw new Error("No other account has room for it now.");
+      if (this.zerosubStopsWork === false) throw new Error("The installed ZeroSub can't stop background work to move a session. Update ZeroSub, or wait for the work to end.");
+      return this.connect(async client => {
+        const latest = (await client.fetchAgent(agentId))?.agent;
+        if (!latest || latest.archivedAt || latest.status === "closed" || latest.provider !== pause.provider) throw new Error("The session changed. Check it before moving it.");
+        if (pause.suspension) {
+          // A frozen process can't be reopened elsewhere: thaw it and stop its turn first, as Resume now does.
+          await this.processes!.resume(pause.suspension); delete pause.suspension;
+          if (latest.status === "running") {
+            try { await client.cancelAgent(agentId); } catch { throw new Error("Could not stop the session to move it. Try again."); }
+          }
+        }
+        this.trace(`move-now ${agentId} pause ${short(pause.id)}`);
+        this.moving.set(pause.id, this.now());
+        const reply = await this.askMove(client, agentId, pause.provider, { stop: true });
+        this.noteMoveReply(pause, reply, state, policy);
+        await this.save(state);
+        if (!reply) throw new Error("ZeroSub didn't answer. Try again.");
+        if (reply.outcome === "moved" || reply.outcome === "already") return { outcome: reply.outcome, detail: null };
+        if (reply.outcome === "waiting" && reply.waitingFor === undefined) throw new Error("The installed ZeroSub can't stop background work to move a session. Update ZeroSub, or wait for the work to end.");
+        throw new Error(reply.detail ?? "ZeroSub couldn't move it now.");
+      });
+    });
+  }
   /** Resume now, where the session is: SIGCONT, and the continuation message a foreground hold needs. */
   private async resumeInPlace(client: GuardClient, state: State, pause: Pause, latest: Agent, running: boolean) {
         const agentId = pause.agentId;
@@ -643,8 +773,9 @@ export class Engine {
               await this.save(state);
             }
             if (!this.moving.has(pause.id)) this.moving.set(pause.id, this.now());
-            await this.askMove(client, pause.agentId, pause.provider);
+            if (this.noteMoveReply(pause, await this.askMove(client, pause.agentId, pause.provider), state, policy)) changed = true;
           }
+          if (await this.moveHeld(client, state, policy, pause, agent, ready(pause))) changed = true;
         }
         if (pause.suspension) {
           if (!this.processes) throw new Error("Native worker protection is unavailable.");
@@ -720,7 +851,7 @@ export class Engine {
           // Say what ended the hold: a move to another account, or the reset (seam D).
           const now = accounts?.accountId(pause.agentId, pause.provider) ?? null;
           const moved = !!pause.accountId && now !== null && now !== pause.accountId;
-          await client.sendMessage(pause.agentId, continuationText(policy, moved), { messageId: pause.id, activeTurnBehavior: "steer" });
+          await client.sendMessage(pause.agentId, continuationText(policy, moved, moved ? pause.stoppedJobs ?? [] : []), { messageId: pause.id, activeTurnBehavior: "steer" });
           pause.phase = "resumed"; pause.settledAt = new Date(this.now()).toISOString(); pause.note = null;
           this.nextResumeAt = this.now() + policy.resumeSpacingSeconds * 1000;
           this.trace(`resumed ${pause.agentId} pause ${short(pause.id)} continuation sent${moved ? " (moved)" : ""}${manualMove !== undefined ? " after Resume now" : ""}`);
@@ -814,7 +945,7 @@ export class Engine {
           if (pause.suspension) await this.processes!.freeze(pause.suspension, () => this.store.write(state));
           else await client.cancelAgent(agent.id);
           pause.phase = "waiting";
-          if (moving) await this.askMove(client, agent.id, agent.provider);
+          if (moving) this.noteMoveReply(pause, await this.askMove(client, agent.id, agent.provider), state, policy);
         } catch {
           if (pause.suspension) {
             // Release partial suspensions before asking for manual inspection.

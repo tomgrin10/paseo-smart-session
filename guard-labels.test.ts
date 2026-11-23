@@ -66,3 +66,27 @@ test("moving a paused session keeps the other workspace paused until its final w
   const s = await f.store.read(); s.pauses.find(p => p.agentId === "b")!.phase = "cancelled"; await f.store.write(s);
   await f.labels().refresh(); assert.ok(f.calls.some(c => !c.assigned && c.workspaceId === "w"));
 });
+
+test("held-background-work: a held workspace's label says why it's still held, and changes with the reason", async t => {
+  const f = await fixture(t);
+  f.client.setWorkspaceLabel = async options => { f.calls.push(options); };
+  const s = await f.store.read();
+  const wait = { since: new Date().toISOString(), jobs: [{ kind: "shell", description: "Run the test suite", command: null }], at: new Date(Date.now() + 600_000).toISOString() };
+  for (const p of s.pauses) p.moveWait = { ...wait, plan: "move" };
+  await f.store.write(s);
+  await f.labels().refresh();
+  assert.deepEqual(f.calls.map(c => [c.assigned, c.label.name, c.label.color]), [[true, "Held · moving soon", "amber"]]);
+  // The reset now comes first: the old label comes off, the new one goes on.
+  const later = await f.store.read();
+  for (const p of later.pauses) p.moveWait = { ...wait, plan: "reset" };
+  await f.store.write(later);
+  await f.labels().refresh();
+  assert.deepEqual(f.calls.slice(1).map(c => [c.assigned, c.label.name]), [[false, "Held · moving soon"], [true, "Held · until reset"]]);
+  // Two holds in one workspace that say different things: plain Held.
+  const mixed = await f.store.read();
+  mixed.pauses[0]!.moveWait = { ...wait, plan: "jobs", at: null, why: "setting" };
+  await f.store.write(mixed);
+  await f.labels().refresh();
+  assert.deepEqual(f.calls.slice(3).map(c => [c.assigned, c.label.name]), [[false, "Held · until reset"], [true, "Held"]]);
+  assert.deepEqual((await f.store.read()).workspaceLabelNames, { w: "Held" });
+});

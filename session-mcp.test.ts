@@ -30,7 +30,7 @@ test("Paseo 0.15+: tools go on request.tools, with no per-agent process", async 
   for (const provider of ["claude", "codex"]) for (const reason of ["create", "resume", "refresh", "import"]) {
     const result = await open({ ...request, provider, reason });
     assert.equal(result.mcpServers, request.mcpServers, "no stdio server");
-    assert.deepEqual(result.tools.map((tool: { name: string }) => tool.name), ["other_tool", "smart_context_status", "smart_budget_status", "smart_accounts_report", "smart_checkpoint", "smart_request_compaction", "smart_defer_compaction", "smart_publish_as", "smart_publish_as_settings", "smart_report_issue", "smart_report_send"]);
+    assert.deepEqual(result.tools.map((tool: { name: string }) => tool.name), ["other_tool", "smart_context_status", "smart_budget_status", "smart_accounts_report", "smart_guard_move_now", "smart_checkpoint", "smart_request_compaction", "smart_defer_compaction", "smart_publish_as", "smart_publish_as_settings", "smart_report_issue", "smart_report_send"]);
     assert.equal(result.env.KEEP, "yes"); assert.equal(result.env.SMART_SESSION_TOOLS, "native");
   }
   assert.equal(request.tools.length, 1, "the request is not mutated");

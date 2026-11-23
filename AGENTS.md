@@ -478,6 +478,20 @@
   Resume now moves first too while an account has room (`resumeOnMove`), else resumes in place. ZeroSub's files are read-only
   and parsed defensively. Never copy an email or a generated (`autoLabel`) label out of them, and
   never open an account home.
+- **Invariant (`held-background-work`): a held session's move waits for background work only while that's short.**
+  ZeroSub defers a move while the agent has background jobs (a reload would end them). Root cause (2026-11-22): two
+  held sessions with one job each sat stopped up to 43 min while another account had room, the sidebar showing
+  Paseo's "running" beside a bare "Held". Now `Engine.moveHeld` learns why from `move_before_limit`'s reply
+  (`waitingFor`, `backgroundWork`; asked again each `ASK_AGAIN_MS`), keeps the plan on the hold (`Pause.moveWait`,
+  `moveWaitPlan` in `shared/guard/hold.ts`): wait for the own account's reset when it comes within the grace
+  (`stopBackgroundWorkAfterMinutes`, default 10) of the move; otherwise move at `since + grace` (at once when every
+  job is a `monitor`) with `stopBackgroundWork: true`, and the continuation names every stopped job
+  (`stoppedJobsLine`, secrets masked by `jobName`). Never for a frozen, idle, closed or archived session, a ZeroSub
+  pin (`source: user`), a protection override, automatic switching off, or the setting at 0. ZeroSub's option is
+  feature-detected from its reply (`waitingFor` present), never by version; without it the hold waits and says so
+  (`why: unsupported`). The label is one of `HELD_LABELS` (Paseo labels are named host-wide entities, so never a
+  time in a name); the page row (`moveWaitLine`), Move now (`smart-session.guard.move-now`) and `guard_move_now`
+  carry the rest. Tests: "held-background-work" in `guard-zerosub-limits.test.ts` and `guard-labels.test.ts`.
 - The pill shows protection only while this process is the active governor; a pending pause keeps
   a session's pill up (even with the pill hidden) only while this process governs it.
 - Agents see it only through `budget_status` (`server/agent-tools.mjs`), which asks

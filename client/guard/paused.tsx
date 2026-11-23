@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Text, TextInput, View } from "react-native";
 import { type PluginScreenProps, useRpc } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/ui";
-import { cancelResumeRpc, dismissPauseRpc, resumeNowRpc, setProtectionRpc, statusRpc } from "../../shared/guard/contracts.ts";
+import { cancelResumeRpc, dismissPauseRpc, moveNowRpc, resumeNowRpc, setProtectionRpc, statusRpc } from "../../shared/guard/contracts.ts";
+import { moveWaitLine } from "../../shared/guard/hold.ts";
 import { PAUSE_ACTIONS, governorNotice, heldUntil, heldWhere, pauseOwnerNote, pausedLead, pausedSessions, pausePresentation } from "../../shared/guard/presentation.ts";
 import { timestamp, type Pause } from "../../shared/guard/policy.ts";
 import { formatDuration } from "../../shared/format.ts";
@@ -29,18 +30,24 @@ export function PausedSection({ theme, layout, host, navigation, status, shared:
   const cancel = useRpc(cancelResumeRpc);
   const resumeNow = useRpc(resumeNowRpc);
   const dismiss = useRpc(dismissPauseRpc);
+  const moveNow = useRpc(moveNowRpc);
   const [busy, setBusy] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   // A waiting pause gets the same two actions as its chat card; only a stuck one is released.
-  const act = async (pause: Pause, kind: "resume" | "dismiss" | "release") => {
+  const act = async (pause: Pause, kind: "resume" | "dismiss" | "release" | "move") => {
     if (busy) return;
     setBusy(`${pause.agentId}:${kind}`);
     try {
       if (kind === "release") await cancel({ agentId: pause.agentId });
+      else if (kind === "move") await moveNow({ agentId: pause.agentId, pauseId: pause.id });
       else await (kind === "resume" ? resumeNow : dismiss)({ agentId: pause.agentId, pauseId: pause.id });
       publishGuard(await read({}));
-      toast.show(kind === "resume" ? "Resumed · it no longer pauses at the limit" : kind === "dismiss" ? "Released · nothing was sent" : "Released");
-    } catch { toast.error("Couldn't change this pause. Check the session and try again."); }
+      toast.show(kind === "resume" ? "Resumed · it no longer pauses at the limit" : kind === "dismiss" ? "Released · nothing was sent"
+        : kind === "move" ? "Moved · it continues on an account with room" : "Released");
+    } catch (error) {
+      // Move now says why it couldn't (no room, a pinned session, an older ZeroSub).
+      toast.error(kind === "move" && error instanceof Error && error.message ? error.message : "Couldn't change this pause. Check the session and try again.");
+    }
     finally { setBusy(null); }
   };
 
@@ -57,18 +64,25 @@ export function PausedSection({ theme, layout, host, navigation, status, shared:
 
   const row = (pause: Pause, i: number) => {
     const presentation = pausePresentation(pause, status!.policy, now);
-    const reset = timestamp(heldUntil(pause));
+    // A hold that moves before the reset ends at the move: its time and "Held for" say that, not the reset.
+    const moveAt = pause.moveWait?.plan === "move" ? pause.moveWait.at : null;
+    const until = moveAt ?? heldUntil(pause);
+    const reset = timestamp(until);
     const stuck = pause.phase === "attention";
     // A row leads with what differs between rows, the session; its time only when it differs from the lead's.
-    const ownTime = !stuck && !pause.demo && reset !== null && reset > now && (shared === null || Math.abs(reset - shared) >= 60_000) ? formatMoment(heldUntil(pause)!, now) : null;
+    const ownTime = !stuck && !pause.demo && reset !== null && reset > now && (shared === null || Math.abs(reset - shared) >= 60_000) ? formatMoment(until!, now) : null;
     const after = stuck ? (pause.note ?? "It stopped before the pause was confirmed. Check it before continuing by hand.")
       : pause.demo ? "Test pause, waits for you"
         : reset === null ? "Waiting for the provider to report the reset"
           : reset > now ? (ownTime === null && shared !== null ? null : `${autoResume ? "Held" : "Resets"} for ${formatDuration(reset - now)}`)
-            : `Reset was ${formatMoment(heldUntil(pause)!, now)} · waiting for a fresh reading`;
+            : moveAt ? null : `Reset was ${formatMoment(heldUntil(pause)!, now)} · waiting for a fresh reading`;
     // The lead says when a shared reset lands and what happens then; a row adds only what differs.
     const facts = [after, stuck ? null : heldWhere(pause), providerName(pause.provider), presentation.coverage.toLowerCase()].filter(Boolean).join(" · ");
+    // Why it's still here when another account has room: its background work, and what happens about it.
+    const waits = stuck ? null : moveWaitLine(pause, now, (at) => formatMoment(at, now));
     const actions = owner !== null ? null : pause.phase === "waiting" ? <>
+      {pause.moveWait && pause.moveWait.why !== "unsupported" ? <Button theme={theme} small compact={compact} icon={PAUSE_ACTIONS.moveNow.icon} title={busy === `${pause.agentId}:move` ? PAUSE_ACTIONS.moveNow.busy : PAUSE_ACTIONS.moveNow.label} disabled={busy !== null}
+        accessibilityHint={PAUSE_ACTIONS.moveNow.hint} onPress={() => void act(pause, "move")} /> : null}
       <Button theme={theme} small compact={compact} icon={PAUSE_ACTIONS.resume.icon} title={busy === `${pause.agentId}:resume` ? PAUSE_ACTIONS.resume.busy : PAUSE_ACTIONS.resume.label} disabled={busy !== null}
         accessibilityHint={PAUSE_ACTIONS.resume.hint} onPress={() => void act(pause, "resume")} />
       <Button theme={theme} small compact={compact} kind="ghost" title={busy === `${pause.agentId}:dismiss` ? PAUSE_ACTIONS.dismiss.busy : PAUSE_ACTIONS.dismiss.label} disabled={busy !== null}
@@ -84,6 +98,7 @@ export function PausedSection({ theme, layout, host, navigation, status, shared:
         <View style={{ flex: 1, minWidth: 8 }} />
         {compact ? open : <>{open}{actions}</>}
       </View>
+      {waits ? <Text style={{ ...t.meta, color: c.foreground, paddingLeft: 22 }}>{waits}</Text> : null}
       <Text style={{ ...t.meta, color: stuck ? c.statusDanger : c.foregroundMuted, paddingLeft: 22 }}>{facts}</Text>
       {compact && actions ? <View style={{ flexDirection: "row", gap: 6, paddingLeft: 22 }}>{actions}</View> : null}
     </CardRow>;

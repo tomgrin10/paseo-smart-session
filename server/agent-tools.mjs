@@ -30,6 +30,9 @@ export const REPORT_DESCRIPTION = "Report a bug, feature request or feedback abo
 /** `accounts_report`'s one line (at most 150 characters; `accounts-report.test.ts` holds it). */
 export const ACCOUNTS_REPORT_DESCRIPTION = "How your Claude accounts were used over 14 days, smart placement beside what happened, and whether to add or drop one. placement_mode sets it.";
 
+/** `guard_move_now`'s one line (at most 150 characters; `guard-zerosub-limits.test.ts` holds it). */
+export const MOVE_NOW_DESCRIPTION = "Move a session Session Guard holds at the limit to an account with room now, stopping its background jobs. Only when the user asks.";
+
 /**
  * @param {{ agentId: string | null, call: (method: string, input: unknown) => Promise<any>, home?: string, stateFile?: string, native?: boolean }} context
  */
@@ -302,6 +305,31 @@ export function agentTools(context) {
         const lines = Array.isArray(result?.lines) ? result.lines.filter((line) => typeof line === "string") : [];
         const body = lines.length > 0 ? lines.join("\n") : "No account readings recorded yet, so there is nothing to report.";
         return note === null ? body : `${note}\n${body}`;
+      },
+    },
+
+    guard_move_now: {
+      description: MOVE_NOW_DESCRIPTION,
+      inputSchema: {
+        type: "object",
+        properties: { agent_id: { type: "string", description: "The held session's agent id." } },
+        required: ["agent_id"],
+        additionalProperties: false,
+      },
+      async run(args) {
+        const agentId = typeof args?.agent_id === "string" ? args.agent_id.trim() : "";
+        if (!agentId) return "Give the held session's agent_id.";
+        const status = await callPlugin("smart-session.guard.status", {});
+        const pause = (status?.pauses ?? []).find((p) => p.agentId === agentId && p.phase === "waiting");
+        if (!pause) return "Session Guard isn't holding that session, so there is nothing to move.";
+        try {
+          const result = await callPlugin("smart-session.guard.move-now", { agentId, pauseId: pause.id });
+          return result?.outcome === "already"
+            ? "It already runs on an account with room; it continues there."
+            : "Moved to an account with room; its background jobs were stopped and it is told which, and it continues there.";
+        } catch (error) {
+          return `Not moved: ${error instanceof Error ? error.message : String(error)}`;
+        }
       },
     },
 
