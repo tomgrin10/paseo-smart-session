@@ -110,6 +110,8 @@ On Linux, Claude and Codex sessions pause in place together with their native su
 
 ![A pause card in the chat with the time it resumes, Resume now and Dismiss pause, and the Smart Session screen leading with 2 sessions resume at 6:27 AM above the list of paused sessions](docs/media/smart-session-guard.png)
 
+With ZeroSub, a held session moves to an account with room. If its background jobs hold the move back, it waits up to 10 minutes for them to end (or for its own reset, when that comes sooner), then the jobs are stopped and it moves. The agent is told which jobs to start again. Its workspace label and row say why it's still held, and **Move now** does it at once ([details](docs/session-guard.md#with-zerosub)).
+
 If the standalone Session Guard plugin is still enabled, it keeps doing the pausing and Smart Session says so in one line, so a session is never paused twice. Disable or uninstall it to hand over. See the [guide](docs/session-guard.md) for timing and limits.
 
 On a phone, the pill opens as a sheet and every screen fits one column.
