@@ -104,6 +104,7 @@ export function contributeUsageSource(server: PluginServerContext): boolean {
     register.call(server, {
       id: USAGE_SOURCE_ID,
       label: USAGE_SOURCE_LABEL,
+      providers: ["claude"],
       icon: "assets/icon.svg",
       input: InputSchema,
       discover: async (scope: UsageScopeIn) => discoverAccounts(await sourceState(), scope),

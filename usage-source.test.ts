@@ -356,3 +356,21 @@ test("a window that runs out before its reset keeps its reset in a row, since th
   // A window on pace has its reset on its own line already.
   assert.equal(report.details!.some((d) => d.id === "resets_weekly"), false);
 });
+
+
+test("usage metadata uses known periods and the original reading time", () => {
+  for (const id of ["seven_day", "seven_day_opus", "weekly_model:fable", "weekly_surface:omelette"])
+    assert.equal(reportWindow(win(id, 20, HOUR), false, NOW).durationSeconds, 7 * 24 * 3600);
+  assert.equal(reportWindow(win("five_hour", 20, HOUR), true, NOW).durationSeconds, 5 * 3600);
+  assert.equal(reportWindow(win("unknown", 20, HOUR), false, NOW).durationSeconds, undefined);
+  for (const readAt of [iso(-MIN), iso(-42 * MIN), null, "invalid"]) {
+    const recorded = { windows: [win("five_hour", 20, HOUR)], readAt, extraUsage: null };
+    const report = buildReport({ zerosub: null, recorded }, { account: CLI_KEY, lead: true }, NOW);
+    assert.equal(report.status, "available");
+    if (report.status === "available") assert.equal(report.observedAt, readAt && Number.isFinite(Date.parse(readAt)) ? readAt : undefined);
+  }
+  const seat = account("claude-two", { readAt: iso(-42 * MIN) });
+  const report = buildReport(zerosubState([seat]), { account: seat.id, lead: true }, NOW);
+  assert.equal(report.status, "available");
+  if (report.status === "available") assert.equal(report.observedAt, seat.readAt);
+});

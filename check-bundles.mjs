@@ -1,5 +1,6 @@
 /** Builds both v0.8 runtime entries and executes the client contribution. */
 import * as esbuild from "esbuild";
+import assert from "node:assert/strict";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { auditRuntimeBoundaries, buildOptions, instantiateBundle } from "./check-lib.mjs";
@@ -298,6 +299,15 @@ for (const target of ["client", "server"]) {
       }
       console.log(`  ✓ client: ${summary.join(", ")}`);
     } else {
+      const usage = await esbuild.build({ entryPoints: [resolve(DIR, "server/usage-source.ts")], write: false, format: "cjs", platform: "node" });
+      const zod = await import("zod");
+      const { contributeUsageSource } = instantiateBundle(usage.outputFiles[0].text, id =>
+        id === "zod" ? zod : id === "../shared/usage-source.ts"
+          ? { USAGE_SOURCE_ID: "smart-session", USAGE_SOURCE_LABEL: "Smart Session" } : {});
+      assert.equal(contributeUsageSource({}), false, "older hosts need no usage source");
+      let source;
+      assert.equal(contributeUsageSource({ registerUsageSource(value) { source = value; } }), true);
+      assert.deepEqual(source.providers, ["claude"], "usage summaries must associate this source with Claude");
       console.log("  ✓ server: builds from index.server.ts");
     }
   } catch (error) {
