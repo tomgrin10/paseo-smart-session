@@ -39,7 +39,7 @@ const UNKNOWN_CONTEXT = 100_000;
 export interface LiveLevers {
   /** `zerosub.agents.move_before_limit` exists: a one-agent move we can ask for. */
   readonly moveBeforeLimit: boolean;
-  /** ZeroSub's own rebalancing (the fork's `paceWeeklyUsage`) is on: two policies would fight. */
+  /** ZeroSub's own rebalancing (the fork's `paceWeeklyUsage`, upstream's `balanceNewAgents`) is on: two policies would fight. */
   readonly ownRebalancing: boolean;
 }
 
@@ -47,7 +47,7 @@ export interface LiveLevers {
 export function liveRefusal(zerosub: boolean, levers: LiveLevers | null): string | null {
   if (!zerosub) return "Live placement needs ZeroSub, which isn't enabled here.";
   if (levers === null || !levers.moveBeforeLimit) return "Live placement needs ZeroSub's move_before_limit, which the installed ZeroSub doesn't have. Staying in shadow.";
-  if (levers.ownRebalancing) return "ZeroSub's own pacing is on, and two rules moving sessions would fight. Turn ZeroSub's pacing off first. Staying in shadow.";
+  if (levers.ownRebalancing) return "ZeroSub's own pacing is on, and two rules moving sessions would fight. Turn off ZeroSub's pacing (\"Spread new agents across accounts\" in its settings) first. Staying in shadow.";
   return null;
 }
 
