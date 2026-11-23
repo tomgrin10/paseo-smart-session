@@ -318,7 +318,7 @@ export function makeSettings(client: PluginClientContext) {
       {policy === null ? null : <SettingsSection title="Limit timing" info="How Pause at the limit reads usage and continues sessions. The defaults suit almost everyone.">
         <SettingsCard>
           {timing === null ? <SettingsAction label={`Pause at ${policy.thresholdPct}% of the session window`}
-            hint={`Check every ${policy.pollSeconds}s · wait ${policy.resetGraceSeconds}s after the reset · ${policy.resumeSpacingSeconds}s between continuations · ${policy.providerIds.length === 0 ? "every provider" : policy.providerIds.join(", ")}`}
+            hint={`Check every ${policy.pollSeconds}s · wait ${policy.resetGraceSeconds}s after the reset · ${policy.resumeSpacingSeconds}s between continuations · ${policy.stopBackgroundWorkAfterMinutes === 0 ? "never stops background work to move" : `stops background work to move after ${policy.stopBackgroundWorkAfterMinutes} min`} · ${policy.providerIds.length === 0 ? "every provider" : policy.providerIds.join(", ")}`}
             actionLabel="Edit" disabled={guard.status !== "ready" || guard.saving} onPress={() => { if (guard.status === "ready") { setTiming({ draft: timingOf(guard.values), revision: guard.revision }); setTimingTried(false); } }} /> : <>
             <SettingsInput label="Pause at (%)" hint="Of the session window. 1–100, default 100." initialValue={timing.draft.thresholdPct} error={fieldError("thresholdPct")} disabled={guard.saving}
               onChangeText={(value) => setTiming((t) => t && { ...t, draft: { ...t.draft, thresholdPct: value } })} />
@@ -328,6 +328,9 @@ export function makeSettings(client: PluginClientContext) {
               onChangeText={(value) => setTiming((t) => t && { ...t, draft: { ...t.draft, resetGraceSeconds: value } })} />
             <SettingsInput label="Between continuations (seconds)" hint="0–300, default 5, so paused sessions don't all start at once." initialValue={timing.draft.resumeSpacingSeconds} error={fieldError("resumeSpacingSeconds")} disabled={guard.saving}
               onChangeText={(value) => setTiming((t) => t && { ...t, draft: { ...t.draft, resumeSpacingSeconds: value } })} />
+            <SettingsInput label="Stop background work to move a held session after (minutes)" hint="With ZeroSub. 0–120, default 10. A held session that could move to an account with room waits this long for its background jobs to end, then they're stopped and it moves; the agent is told which. 0 never stops them. A reset that comes sooner is waited for."
+              initialValue={timing.draft.stopBackgroundWorkAfterMinutes} error={fieldError("stopBackgroundWorkAfterMinutes")} disabled={guard.saving}
+              onChangeText={(value) => setTiming((t) => t && { ...t, draft: { ...t.draft, stopBackgroundWorkAfterMinutes: value } })} />
             {/* A message is prose: it gets the full width and several lines, not a one-line field. */}
             <View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 6 }}>
               <Text style={{ color: c.foreground, fontSize: 14, lineHeight: 20 }}>Continuation message</Text>

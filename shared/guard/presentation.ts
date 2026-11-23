@@ -70,7 +70,7 @@ export function callerProtection(enabled: boolean, protectByDefault: boolean, ov
 export function agentGuardSummary(status: {
   governor: "off" | "active" | "deferred" | "error";
   protected: boolean; thresholdPct: number; autoResume: boolean;
-  pauses: readonly { phase: Pause["phase"]; resetsAt: string | null; movesTo?: string }[];
+  pauses: readonly { phase: Pause["phase"]; resetsAt: string | null; movesTo?: string; waits?: string }[];
 }): string[] {
   if (status.governor === "deferred") return ["Session Guard: run by another plugin on this host (likely the standalone Session Guard); this session's protection is not visible from here."];
   if (status.governor === "error") return ["Session Guard: status unavailable."];
@@ -80,7 +80,8 @@ export function agentGuardSummary(status: {
     const when = !pending.resetsAt ? "" : pending.movesTo
       ? `; at ${pending.resetsAt} ZeroSub moves it to another account (${pending.movesTo}) that has room again then, and it runs again there`
       : `; it runs again once the window resets ${pending.resetsAt}`;
-    return [`Session Guard: this session is held at the session limit (${pending.phase})${when}. Messages sent meanwhile wait for the reset unless a person resumes it.`];
+    const waits = pending.waits ? ` ${pending.waits}.` : "";
+    return [`Session Guard: this session is held at the session limit (${pending.phase})${when}.${waits} Messages sent meanwhile wait for the reset unless a person resumes it.`];
   }
   return [`Session Guard: on. At ${status.thresholdPct}% of the session window Paseo holds this session until the window resets, unless a person resumes it${status.autoResume
     ? ", then continues it in this same conversation — no need to stop early or hand off because of the session limit."
@@ -177,6 +178,7 @@ export function pausedLead(pending: readonly Pause[], autoResume: boolean, now: 
 export const PAUSE_ACTIONS = {
   resume: { label: "Resume now", busy: "Resuming…", icon: "Play", hint: "Continues before the reset and stops this session pausing at the limit. The provider may still refuse work until the reset." },
   dismiss: { label: "Release", busy: "Releasing…", hint: "Lets the session go without sending a message and stops it pausing at the limit." },
+  moveNow: { label: "Move now", busy: "Moving…", icon: "ArrowLeftRight", hint: "Stops its background jobs and moves it to an account with room, where it continues. It's told which jobs were stopped." },
 } as const;
 
 /**

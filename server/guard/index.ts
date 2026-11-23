@@ -27,6 +27,7 @@ import {
   dismissPauseRpc,
   guardPreferences,
   resumeNowRpc,
+  moveNowRpc,
   runtimeRpc,
   setProtectionRpc,
   statusRpc,
@@ -34,6 +35,7 @@ import {
 } from "../../shared/guard/contracts.ts";
 import { isPending, PolicySchema, sessionWindow, usedPct, type Policy, type State, type Usage } from "../../shared/guard/policy.ts";
 import { agentGuardSummary, callerProtection, heldUntil } from "../../shared/guard/presentation.ts";
+import { moveWaitLine } from "../../shared/guard/hold.ts";
 import { sharedDaemon } from "../daemon.ts";
 import { freshestUsage } from "../store.ts";
 import type { Connect, GuardClient } from "./client.ts";
@@ -344,7 +346,10 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     const protection = callerProtection(governor === "active" && policy.enabled, policy.protectByDefault, state.overrides[agentId]);
     const pauses = state.pauses
       .filter((pause) => pause.agentId === agentId)
-      .map((pause) => ({ id: pause.id, phase: pause.phase, provider: pause.provider, resetsAt: heldUntil(pause), ...(pause.nextRoomAt && pause.resetAccount ? { movesTo: pause.resetAccount } : {}) }));
+      .map((pause) => {
+        const waits = moveWaitLine(pause, Date.now(), (at) => at);
+        return { id: pause.id, phase: pause.phase, provider: pause.provider, resetsAt: heldUntil(pause), ...(pause.nextRoomAt && pause.resetAccount ? { movesTo: pause.resetAccount } : {}), ...(waits ? { waits } : {}) };
+      });
     return {
       governor,
       ...protection,
@@ -380,6 +385,13 @@ export function contributeGuard(server: PluginServerContext, options: GuardDepen
     await engine.resumeNow(agentId, pauseId);
     afterAction();
     return { ok: true };
+  });
+  server.handle(moveNowRpc, async ({ agentId, pauseId }) => {
+    await requireOwner();
+    const result = await engine.moveNow(agentId, pauseId);
+    afterAction();
+    void refresh();
+    return result;
   });
   server.handle(dismissPauseRpc, async ({ agentId, pauseId }) => {
     await requireOwner();

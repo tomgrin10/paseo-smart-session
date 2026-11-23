@@ -1,0 +1,4 @@
+- A held session that could move to an account with room no longer waits indefinitely for its background jobs. It waits up to 10 minutes for them to end, then they are stopped and it moves, unless its own account resets sooner.
+- After such a move the agent is told exactly which background jobs were stopped, so it can start again the ones it still needs.
+- Held workspaces and the Held sessions list now say why a session is still held and when it moves, and the list has Move now. Agents can do the same with guard_move_now.
+- New setting in Settings → Limit timing: "Stop background work to move a held session after (minutes)". 0 never stops them.

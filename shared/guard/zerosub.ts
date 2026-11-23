@@ -374,6 +374,8 @@ export interface AccountView {
   moveTarget(agentId: string, provider: string): string | null;
   /** The account ZeroSub's session record names for this agent, or null. */
   accountId(agentId: string, provider: string): string | null;
+  /** The person pinned this agent to its account in ZeroSub (binding source `user`): never move it unasked. */
+  pinned(agentId: string): boolean;
   /**
    * Where a held session gets room soonest, when ZeroSub could move it (automatic switching
    * on, and another account of its provider signed in and not set aside): the earliest of
@@ -431,6 +433,7 @@ export function accountView(
     },
     continuedElsewhere: (agentId) => snapshot.continuedElsewhere.has(agentId),
     accountId: (agentId, provider) => accountOf(snapshot, agentId, provider)?.id ?? null,
+    pinned: (agentId) => snapshot.bindings?.[agentId]?.source === "user",
     moveTarget(agentId, provider) {
       const account = accountOf(snapshot, agentId, provider);
       if (!account || !snapshot.autoSwitch || limited(account, now)) return null;

@@ -50,7 +50,7 @@ async function listTools(options: { agentId?: string; scope?: string } = {}): Pr
 }
 
 test("MCP exposes only the host-wide reports outside a Paseo agent", async () => {
-  assert.deepEqual(await listTools(), ["accounts_report", "budget_status"]);
+  assert.deepEqual(await listTools(), ["accounts_report", "budget_status", "guard_move_now"]);
 });
 
 test("MCP can be explicitly hidden outside Paseo without hiding agent tools", async () => {
@@ -61,6 +61,7 @@ test("MCP can be explicitly hidden outside Paseo without hiding agent tools", as
     "checkpoint",
     "context_status",
     "defer_compaction",
+    "guard_move_now",
     "publish_as",
     "publish_as_settings",
     "report_issue",

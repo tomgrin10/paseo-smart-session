@@ -38,7 +38,7 @@ export const agentStatusRpc = defineRpc({
     governor: GovernorSchema,
     enabled: z.boolean(), protected: z.boolean(), override: z.boolean().nullable(),
     thresholdPct: z.number(), autoResume: z.boolean(), retryTransientErrors: z.boolean(),
-    pauses: z.array(z.object({ id: z.string(), phase: PauseSchema.shape.phase, provider: z.string(), resetsAt: z.string().nullable(), movesTo: z.string().optional() })),
+    pauses: z.array(z.object({ id: z.string(), phase: PauseSchema.shape.phase, provider: z.string(), resetsAt: z.string().nullable(), movesTo: z.string().optional(), waits: z.string().optional() })),
     providers: z.array(ProviderSchema),
     summary: z.array(z.string()),
   }),
@@ -55,6 +55,14 @@ export const cancelResumeRpc = defineRpc({
 export const resumeNowRpc = defineRpc({
   name: "smart-session.guard.resume-now", input: z.object({ agentId: z.string().min(1), pauseId: z.string().min(1) }),
   output: z.object({ ok: z.boolean() }),
+});
+/**
+ * Move now: stop a held session's background work and move it to an account with room at once,
+ * where it continues (`held-background-work`). The page's button and the `guard_move_now` agent tool.
+ */
+export const moveNowRpc = defineRpc({
+  name: "smart-session.guard.move-now", input: z.object({ agentId: z.string().min(1), pauseId: z.string().min(1) }),
+  output: z.object({ outcome: z.string(), detail: z.string().nullable() }),
 });
 export const dismissPauseRpc = defineRpc({
   name: "smart-session.guard.dismiss-pause", input: z.object({ agentId: z.string().min(1), pauseId: z.string().min(1) }),

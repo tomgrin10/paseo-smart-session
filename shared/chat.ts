@@ -9,7 +9,7 @@ import { MOVED_LEAD } from "./guard/hold.ts";
 export const TOOL_ROW_KIND = "smart-session-tool";
 export const PROMPT_CARD_KIND = "smart-session-prompt";
 
-export const SMART_SESSION_TOOLS = ["context_status", "checkpoint", "request_compaction", "defer_compaction", "budget_status", "publish_as", "publish_as_settings", "report_issue", "report_send", "accounts_report"] as const;
+export const SMART_SESSION_TOOLS = ["context_status", "checkpoint", "request_compaction", "defer_compaction", "budget_status", "publish_as", "publish_as_settings", "report_issue", "report_send", "accounts_report", "guard_move_now"] as const;
 export type SmartSessionTool = (typeof SMART_SESSION_TOOLS)[number];
 
 export const ToolRowSchema = z.object({
@@ -115,6 +115,8 @@ export const TOOL_PRESENTATION: Record<SmartSessionTool, "routine" | "moment"> =
   report_issue: "routine", report_send: "routine",
   // A read-only report the agent summarizes in its own words.
   accounts_report: "routine",
+  // The agent says what it moved; the held session's own chat shows the continuation.
+  guard_move_now: "routine",
 };
 
 /** The chat row for a tool call, or null to leave it as Paseo's own grouped tool call. */
@@ -134,7 +136,7 @@ export function toolRow(name: string, status: string, detail: unknown, error: un
   const running = !failed && status !== "completed";
   if (failed) {
     const why = clip(oneLine(readText(error) || output.replace(/^Failed: /, "") || ""), 500);
-    return { tool, state: "failed", line: `Smart Session couldn't ${tool === "checkpoint" ? "save task state" : tool === "request_compaction" ? "queue the compaction" : tool === "defer_compaction" ? "put off compacting" : tool === "budget_status" ? "read plan usage" : tool === "publish_as" ? "publish the artifact" : tool === "publish_as_settings" ? "read the publishing setting" : tool === "report_issue" ? "prepare the bug report" : tool === "report_send" ? "hand the report over" : tool === "accounts_report" ? "build the accounts report" : "read the context"}`, detail: why };
+    return { tool, state: "failed", line: `Smart Session couldn't ${tool === "checkpoint" ? "save task state" : tool === "request_compaction" ? "queue the compaction" : tool === "defer_compaction" ? "put off compacting" : tool === "budget_status" ? "read plan usage" : tool === "publish_as" ? "publish the artifact" : tool === "publish_as_settings" ? "read the publishing setting" : tool === "report_issue" ? "prepare the bug report" : tool === "report_send" ? "hand the report over" : tool === "accounts_report" ? "build the accounts report" : tool === "guard_move_now" ? "move the held session" : "read the context"}`, detail: why };
   }
   switch (tool) {
     case "context_status":
@@ -186,6 +188,8 @@ export function toolRow(name: string, status: string, detail: unknown, error: un
       const line = mode ? `Smart placement set to ${mode}` : /^Not changed: /.test(output) ? "Smart placement unchanged" : `Accounts report${recommendation ? ` · ${clip(recommendation, 90)}` : ""}`;
       return { tool, state: running ? "running" : "done", line: running ? "Reading the accounts report…" : line, detail: clip(output, 2000) };
     }
+    case "guard_move_now":
+      return { tool, state: running ? "running" : "done", line: running ? "Moving the held session…" : /^Not moved/.test(output) ? "Held session not moved" : "Moved the held session", detail: clip(output, 1500) };
   }
 }
 

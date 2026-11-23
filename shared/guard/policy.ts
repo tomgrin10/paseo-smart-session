@@ -38,11 +38,41 @@ export const PolicySchema = z.object({
   retryTransientErrors: z.boolean().default(true),
   includeNativeSubagents: z.boolean().default(true),
   workspaceLabels: z.boolean().default(true),
+  /**
+   * With ZeroSub: how long a held session's move may wait for its background work (a test run, a
+   * CI watch) before the guard stops that work and moves the session anyway, in minutes. 0 never
+   * stops it: the session waits for the work to end or for the reset. See `moveWaitPlan`.
+   */
+  stopBackgroundWorkAfterMinutes: z.number().int().min(0).max(120).default(10),
   providerIds: z.array(z.string().min(1)).default([]),
   windowIds: z.array(z.string().min(1)).min(1).default(["five_hour", "session"]),
   continuation: z.string().trim().min(1).max(8000).default(DEFAULT_CONTINUATION),
 });
 export type Policy = z.infer<typeof PolicySchema>;
+
+/** One piece of background work an agent left running after its turn, as ZeroSub reports it from Paseo. */
+export const BackgroundJobSchema = z.object({
+  /** Paseo's kind: `shell`, `monitor` (a watcher), or `other`. */
+  kind: z.string(),
+  description: z.string().nullable(),
+  command: z.string().nullable(),
+});
+export type BackgroundJob = z.infer<typeof BackgroundJobSchema>;
+
+/**
+ * A held session whose move to an account with room waits for its background work, and what the
+ * guard does about it (`moveWaitPlan`): `move` stops the work and moves it at `at`; `reset` waits
+ * for its own account's reset at `at`, which comes before stopping would help; `jobs` waits for the
+ * work to end and never stops it, for `why`. Shown on the page, the label and the chat card.
+ */
+export const MoveWaitSchema = z.object({
+  since: z.string(),
+  jobs: z.array(BackgroundJobSchema),
+  plan: z.enum(["move", "reset", "jobs"]),
+  at: z.string().nullable(),
+  why: z.enum(["setting", "pinned", "override", "unsupported"]).optional(),
+});
+export type MoveWait = z.infer<typeof MoveWaitSchema>;
 
 export const PauseSchema = z.object({
   /**
@@ -81,6 +111,10 @@ export const PauseSchema = z.object({
    */
   resetAccount: z.string().optional(),
   nextRoomAt: z.string().optional(),
+  /** Its move waits for background work (`MoveWaitSchema`). Unknown to the standalone plugin, as `idle` is. */
+  moveWait: MoveWaitSchema.optional(),
+  /** The background work the guard stopped to move it; its continuation names each one. */
+  stoppedJobs: z.array(BackgroundJobSchema).optional(),
   notifications: z.array(NotificationSchema).optional(),
   suspension: z.object({
     rootPid: z.number().int().positive(),
@@ -94,6 +128,8 @@ export const StateSchema = z.object({
   pauses: z.array(PauseSchema),
   labelledWorkspaces: z.array(z.string()).optional(),
   workspaceLabelName: z.string().optional(),
+  /** The label name each labelled workspace carries, when it isn't `workspaceLabelName` (`heldLabel`). */
+  workspaceLabelNames: z.record(z.string(), z.string()).optional(),
 });
 export type State = z.infer<typeof StateSchema>;
 export const isPending = (pause: Pause) => ["pausing", "waiting", "resuming", "attention"].includes(pause.phase);
