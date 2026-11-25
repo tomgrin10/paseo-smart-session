@@ -508,6 +508,19 @@
   (`why: unsupported`). The label is one of `HELD_LABELS` (Paseo labels are named host-wide entities, so never a
   time in a name); the page row (`moveWaitLine`), Move now (`smart-session.guard.move-now`) and `guard_move_now`
   carry the rest. Tests: "held-background-work" in `guard-zerosub-limits.test.ts` and `guard-labels.test.ts`.
+- **Row badges (`row-badges`, Paseo 0.17.1+).** `client/row-badges.tsx` registers two `addWorkspaceRowBadgeItem` items,
+  `held` (icon `Pause`) and `account` (icon `UserRound`); their words are pure in `shared/guard/row-badge.ts`
+  (`row-badge.test.ts`). Held: pending pauses this process governs, by the agent directory's workspace (else the
+  pause's `workspaceId`): one hold says when it ends ("Held · 5:58 PM", "Held · moves 5:06 PM", `HELD_LABELS` where
+  there's no time), several say "2 held · <first end>", a hold in `attention` turns it `danger`. Account: with ZeroSub
+  and more than one account, the open sessions' accounts by `subscriptionName` ("Main", "2 accounts"), never an email.
+  No new poll: both read the guard status poll, the subscriptions poll and the agent directory. Feature-detected (the
+  method and `WorkspaceRowBadge`): on an older host nothing registers. **Invariant: a held workspace says it once.**
+  On a daemon whose `server_info.version` is 0.17.1 or later (`supportsRowBadges`, read once in `WorkspaceLabels` and
+  only while something is held) no held label is assigned and the labels in our own record (`labelledWorkspaces`) come
+  off; a label we never journaled is never touched. Unknown version, a 0.17.1 prerelease or an older daemon keep the
+  label. Trade-off: an app older than 0.17.1 on a newer daemon shows neither (`guard-labels.test.ts`, "row-badges").
+  `check-bundles.mjs` runs the client as an old and a 0.17.1+ host and pins the ids and icons.
 - The pill shows protection only while this process is the active governor; a pending pause keeps
   a session's pill up (even with the pill hidden) only while this process governs it.
 - Agents see it only through `budget_status` (`server/agent-tools.mjs`), which asks
