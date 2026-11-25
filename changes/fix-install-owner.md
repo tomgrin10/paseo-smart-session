@@ -1,2 +1,1 @@
 - Smart Session's own Paseo home always keeps its Claude Code hooks in your settings, even when a second Paseo home's entries are in the same file, and a second home never adds its hooks there.
-- Undoing a stopped move of old history adds each line back exactly once, even if it was interrupted right after writing or ran out of disk space.

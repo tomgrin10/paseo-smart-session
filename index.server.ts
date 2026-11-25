@@ -2,7 +2,6 @@ import { contributeGuard } from "./server/guard/index.ts";
 import { checkPlacementPatch } from "./server/placement.ts";
 import { zerosubBudgetAccount } from "./server/guard/zerosub.ts";
 import { contributeSessionMcp } from "./server/session-mcp.ts";
-import { contributeHistoryShed } from "./server/history-shed-host.ts";
 import { contributeUsageSource, usageCards } from "./server/usage-source.ts";
 import { LogRing } from "./server/report-issue/diagnostics.ts";
 import { smartSessionReporter } from "./server/report-issue-adapter.ts";
@@ -91,8 +90,6 @@ export default function contribute(host: PluginServerContext) {
   server.registerSettings(displayPreferences);
   // Pauses work at a provider's session limit; off until someone turns it on.
   const removeGuard = contributeGuard(server);
-  // Moves a Claude transcript's history from before its last compaction into a backup; off unless turned on.
-  const removeHistoryShed = contributeHistoryShed(server);
   // Paseo 0.16+: Smart Session's forecast and every ZeroSub account in Paseo's own usage card.
   contributeUsageSource(server);
   const removeReport = contributeReport(server, invoke);
@@ -304,7 +301,7 @@ export default function contribute(host: PluginServerContext) {
   // The recorder and governor register their timers in this shared lifecycle.
   // Paseo waits for this cleanup before stopping the plugin subprocess.
   // The held daemon connection closes last, after every feature that might still be using it.
-  return () => runTeardowns([removeSessionMcp, removeGuard, removeHistoryShed, removeReport, ...lifecycle.teardowns.splice(0), closeDaemon]);
+  return () => runTeardowns([removeSessionMcp, removeGuard, removeReport, ...lifecycle.teardowns.splice(0), closeDaemon]);
 }
 
 /**

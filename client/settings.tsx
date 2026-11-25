@@ -16,7 +16,6 @@ import { extraUsageLine, showsMainChip, subscriptionState } from "../shared/subs
 import { DEFAULT_THRESHOLDS, linesProblem, withCompactThreshold } from "../shared/thresholds";
 import { broadcastDisplay } from "./display";
 import { guardSnapshot, refreshGuard, subscribeGuard } from "./guard/status";
-import { HistoryShedSection } from "./history-shed";
 import { Button, errorText } from "./kit";
 import { refreshPills } from "./pill-store";
 import { openReportSheet } from "./report-request";
@@ -287,9 +286,6 @@ export function makeSettings(client: PluginClientContext) {
             onValueChange={(mode) => void save({ placement: { mode: mode as "off" | "shadow" | "live" } }, PLACEMENT_SAVED[mode as "off" | "shadow" | "live"])} />
         </SettingsCard>
       </SettingsSection> : null}
-
-      <HistoryShedSection enabled={settings.shedHistory} thresholds={settings.shedThresholds} saving={saving}
-        onToggle={(shedHistory) => void save({ shedHistory }, shedHistory ? "Old history moves aside at each agent's next load" : "Old history stays in place")} />
 
       <SettingsSection title="Display" info="Hiding the row or the pill never turns a feature off. ⌘K Smart Session still opens the overview.">
         {display.status === "loading" ? <ActivityIndicator accessibilityLabel="Loading display settings" color={c.foregroundMuted} style={{ padding: 16 }} />

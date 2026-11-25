@@ -13,7 +13,6 @@ import { join } from "node:path";
 
 import { dataDir } from "./store.ts";
 import { DEFAULT_THRESHOLDS, normalizeThresholds, type Thresholds } from "../shared/thresholds.ts";
-import { DEFAULT_SHED_THRESHOLDS, normalizeShedThresholds, type ShedThresholds } from "../shared/history-shed.ts";
 import { DEFAULT_REPORT_SETTINGS, normalizeReportSettings, type ReportSettings } from "../shared/accounts-report.ts";
 
 export interface Settings {
@@ -80,14 +79,6 @@ export interface Settings {
    */
   readonly publishAsExtraUsage: boolean;
   /**
-   * "Move old history aside": when an agent next loads, its Claude transcript's history from before
-   * the last compaction moves into a full backup copy beside it (`server/history-shed.ts`). Off unless
-   * the person turns it on: nothing (install, upgrade, a transcript's size) ever turns it on.
-   */
-  readonly shedHistory: boolean;
-  /** When a transcript is worth it: at least `minMb`, or at least `minCompactions` compactions. */
-  readonly shedThresholds: ShedThresholds;
-  /**
    * The Accounts report's thresholds and plan sizes (`shared/accounts-report.ts`): when to suggest
    * adding or dropping an account or placing work better, and each account's relative plan size.
    */
@@ -106,8 +97,6 @@ export const DEFAULT_SETTINGS: Settings = {
   publishAsMain: true,
   publishAsAccount: null,
   publishAsExtraUsage: false,
-  shedHistory: false,
-  shedThresholds: DEFAULT_SHED_THRESHOLDS,
   accountsReport: DEFAULT_REPORT_SETTINGS,
   placement: { mode: DEFAULT_PLACEMENT_MODE },
 };
@@ -133,8 +122,6 @@ export async function readSettings(): Promise<Settings> {
       publishAsMain: raw.publishAsMain !== false,
       publishAsAccount: accountId(raw.publishAsAccount),
       publishAsExtraUsage: raw.publishAsExtraUsage === true,
-      shedHistory: raw.shedHistory === true,
-      shedThresholds: normalizeShedThresholds(raw.shedThresholds),
       accountsReport: normalizeReportSettings(raw.accountsReport),
       placement: { mode: placementMode(raw.placement?.mode) },
     };
@@ -156,8 +143,6 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
     publishAsMain: next.publishAsMain !== false,
     publishAsAccount: accountId(next.publishAsAccount),
     publishAsExtraUsage: next.publishAsExtraUsage === true,
-    shedHistory: next.shedHistory === true,
-    shedThresholds: normalizeShedThresholds(next.shedThresholds),
     accountsReport: normalizeReportSettings(next.accountsReport),
     placement: { mode: placementMode(next.placement?.mode) },
   };

@@ -23,7 +23,7 @@ const ALICE = "alice@example.com";
 /** Smart Session's RPCs as the adapter reads them, with an account named by its email (ZeroSub can do that). */
 function deps(extra: Partial<SmartSessionReportDeps> = {}): SmartSessionReportDeps {
   const answers: Record<string, unknown> = {
-    "smart-session.settings.get": { settings: { enabled: true, showPill: true, autoEnrol: false, installHooks: true, publishAsMain: false, shedHistory: false }, enrolledAgents: 3 },
+    "smart-session.settings.get": { settings: { enabled: true, showPill: true, autoEnrol: false, installHooks: true, publishAsMain: false }, enrolledAgents: 3 },
     "smart-session.guard.status": { governor: { state: "active" }, standalone: false, pauses: [{ phase: "waiting" }, { phase: "done" }], policy: { enabled: true, retryTransientErrors: true, thresholdPct: 95 } },
     "smart-session.subscriptions": { zerosub: true, autoSwitch: true, accounts: [{ id: "a1", family: "claude", name: ALICE }, { id: "a2", family: "claude", name: "Account 2" }, { id: "c1", family: "codex", name: "bob@example.com" }] },
     "smart-session.budget": { recorder: { ageSeconds: 120, source: "statusline" }, error: null },

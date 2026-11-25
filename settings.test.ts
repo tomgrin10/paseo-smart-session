@@ -71,3 +71,23 @@ test("a settings file saved before the upper line existed is migrated additively
   // Reading never rewrites the file.
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")), old);
 });
+
+test("a settings file from a 3.8.0 beta with the removed history keys still loads", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ss-settings-"));
+  process.env.PASEO_HOME = home;
+  const dir = join(home, "plugin-data", "smart-session");
+  mkdirSync(dir, { recursive: true });
+  // 3.8.0-beta.1 to beta.22 stored "Move old history aside" here; the feature is gone.
+  const old = { enabled: true, showPill: false, publishAsMain: true, shedHistory: true, shedThresholds: { minMb: 50, minCompactions: 10 } };
+  writeFileSync(join(dir, "settings.json"), JSON.stringify(old), "utf8");
+  const settings = (await import(`./server/settings.ts?case=${home}`)) as typeof import("./server/settings.ts");
+  const read = await settings.readSettings();
+  assert.equal(read.showPill, false, "the file was read, not replaced by defaults");
+  assert.equal("shedHistory" in read || "shedThresholds" in read, false);
+  // Reading never rewrites the file; a later save drops the old keys.
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")), old);
+  await settings.writeSettings({ showPill: true });
+  const saved = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+  assert.equal(saved.showPill, true);
+  assert.equal("shedHistory" in saved || "shedThresholds" in saved, false);
+});

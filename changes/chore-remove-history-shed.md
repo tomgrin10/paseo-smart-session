@@ -1,0 +1,4 @@
+- Move old history aside (3.8.0 betas only) is gone, with Settings → Smart Session → Chat history.
+- Its backups stay untouched in `~/.paseo/plugin-data/smart-session/history-shed/backups/`. A transcript it shortened stays shortened; the full one is the `.jsonl` in that agent's backup folder.
+- A second Smart Session loaded against another Paseo home (a test setup sharing your Claude settings) no longer removes the main install's Claude Code hooks.
+- A custom `PASEO_HOME` (when `~/.paseo` has no Smart Session) keeps its Claude Code hooks in your settings.
