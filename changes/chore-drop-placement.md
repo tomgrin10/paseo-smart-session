@@ -1,4 +1,0 @@
-- Smart placement is gone: its setting under Settings → Accounts, its line under How your accounts were used, and placement_mode on `smart_accounts_report`. ZeroSub's "Spread new agents across accounts" places sessions.
-- How your accounts were used replays your work the way ZeroSub 1.31 places new agents (the replay line says "ZeroSub 1.31 ranking"), instead of an older ZeroSub's weekly pace.
-- "Switch earlier" is suggested only for time at a limit after account moves were logged, with its cause. Time from before, with no known cause, no longer heads the section.
-- A stretch at a limit no longer says "pacing was off" while ZeroSub 1.31 spreads new agents; it says "ZeroSub's spreading was off" only when it was.

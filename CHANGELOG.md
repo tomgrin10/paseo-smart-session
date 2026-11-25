@@ -8,12 +8,11 @@ Smart Session now tells you how well your Claude accounts are used and whether t
 
 ### How your accounts are used (ZeroSub)
 
-- New on the Smart Session page, "How your accounts were used": for each Claude account over 14 days, its weekly use, hours waiting, hours at a limit while another had room, Extra usage, and a day strip.
+- New on the Smart Session page, "How your accounts were used": for each Claude and Codex account over 14 days, its weekly use, hours waiting, hours at a limit while another had room, Extra usage, and a day strip.
 - Agents can read the same report with the read-only `smart_accounts_report` tool.
-- One recommendation leads it with its reason and numbers: add an account, drop one, switch earlier, or keep what you have. It replays your own logged usage with one account fewer and one more, against the accounts you have now.
+- One recommendation leads it with its reason and numbers: add an account, drop one, switch earlier (only for time at a limit with a known cause), or keep what you have.
+- It replays your own logged usage with one account fewer and one more, against the accounts you have now, ranked the way ZeroSub 1.31 places new agents.
 - An account under two weeks old shows how much of the waiting it would have covered and the date its verdict is ready, instead of a guess. When the readings cover fewer than 14 days, the report says how many.
-- New setting Settings → Accounts → Smart placement. Shadow (the default) only logs where a placement rule would have put and moved your sessions, with one line comparing it to what happened.
-- Live is offered only when ZeroSub isn't pacing or spreading new agents itself; otherwise the setting says which ZeroSub option is in the way.
 - Smart Session keeps a local record of which account each agent runs on, its pauses and ZeroSub's moves, which is what the report reads.
 
 ### Every account shows what Main shows
@@ -67,7 +66,7 @@ Smart Session now tells you how well your Claude accounts are used and whether t
 
 ### Upgrading from 3.7
 
-- No manual steps. Smart placement starts in Shadow and Move old history aside starts off, so neither changes anything until you turn it on.
+- No manual steps. Move old history aside starts off, so it changes nothing until you turn it on.
 - Background jobs of a held session are now stopped after 10 minutes when another account has room. Set "Stop background work to move a held session after" to 0 to keep the old behavior.
 - Works with Paseo 0.14 and later; the sidebar badges need Paseo 0.17.1.
 
