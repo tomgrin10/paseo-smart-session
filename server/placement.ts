@@ -23,6 +23,7 @@ import type { ZeroSubSnapshot } from "../shared/guard/zerosub.ts";
 import { EMPTY_SHADOW, liveRefusal, shadowTick, type DecisionRow, type LiveLevers, type ShadowAgent, type ShadowState } from "../shared/placement-shadow.ts";
 
 const paseoHome = () => process.env.PASEO_HOME ?? join(homedir(), ".paseo");
+import { readMoveReply } from "../shared/guard/move-reply.ts";
 const MOVE_RPC = "zerosub.agents.move_before_limit";
 const LEVERS_TTL_MS = 10 * 60_000;
 const SCAN_FILES = 400;
@@ -118,9 +119,11 @@ async function moveNow(invoke: Invoke, agentId: string, accountId: string): Prom
   const pluginId = await zerosubInstallId().catch(() => null);
   if (pluginId === null) return "failed";
   try {
-    const reply = record(await invoke(pluginId, MOVE_RPC, { agentId, accountId }));
-    const outcome = typeof reply?.outcome === "string" ? reply.outcome : "unknown";
-    return /^[a-z][a-z0-9_:-]{0,40}$/.test(outcome) ? outcome : "unknown";
+    // Read as the guard reads it (`move-contract`): a move that landed on another account is
+    // `landed_elsewhere`, never `moved`.
+    const reply = readMoveReply(await invoke(pluginId, MOVE_RPC, { agentId, accountId }), accountId);
+    if (reply === null) return "unknown";
+    return reply.reason === "landed_elsewhere" || reply.reason === "unknown" ? reply.reason : reply.outcome;
   } catch {
     return "failed";
   }

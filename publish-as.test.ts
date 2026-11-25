@@ -249,6 +249,21 @@ test("helper: on Extra usage the pin allows the limited owner; without it, it do
   assert.equal(plain.calls[1], "pin:claude-main");
 });
 
+test("helper: a pin ZeroSub refuses at the quota maximum says why in our words, without ZeroSub's label", async () => {
+  const { ops, calls } = fakeOps();
+  ops.pin = async (_id, account, allowLimited) => {
+    calls.push(`pin:${account}${allowLimited ? "+limited" : ""}`);
+    throw new Error("alice@example.com reached its quota maximum. Raise it in Accounts or pick another account.");
+  };
+  const result = await runHelper(ops, { ...job(), extraUsage: true }, { newId: () => "h10" });
+  assert.equal(result.ok, false);
+  assert.equal(result.outcome, "failed");
+  assert.match(result.error!, /quota maximum set in ZeroSub's Accounts.*Extra usage doesn't lift that ceiling/);
+  assert.doesNotMatch(result.error!, /alice@example\.com/);
+  assert.ok(!calls.includes("send"));
+  assert.equal(calls.at(-1), "archive:h10");
+});
+
 test("helper: moved off the owner during its turn is not a publish", async () => {
   const { ops, calls } = fakeOps({ onTarget: "moved-during-turn" });
   const result = await runHelper(ops, job(), { newId: () => "h9" });
