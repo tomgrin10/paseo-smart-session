@@ -681,6 +681,23 @@ export function agentTools(context) {
   return TOOLS;
 }
 
+/**
+ * Why these arguments don't fit the tool's schema, or null. Every schema here says `additionalProperties: false`, and
+ * some defaults make an ignored key dangerous: `request_compaction` with `{"continue": false}` (meaning
+ * `continue_after_compaction`) would compact and then start another turn. The native tools are checked by Paseo
+ * against the same schema; `mcp.mjs` (stdio and the bridge's `call`) checks here.
+ */
+export function argumentProblem(name, tool, args) {
+  if (args === null || typeof args !== "object" || Array.isArray(args)) return `${name} takes one JSON object of arguments.`;
+  const properties = Object.keys(tool.inputSchema?.properties ?? {});
+  const valid = properties.length > 0 ? `Valid: ${properties.join(", ")}.` : "It takes none.";
+  const unknown = Object.keys(args).filter((key) => !properties.includes(key));
+  if (unknown.length > 0) return `${name} has no argument ${unknown.join(", ")}. ${valid}`;
+  const missing = (tool.inputSchema?.required ?? []).filter((key) => args[key] === undefined);
+  if (missing.length > 0) return `${name} needs ${missing.join(", ")}. ${valid}`;
+  return null;
+}
+
 /** Name, description and JSON Schema of each tool, for listing. */
 export const TOOL_SHAPES = Object.entries(agentTools({ agentId: null, call: async () => ({}) }))
   .map(([name, tool]) => ({ name, description: tool.description, inputSchema: tool.inputSchema }));

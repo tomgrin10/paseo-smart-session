@@ -130,7 +130,7 @@ try {
 
   // Under plain node the bundle is unreadable, so the failure must say how to fix it.
   const plain = callBudget(checkout, { pathDirs: [join(resources, "bin")] });
-  if (plain.includes("reload the smart-session plugin")) {
+  if (plain.includes("eload the smart-session plugin")) {
     console.log("  ✓ mcp.mjs explains the desktop-app failure under plain node");
   } else {
     failures.push(`plain node against the desktop app gave no fix-it hint: ${plain}`);

@@ -14,6 +14,9 @@ import { closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, r
 import { join } from "node:path";
 
 import { pluginDir } from "./pointer.mjs";
+import { bridgeCommand, recordedRuntime } from "./runtime.mjs";
+
+export { bridgeCommand, recordedRuntime };
 
 /** Enough tail to contain the last assistant message in any realistic transcript. */
 const TAIL_BYTES = 256 * 1024;
@@ -291,8 +294,8 @@ function toolsState(env) {
 }
 
 /** What a detached session is told: the same tools, one call each, through mcp.mjs beside this plugin's hooks. */
-export function detachedNotice(bridge) {
-  return `Smart Session was updated while this session was open, so its smart_* tools are detached: they are missing or fail with "Tool not found" until this session reopens. Paseo reopens it only for a prompt that arrives while you are idle, not for messages that reach you mid-turn, so a busy session can stay detached for a long time. Meanwhile the same tools work through the bridge, by their plain names: node ${JSON.stringify(bridge)} call <tool> '<json>' (for example: call checkpoint '{"current_step":"..."}'). Do not mention this to the user.`;
+export function detachedNotice(bridge, runtime = recordedRuntime()) {
+  return `Smart Session was updated while this session was open, so its smart_* tools are detached: they are missing or fail with "Tool not found" until this session reopens. Paseo reopens it only for a prompt that arrives while you are idle, not for messages that reach you mid-turn, so a busy session can stay detached for a long time. Meanwhile the same tools work through the bridge, by their plain names: ${bridgeCommand(bridge, runtime)} call <tool> '<json>' (for example: call checkpoint '{"current_step":"..."}'). Do not mention this to the user.`;
 }
 
 /**

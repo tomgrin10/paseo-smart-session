@@ -194,6 +194,18 @@
   `server/install.ts` registers `mcp.mjs` on that same executable (`$APPIMAGE` for an AppImage)
   with `ELECTRON_RUN_AS_NODE=1`, and `mcp.mjs` resolves the client through `process.resourcesPath`.
   This broke on macOS after an app update; `check-mcp-resolve.mjs` covers that layout too.
+- **Invariant: every way an agent or a hook runs a daemon-backed script reaches the daemon on the desktop app.**
+  `launcherFor` (`server/hook-path.ts`) is the one rule for that runtime: `mcpDefinition` registers the MCP server
+  with it, and `pointShimsAt` records it in `current.json` (`runtime: {command, env}`, only under Electron). The shims
+  of `NEEDS_DAEMON` (`mcp.mjs`, `publish-as.mjs`) started by plain `node` run their script on it instead (same args,
+  stdio and exit code; `SMART_SESSION_ON_RUNTIME` stops a loop; a runtime that is gone runs in-process as before), and
+  the detached notice prints `bridgeCommand` (`server/hooklib/runtime.mjs`): `ELECTRON_RUN_AS_NODE=1 '<app runtime>'
+  '<shim>'`, single-quoted, or `node '<shim>'` elsewhere. Other hooks stay in-process. Root cause it fixes (3.7.0): the
+  notice said `node "<shim>" call ...`, which can't load the app's client, so every daemon-backed tool failed through
+  the bridge, and the `publish-as` hook failed the same way (`bridge-runtime.test.ts`, a fake app layout).
+- `mcp.mjs` refuses arguments a tool's schema doesn't take, and missing required ones (`argumentProblem` in
+  `server/agent-tools.mjs`; exit 2 for `call`, a tool error over stdio): `{"continue": false}` to `request_compaction`
+  was ignored, so it compacted and then started another turn. Native tools are checked by Paseo.
 - **Invariant: one held daemon connection per process, closed in teardown (one-held-daemon-connection).** Every
   daemon call goes through `withDaemon`, which runs on `sharedDaemon`'s one connection (`server/daemon.ts`;
   `openDaemon` is the only place a `DaemonClient` is built). It reopens only after a real drop (the client's
@@ -708,7 +720,7 @@ interactive Claude/Codex sessions:
   detached session, so a busy agent can stay detached for hours (the cause is Paseo's: tools are bound to the worker
   instance and re-bound only by a session open). The worker records its instance
   (`tools-instance.json`) and each attach its instance (`tools/native-<agentId>.json`); a mismatch is "detached", and the
-  agent is pointed at `node mcp.mjs call <tool> '<json>'` meanwhile.
+  agent is pointed at the bridge (`bridgeCommand` ... `mcp.mjs call <tool> '<json>'`, on the desktop app's runtime there) meanwhile.
 - **Invariant: a detached session is told once per worker instance, through a hook that actually fires.**
   `detachedOnce`/`markDetachedTold` (`server/hooklib/context.mjs`, latch `tools/told-<agentId>.json`) gate it; it rides
   `PostToolUse` on any tool (`context-threshold.mjs`), `PostToolUseFailure` on `mcp__paseo__smart_.*` and

@@ -41,7 +41,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { PLUGIN_VERSION } from "../shared/version.ts";
-import { complete, pointerHealthy, pointShimsAt, shimDir } from "./hook-path.ts";
+import { complete, currentRuntime, launcherFor, pointerHealthy, pointShimsAt, shimDir, type McpRuntime } from "./hook-path.ts";
 import { readSettings } from "./settings.ts";
 import { brokenHomeLinks, describeHomeLinks } from "./settings-links.ts";
 
@@ -405,18 +405,6 @@ export interface McpDefinition {
   env?: Record<string, string>;
 }
 
-export interface McpRuntime {
-  electron: string | undefined;
-  execPath: string;
-  appImage: string | undefined;
-}
-
-const currentRuntime = (): McpRuntime => ({
-  electron: process.versions.electron,
-  execPath: process.execPath,
-  appImage: process.env.APPIMAGE,
-});
-
 /**
  * How Claude Code should launch `mcp.mjs`.
  *
@@ -428,13 +416,9 @@ const currentRuntime = (): McpRuntime => ({
  */
 export function mcpDefinition(pluginDir: string, runtime: McpRuntime = currentRuntime(), script?: string): McpDefinition {
   const args = [script ?? join(pluginDir, "mcp.mjs")];
-  if (runtime.electron === undefined) return { type: "stdio", command: "node", args };
-  return {
-    type: "stdio",
-    command: runtime.appImage ?? runtime.execPath,
-    args,
-    env: { ELECTRON_RUN_AS_NODE: "1" },
-  };
+  const launcher = launcherFor(runtime);
+  if (launcher === null) return { type: "stdio", command: "node", args };
+  return { type: "stdio", command: launcher.command, args, env: launcher.env };
 }
 
 /**
