@@ -88,7 +88,7 @@ export interface AccountSample extends Omit<UsageSample, "src"> {
  * The account-use logs (`shared/account-log.ts`): where agents run, Session Guard holds,
  * ZeroSub moves, and each account's credits. Same rules as the others.
  */
-export type AccountLogKind = "placement" | "holds" | "moves" | "credits" | "decisions";
+export type AccountLogKind = "placement" | "holds" | "moves" | "credits";
 
 type LogKind = "usage" | "context" | "accounts" | AccountLogKind;
 

@@ -71,3 +71,21 @@ test("a settings file saved before the upper line existed is migrated additively
   // Reading never rewrites the file.
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")), old);
 });
+
+test("a settings file from the 3.8.0 betas with Smart placement still loads; the key is dropped at the next save", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ss-settings-"));
+  process.env.PASEO_HOME = home;
+  const dir = join(home, "plugin-data", "smart-session");
+  mkdirSync(dir, { recursive: true });
+  const old = { enabled: true, showPill: false, publishAsMain: false, placement: { mode: "live" } };
+  writeFileSync(join(dir, "settings.json"), JSON.stringify(old), "utf8");
+  const settings = (await import(`./server/settings.ts?case=${home}`)) as typeof import("./server/settings.ts");
+  const read = await settings.readSettings();
+  assert.equal(read.showPill, false, "the rest of the file is read as it was");
+  assert.equal(read.publishAsMain, false);
+  assert.equal("placement" in read, false);
+  // An old client's patch with the key changes nothing else and saves without it.
+  const saved = await settings.writeSettings({ showPill: true, placement: { mode: "shadow" } } as Parameters<typeof settings.writeSettings>[0]);
+  assert.equal(saved.showPill, true);
+  assert.equal("placement" in JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")), false);
+});

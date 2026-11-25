@@ -28,7 +28,7 @@ export const AGENT_SCOPED = new Set(["context_status", "checkpoint", "request_co
 export const REPORT_DESCRIPTION = "Report a bug, feature request or feedback about Smart Session to its GitHub. Call with kind+summary first; the reply has the procedure.";
 
 /** `accounts_report`'s one line (at most 150 characters; `accounts-report.test.ts` holds it). */
-export const ACCOUNTS_REPORT_DESCRIPTION = "How your Claude accounts were used over 14 days, smart placement beside what happened, and whether to add or drop one. placement_mode sets it.";
+export const ACCOUNTS_REPORT_DESCRIPTION = "How your Claude and Codex accounts were used over 14 days: waiting, limits, a replay with one account fewer or more, and whether to add or drop one.";
 
 /** `guard_move_now`'s one line (at most 150 characters; `guard-zerosub-limits.test.ts` holds it). */
 export const MOVE_NOW_DESCRIPTION = "Move a session Session Guard holds at the limit to an account with room now, stopping its background jobs. Only when the user asks.";
@@ -287,24 +287,15 @@ export function agentTools(context) {
       description: ACCOUNTS_REPORT_DESCRIPTION,
       inputSchema: {
         type: "object",
-        properties: {
-          placement_mode: { type: "string", enum: ["off", "shadow", "live"], description: "Smart placement: off, shadow (log what it would do; the default) or live (move sessions through ZeroSub). Change it only when the user asks." },
-        },
+        properties: {},
         additionalProperties: false,
       },
-      async run(args) {
-        const mode = args?.placement_mode;
-        let note = null;
-        if (mode === "off" || mode === "shadow" || mode === "live") {
-          const saved = await callPlugin("smart-session.settings.set", { placement: { mode } });
-          note = saved?.refused ? `Not changed: ${saved.refused}` : `Saved. Smart placement: ${saved?.settings?.placement?.mode ?? mode}.`;
-        }
+      async run() {
         const result = await callPlugin("smart-session.accounts.report", {});
-        if (note !== null && result?.error) return `${note}\nCould not build the accounts report: ${result.error}`;
         if (result?.error) return `Could not build the accounts report: ${result.error}`;
         const lines = Array.isArray(result?.lines) ? result.lines.filter((line) => typeof line === "string") : [];
         const body = lines.length > 0 ? lines.join("\n") : "No account readings recorded yet, so there is nothing to report.";
-        return note === null ? body : `${note}\n${body}`;
+        return body;
       },
     },
 

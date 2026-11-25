@@ -9,8 +9,6 @@
  * source mixed logins). Every other account's come from `accounts-*.jsonl`.
  */
 
-import { currentRefusal } from "./placement.ts";
-import { placementLine, placementSummary, type DecisionRow } from "../shared/placement-shadow.ts";
 import { readZeroSub } from "./guard/zerosub.ts";
 import { readSettings } from "./settings.ts";
 import { readAccountLog, readAccounts, readUsage, type AccountSample } from "./store.ts";
@@ -151,19 +149,12 @@ export async function accountsReports(now = Date.now()): Promise<AccountsReport[
     readAccountLog<CreditsRow>("credits", { sinceMs: since }),
     readSettings(),
   ]);
-  const decisions = await readAccountLog<DecisionRow>("decisions", { sinceMs: since }).catch(() => []);
   const logs = { usage, accounts, holds, placement, moves, credits };
   const reports: AccountsReport[] = [];
-  const mode = settings.placement.mode;
-  const refusal = mode === "live" ? await currentRefusal(now).catch(() => null) : null;
   for (const family of ["claude", "codex"] as const) {
     const input = reportInput(snapshot, logs, family, now);
     if (input === null || !input.accounts.some((a) => a.readings.length > 0)) continue;
-    const report = accountsReport(input, settings.accountsReport);
-    if (family === "claude" && snapshot !== null) {
-      const summary = placementSummary(decisions, holds, Date.parse(report.window.from), now, mode, refusal);
-      reports.push({ ...report, placement: { ...summary, line: placementLine(summary) } });
-    } else reports.push(report);
+    reports.push(accountsReport(input, settings.accountsReport));
   }
   cached = { at: now, reports };
   return reports;

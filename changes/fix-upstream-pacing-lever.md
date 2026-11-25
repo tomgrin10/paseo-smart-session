@@ -1,1 +1,0 @@
-- Smart placement's Live mode also stays off while ZeroSub's "Spread new agents across accounts" is on, so it never runs alongside newer ZeroSub versions' own spreading; the setting says which ZeroSub option to turn off.
