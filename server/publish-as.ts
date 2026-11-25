@@ -175,7 +175,16 @@ async function runHelperOnce(
     await ops.create(helperId, job.cwd);
     created = true;
     const extraUsage = job.extraUsage === true;
-    await ops.pin(helperId, job.target.id, extraUsage);
+    try { await ops.pin(helperId, job.target.id, extraUsage); }
+    catch (error) {
+      // ZeroSub 1.31+ refuses a pin to an account at the quota maximum set in its Accounts, with or
+      // without `allowLimited`: Extra usage doesn't lift the person's own ceiling. Its message names
+      // the account by label, so the reason is said here in our words.
+      if (/quota maximum/i.test(error instanceof Error ? error.message : String(error))) {
+        return done("failed", { error: `${owner} reached the quota maximum set in ZeroSub's Accounts, so nothing was published. Extra usage doesn't lift that ceiling: raise it in ZeroSub's Accounts, or publish after the window resets.` });
+      }
+      throw error;
+    }
     if ((await ops.sessionAccount(helperId)) !== job.target.id) await ops.reload(helperId);
     const on = await ops.sessionAccount(helperId);
     // Never let the helper publish anywhere but the target: that would only make another seat page.

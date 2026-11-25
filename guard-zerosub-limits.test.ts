@@ -21,6 +21,7 @@ import { limitNotice, turnRows } from "./shared/guard/limit-notice.ts";
 import * as hold from "./shared/guard/hold.ts";
 import { heldUntil, ZEROSUB_MOVE_GRACE_MS, ZeroSubMoves } from "./shared/guard/hold.ts";
 import { promptCard } from "./shared/chat.ts";
+import { moveAskDue, readMoveReply } from "./shared/guard/move-reply.ts";
 import type { GuardClient } from "./server/guard/client.ts";
 import type { ProcessControl } from "./server/guard/processes.ts";
 
@@ -1059,3 +1060,156 @@ test("held-background-work: the continuation names stopped jobs without their se
   assert.match(text, /`DEPLOY_TOKEN=… \.\/deploy\.sh --password …` \(shell\)/);
   assert.equal(promptCard(text)?.kind, "guard-moved", "the chat card still reads it as a move");
 });
+
+// --------------------------------------------------------------------------- move-contract
+
+// ZeroSub's reviewed move_before_limit (1.31.0+, fork 1.31.0-pace.16): `waiting` queues NOTHING, so the
+// guard must ask again once the turn or the work ends; `pending` is a reload still in flight; `moved` only
+// when the session runs on the target (`accountId`), else `refused` + `landed_elsewhere`; an unknown
+// `reason` is a refusal not worth retrying. Invariant (`move-contract`): the guard asks again while it
+// still wants the move, bounded by the answer, and never shows a move that landed elsewhere as moved.
+const answer = (outcome: string, more: Record<string, unknown> = {}) =>
+  ({ outcome, reason: null, retryable: false, accountId: "claude-a", detail: null, waitingFor: null, backgroundWork: [], stopped: [], ...more });
+/** ZeroSub 1.31: answers from `replies` in order (the last repeats); `moves` lands the session on the target when it says moved. */
+function zerosub131(f: () => { zs: ZeroSub; now: number }, replies: ((input: { agentId: string; accountId: string; stopBackgroundWork?: boolean }) => Record<string, unknown>)[]) {
+  const calls: { at: number; stop: boolean }[] = [];
+  const rpc = async (method: string, input: { agentId: string; accountId: string; stopBackgroundWork?: boolean }) => {
+    assert.equal(method, MOVE_RPC);
+    calls.push({ at: f().now, stop: input.stopBackgroundWork === true });
+    const reply = replies[Math.min(calls.length - 1, replies.length - 1)]!(input);
+    if (reply.outcome === "moved") f().zs.move(input.agentId, input.accountId, f().now + 1_000);
+    return reply;
+  };
+  return { rpc, calls };
+}
+async function contractFixture(t: Parameters<typeof fixture>[0], replies: Parameters<typeof zerosub131>[1], opts: { idle?: boolean } = {}) {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  const zerosub = zerosub131(() => f, replies);
+  f = await fixture(t, { native: true, policy: { thresholdPct: 90 }, rpc: (m, i) => zerosub.rpc(m, i) });
+  f.engine.zerosubPluginId = async () => "zerosub";
+  f.zs.sessions.x = "claude-a";
+  if (opts.idle) { f.agent.status = "idle"; f.agent.activeTurn = null; }
+  const tickAt = async (ms: number) => { f.at(ms); heldOnA(f.zs, ms); await f.engine.tick(); };
+  return { f, zerosub, tickAt };
+}
+const moved = (input: { accountId: string }) => answer("moved", { accountId: input.accountId });
+
+test("move-contract invariant: a `waiting` for the turn queues nothing, so the guard asks again once the turn ended and it moves", async t => {
+  const { f, zerosub, tickAt } = await contractFixture(t, [
+    () => answer("waiting", { reason: "busy_turn", retryable: true, waitingFor: "turn", detail: "A turn is running." }),
+    moved,
+  ]);
+  await tickAt(T0);
+  assert.deepEqual(f.log.slice(0, 2), ["guard:interrupt", `rpc:zerosub:${MOVE_RPC}:{"agentId":"x","accountId":"claude-b"}`]);
+  assert.equal(f.zs.sessions.x, "claude-a", "ZeroSub 1.31 queued nothing");
+  await tickAt(T0 + 5_000);
+  assert.equal(zerosub.calls.length, 1, "never sooner than TURN_ENDED_MS after the last ask");
+  await tickAt(T0 + 15_000);
+  assert.equal(zerosub.calls.length, 2, "the turn ended: asked again on the next pass, not a minute later");
+  assert.equal(f.zs.sessions.x, "claude-b");
+  await tickAt(T0 + 30_000);
+  assert.equal(f.sent.length, 1, "continued on B");
+  assert.match(f.sent[0]!, new RegExp(`^${MOVED_LEAD.replace(/[.]/g, "\\.")}`));
+});
+
+test("move-contract: a job that ends before the plan's time moves the session then (ZeroSub 1.31 doesn't do it on its own)", async t => {
+  let jobsLeft = true;
+  const { f, zerosub, tickAt } = await contractFixture(t, [
+    (input) => jobsLeft && !input.stopBackgroundWork
+      ? answer("waiting", { reason: "background_work", retryable: true, waitingFor: "background", backgroundWork: [TEST_JOB] })
+      : moved(input),
+  ]);
+  await tickAt(T0);
+  const [pause] = await f.pauses();
+  assert.equal(pause!.moveWait?.plan, "move");
+  assert.equal(moveWaitLine(pause!, T0, (at: string) => at), `Moves at ${iso(T0 + 10 * MIN)} unless its background job "Run the test suite" ends first`);
+  await tickAt(T0 + 3 * MIN);
+  jobsLeft = false; // The test run finished. ZeroSub 1.31 moves nothing by itself.
+  await tickAt(T0 + 4 * MIN);
+  assert.equal(f.zs.sessions.x, "claude-b", "asked again within ASK_AGAIN_MS of the job ending, as the line promised");
+  assert.ok(zerosub.calls.every(c => !c.stop), "nothing stopped");
+  await tickAt(T0 + 4 * MIN + 30_000);
+  assert.equal(f.sent.length, 1);
+  assert.doesNotMatch(f.sent[0]!, /stopped/);
+});
+
+test("move-contract: `pending` is a move in flight; the guard doesn't ask again meanwhile and continues once ZeroSub's state shows it landed", async t => {
+  const { f, zerosub, tickAt } = await contractFixture(t, [() => answer("pending", { accountId: "claude-a" })]);
+  await tickAt(T0);
+  for (let at = T0 + 15_000; at <= T0 + 90_000; at += 15_000) await tickAt(at);
+  assert.equal(zerosub.calls.length, 1, "in flight: not asked again within IN_FLIGHT_MS");
+  assert.equal(f.sent.length, 0, "not continued before it landed");
+  f.zs.move("x", "claude-b", T0 + 95_000); // The reload lands; ZeroSub's state.json says so.
+  await tickAt(T0 + 105_000);
+  assert.equal(f.sent.length, 1, "continued on B");
+  assert.equal(zerosub.calls.length, 1);
+});
+
+test("move-contract: a move that landed on another account is never shown as moved, and that target isn't asked for again soon", async t => {
+  const elsewhere = () => answer("moved", { accountId: "claude-main" }); // `accountId` isn't the target: landed_elsewhere.
+  let f: Awaited<ReturnType<typeof fixture>>;
+  const zerosub = zerosub131(() => f, [
+    (input) => input.stopBackgroundWork ? elsewhere() : answer("waiting", { reason: "background_work", retryable: true, waitingFor: "background", backgroundWork: [TEST_JOB] }),
+    (input) => input.stopBackgroundWork ? answer("refused", { reason: "landed_elsewhere", accountId: "claude-main" }) : elsewhere(),
+  ]);
+  f = await fixture(t, { native: true, policy: { thresholdPct: 90 }, rpc: (m, i) => zerosub.rpc(m, i) });
+  f.engine.zerosubPluginId = async () => "zerosub";
+  f.zs.sessions.x = "claude-a";
+  heldOnA(f.zs, T0);
+  await f.engine.tick();
+  const [pause] = await f.pauses();
+  await assert.rejects(f.engine.moveNow("x", pause!.id), /another account than the one with room/);
+  assert.equal(f.zs.sessions.x, "claude-a", "the stand-in moved nothing for a reply that isn't `moved` to the target");
+  const asked = zerosub.calls.length;
+  for (let at = T0 + 15_000; at < T0 + 9 * MIN; at += 15_000) { f.at(at); heldOnA(f.zs, at); await f.engine.tick(); }
+  assert.equal(zerosub.calls.length, asked, "a final refusal to the same account isn't asked again within REFUSED_MS");
+});
+
+test("move-contract: an unknown reason is a refusal not worth retrying, whatever `retryable` says", async t => {
+  const { zerosub, tickAt } = await contractFixture(t, [() => answer("refused", { reason: "some_new_rule", retryable: true, detail: "No." })]);
+  for (let at = T0; at < T0 + 10 * MIN; at += 15_000) await tickAt(at);
+  assert.equal(zerosub.calls.length, 1, "asked once in REFUSED_MS, not every minute");
+  await tickAt(T0 + 10 * MIN + 15_000);
+  assert.equal(zerosub.calls.length, 2, "bounded, not never: conditions change");
+});
+
+test("move-contract: an idle hold stays held while ZeroSub 1.31 says it isn't moving it", async t => {
+  // Held idle (the grace ran out), then another account gets room: the switch-first path asks.
+  const { f } = await contractFixture(t, [() => answer("refused", { reason: "switch_guard", retryable: true, detail: "Too many moves." })], { idle: true });
+  f.zs.read("claude-a", { at: T0, fiveHour: 92, fiveResets: T0 + 47 * MIN, weekly: 60 });
+  f.zs.read("claude-b", { at: T0, fiveHour: 100, fiveResets: T0 + 5 * HOUR, weekly: 40 }); // No room yet.
+  await f.engine.tick();
+  assert.deepEqual((await f.pauses()).map(p => [p.phase, p.idle]), [["waiting", true]]);
+  f.at(T0 + MIN);
+  heldOnA(f.zs, T0 + MIN); // B has room now.
+  await f.engine.tick();
+  assert.deepEqual((await f.pauses()).map(p => p.phase), ["waiting"], "switch_guard: not moving, so still held");
+});
+
+test("move-contract: replies are read one way, the reviewed contract and an older ZeroSub alike", () => {
+  // The reviewed contract.
+  assert.deepEqual(pick(readMoveReply(answer("moved", { accountId: "claude-b" }), "claude-b")), { outcome: "moved", reason: null, retryable: false, reasons: true });
+  assert.deepEqual(pick(readMoveReply(answer("moved", { accountId: "claude-c" }), "claude-b")), { outcome: "refused", reason: "landed_elsewhere", retryable: false, reasons: true });
+  assert.deepEqual(pick(readMoveReply(answer("pending"), "claude-b")), { outcome: "pending", reason: null, retryable: false, reasons: true });
+  assert.deepEqual(pick(readMoveReply(answer("waiting", { reason: "busy_turn", retryable: true, waitingFor: "turn" }), "claude-b")), { outcome: "waiting", reason: "busy_turn", retryable: true, reasons: true });
+  assert.deepEqual(pick(readMoveReply(answer("waiting", { reason: "rainy_day", retryable: true }), "claude-b")), { outcome: "refused", reason: "unknown", retryable: false, reasons: true });
+  assert.deepEqual(pick(readMoveReply(answer("teleported"), "claude-b")), { outcome: "refused", reason: "unknown", retryable: false, reasons: true });
+  assert.deepEqual(pick(readMoveReply(answer("refused", { reason: "user_pinned", retryable: true }), "claude-b")), { outcome: "refused", reason: "user_pinned", retryable: false, reasons: true });
+  assert.deepEqual(readMoveReply(answer("refused", { reason: "landed_elsewhere", stopped: [TEST_JOB] }), "claude-b")!.stopped, [TEST_JOB], "stopped on every outcome");
+  // ZeroSub 1.28.1-pace.15 (and pace.14): no reason, and its `waiting` queued the move.
+  const pace15 = readMoveReply({ outcome: "waiting", detail: "It moves once its background work ends.", waitingFor: "background", backgroundWork: [TEST_JOB], stopped: [] }, "claude-b")!;
+  assert.deepEqual(pick(pace15), { outcome: "waiting", reason: "background_work", retryable: true, reasons: false });
+  assert.equal(pace15.accountId, null);
+  assert.deepEqual(pick(readMoveReply({ outcome: "refused", detail: "It changed accounts too often just now.", waitingFor: null, backgroundWork: [], stopped: [] }, "claude-b")), { outcome: "refused", reason: null, retryable: true, reasons: false });
+  // pace.13: outcome and detail only.
+  const pace13 = readMoveReply({ outcome: "moved", detail: null }, "claude-b")!;
+  assert.deepEqual(pick(pace13), { outcome: "moved", reason: null, retryable: true, reasons: false });
+  assert.equal(pace13.waitingFor, undefined, "no `waitingFor`: a ZeroSub that can't stop work");
+  assert.equal(readMoveReply(null, "claude-b"), null);
+  // An older ZeroSub keeps today's cadence.
+  const legacy = { at: T0, target: "claude-b", answer: pace15 };
+  assert.equal(moveAskDue(legacy, { now: T0 + 30_000, target: "claude-b", turnRunning: false, legacyEvery: MIN }), false);
+  assert.equal(moveAskDue(legacy, { now: T0 + MIN, target: "claude-b", turnRunning: false, legacyEvery: MIN }), true);
+  assert.equal(moveAskDue(legacy, { now: T0 + 1, target: "claude-a", turnRunning: false, legacyEvery: MIN }), true, "another target is a new question");
+});
+const pick = (a: ReturnType<typeof readMoveReply>) => a && { outcome: a.outcome, reason: a.reason, retryable: a.retryable, reasons: a.reasons };

@@ -475,7 +475,7 @@
   **Invariant (seam C): the guard never holds a session at its threshold while ZeroSub could move it.** Below
   100% ZeroSub sees no limit and moves nothing, so the guard asks: `Engine.askMove` calls
   `zerosub.agents.move_before_limit` (ZeroSub 1.5.1-pace.13+) with `moveTarget` (another account with room by the
-  guard's rule, lowest usage), once per grace, after the turn is stopped. Never when ZeroSub has recorded a limit on
+  guard's rule, lowest usage), after the turn is stopped, and again by `moveAskDue` (`move-contract` below). Never when ZeroSub has recorded a limit on
   the agent's account: ZeroSub moves it itself, and asking too would move it twice. An older ZeroSub fails the call
   and the grace and hold stay as they were (`guard-zerosub-limits.test.ts`, "seam C").
   **Invariant (seam D): a continuation says what ended the hold.** A pause records the ZeroSub account it was held
@@ -508,6 +508,19 @@
   (`why: unsupported`). The label is one of `HELD_LABELS` (Paseo labels are named host-wide entities, so never a
   time in a name); the page row (`moveWaitLine`), Move now (`smart-session.guard.move-now`) and `guard_move_now`
   carry the rest. Tests: "held-background-work" in `guard-zerosub-limits.test.ts` and `guard-labels.test.ts`.
+- **Invariant (`move-contract`): the guard asks again while it still wants a move, bounded by the answer, and never
+  shows a move that landed elsewhere as moved.** ZeroSub 1.31.0+ (and the fork's 1.31.0-pace.16) queues NOTHING on
+  `waiting`, answers `pending` for a reload still in flight, and says `reason`, `retryable` and `accountId` (where the
+  live session runs). Every reply goes through `readMoveReply` (`shared/guard/move-reply.ts`): `moved`/`already` with
+  another `accountId` is `refused` + `landed_elsewhere`; an unknown outcome or `reason` is a refusal not worth retrying.
+  `moveAskDue` paces the next ask: a turn ZeroSub waited for, on the next pass once it isn't running (10 s apart at
+  least); background work each minute, during a `move` plan too (so "unless its job ends first" stays true); `pending`
+  and `in_progress` after 2 min (ZeroSub's state shows the landing, `movedSince`); `switch_guard` after 5 min; a final
+  refusal to the same account after 10 min; another target at once. An idle hold is let go only when ZeroSub says it
+  moves (`moved`, `already`, `pending`). An older ZeroSub (no `retryable`: pace.15's `waiting` queued the move, and a
+  repeat ask is the same move, with no second pin, switch-guard count or row) keeps today's cadence. Root cause
+  (2026-11-25): ZeroSub's reviewed contract stopped queueing, so a held session the guard thought "moves when the
+  turn ends" would have stayed put. Tests: "move-contract" in `guard-zerosub-limits.test.ts`.
 - **Row badges (`row-badges`, Paseo 0.17.1+).** `client/row-badges.tsx` registers two `addWorkspaceRowBadgeItem` items,
   `held` (icon `Pause`) and `account` (icon `UserRound`); their words are pure in `shared/guard/row-badge.ts`
   (`row-badge.test.ts`). Held: pending pauses this process governs, by the agent directory's workspace (else the
