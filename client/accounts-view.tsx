@@ -5,7 +5,6 @@ import type { z } from "zod";
 
 import { formatDay } from "../shared/format";
 import { reportBasis, shortDay } from "../shared/accounts-report";
-import { placementFacts } from "../shared/placement-shadow";
 import type { AccountsReportSchema } from "../shared/smart-session";
 import { ink } from "./charts";
 import { Card, CardRow, Chip, SectionHead, text } from "./kit";
@@ -158,22 +157,6 @@ function PooledRow({ theme, report }: { theme: Theme; report: Report }) {
   </CardRow>;
 }
 
-function PlacementRow({ theme, p }: { theme: Theme; p: NonNullable<Report["placement"]> }) {
-  const c = theme.colors;
-  const t = text(c);
-  const { label, facts } = placementFacts(p);
-  return <CardRow theme={theme} first={false} style={{ gap: 2 }}>
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-      <Icon name="Shuffle" size={14} color={c.foregroundMuted} />
-      <Text style={t.label}>Smart placement</Text>
-      <Chip theme={theme} label={label} />
-      {p.since !== null ? <Text style={t.small}>{`since ${formatDay(p.since)}`}</Text> : null}
-    </View>
-    <Text style={{ ...t.meta, paddingLeft: 20 }}>{facts}</Text>
-    {p.mode === "live" && p.liveRefusal !== null ? <Text style={{ ...t.small, paddingLeft: 20, color: c.statusWarning }}>{p.liveRefusal}</Text> : null}
-  </CardRow>;
-}
-
 function StripKey({ theme }: { theme: Theme }) {
   const c = theme.colors;
   const t = text(c);
@@ -212,7 +195,6 @@ export function AccountsUseSection({ theme, compact, reports, error }: { theme: 
         {rows.map((m) => <AccountUseRow key={m.id} theme={theme} m={m} report={report} scale={scale} compact={compact} />)}
         {rows.length > 1 ? <PooledRow theme={theme} report={report} /> : null}
         <StripKey theme={theme} />
-        {report.placement !== undefined && rows.length > 1 ? <PlacementRow theme={theme} p={report.placement} /> : null}
       </Card>;
     })}
   </View>;
