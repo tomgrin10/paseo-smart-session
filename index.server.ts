@@ -264,15 +264,14 @@ export default function contribute(host: PluginServerContext) {
 
   server.handle(
     requestCompaction,
-    async ({ agentId, reason, statePath, continueAfterCompaction, continuationMessage }) => ({
-      request: await queue.add({
+    ({ agentId, reason, statePath, continueAfterCompaction, continuationMessage }) =>
+      queue.add({
         agentId,
         reason,
         statePath: statePath ?? null,
         continueAfterCompaction: continueAfterCompaction ?? true,
         continuationMessage: continueAfterCompaction === false ? null : (continuationMessage ?? null),
       }),
-    }),
   );
 
   server.handle(listCompactions, async ({ agentId }) => {

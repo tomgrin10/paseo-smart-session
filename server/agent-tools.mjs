@@ -472,8 +472,12 @@ export function agentTools(context) {
           continuationMessage: continueAfterCompaction && continueMessage.trim() !== "" ? continueMessage : null,
         });
         const queued = result.request;
+        // One /compact per agent: a request that was already waiting (a retry after a cancel, or an earlier ask) now
+        // carries this one, so nothing is delivered twice (`queue.add`).
         const lines = [
-          `Compaction queued (${queued.id.slice(0, 8)}). It will be delivered as soon as this session is idle — so finish the turn you are in and stop.`,
+          result.joined === true
+            ? `Joined the compaction already queued for this session (${queued.id.slice(0, 8)}${queued.retryOf !== null && queued.retryOf !== undefined ? `, retry ${queued.attempt}` : ""}): one /compact will be delivered, with this request's reason, state file and continuation. It goes out as soon as this session is idle — so finish the turn you are in and stop.`
+            : `Compaction queued (${queued.id.slice(0, 8)}). It will be delivered as soon as this session is idle — so finish the turn you are in and stop.`,
         ];
         if (!queued.continueAfterCompaction) {
           lines.push("No follow-up will be sent after the compaction lands.");

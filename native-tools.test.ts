@@ -31,6 +31,10 @@ test("native tools run in-process as the daemon's caller, and name the native se
   const queued = await tool("smart_request_compaction").execute({ reason: "done" }, context("agent-a"));
   assert.match(queued.text!, /Compaction queued/);
   assert.equal((calls.find(c => c[0] === "smart-session.compact.request")![1] as { agentId: string }).agentId, "agent-a");
+  // A request that joined the one already waiting (a retry after a cancel) says so: one /compact, not two.
+  const joined = await nativeTools(async () => ({ joined: true, request: { id: "0123456789", attempt: 1, retryOf: "fedcba9876", continueAfterCompaction: false, continuationMessage: null, statePath: "/s" } }))
+    .find(t => t.name === "smart_request_compaction")!.execute({ reason: "again" }, context("agent-a"));
+  assert.match(joined.text!, /Joined the compaction already queued for this session \(01234567, retry 1\): one \/compact will be delivered/);
   const refused = await tool("smart_request_compaction").execute({ reason: "x" }, context("agent-c"));
   assert.match(refused.text!, /Call smart_checkpoint first/);
 

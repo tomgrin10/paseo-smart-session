@@ -121,11 +121,17 @@ export async function flush<C>(io: TickIo<C>): Promise<void> {
       // instruction, and compacting mid-turn discards exactly the working state the
       // agent has not written down yet. Wait for the next tick instead.
       if (agent.status !== "idle") continue;
-      // Its continuation just went out this tick: the agent is busy now, whatever the snapshot says.
+      // Its continuation or a /compact just went out this tick: the agent is busy now, whatever the snapshot says.
       if (sentTo.has(item.agentId)) continue;
+      // A /compact delivered earlier has neither landed nor been settled as cancelled: it may still be running, and a
+      // second one would cancel it. Root cause (2026-11-12): two queued rows of one agent went out 0.8 s apart in one
+      // tick, and the second replaced the first.
+      if (grading.has(item.agentId)) continue;
 
       // Claim before sending, so a crash cannot produce a second /compact.
       const claimed = await queue.update(item.id, { state: "sending", preTokens: agent.usedTokens });
+      // Before the send: one that throws may still have arrived.
+      sentTo.add(item.agentId);
       try {
         await io.sendToAgent(client, item.agentId, compactionInstructions(claimed ?? item));
         const deliveredAt = new Date().toISOString();
