@@ -2,6 +2,7 @@ import type { Connect } from "./client.ts";
 import type { Store } from "./store.ts";
 import type { Pause, Policy, State } from "../../shared/guard/policy.ts";
 import { HELD_LABELS, heldLabel } from "../../shared/guard/hold.ts";
+import { supportsRowBadges } from "../../shared/guard/row-badge.ts";
 
 export const PAUSED_WORKSPACE_LABEL = { name: HELD_LABELS.held, color: "amber" as const };
 
@@ -32,6 +33,12 @@ export class WorkspaceLabels {
   private pending: Promise<void> | null = null;
   private stopped = false;
   error: string | null = null;
+  /**
+   * Whether this daemon's app draws the held badge on a workspace row (Paseo 0.17.1+, `client/row-badges.tsx`); null
+   * until a held session made it worth asking. Read once from the daemon's `server_info.version`: the version can't
+   * change under a running plugin. Then no held label goes on, and the ones we put on come off.
+   */
+  rowBadges: boolean | null = null;
   constructor(store: Store, exclusive: Exclusive, connect: Connect, policy: () => Promise<Policy>) {
     this.store = store; this.exclusive = exclusive; this.connect = connect; this.policy = policy;
   }
@@ -66,9 +73,13 @@ export class WorkspaceLabels {
     const acknowledged = new Set<string>();
     for (let i = 0; i < 400 && !this.stopped; i++) {
       const policy = await this.policy();
+      if (policy.workspaceLabels && this.rowBadges === null && (await this.exclusive(async () => desiredLabels((await this.store.read()).pauses).size > 0))) {
+        this.rowBadges = await this.connect(async client => supportsRowBadges(client.getLastServerInfoMessage?.()?.version));
+      }
       const action = await this.exclusive(async () => {
         const state = await this.store.read();
-        const desired = policy.workspaceLabels ? desiredLabels(state.pauses) : new Map<string, string>();
+        // Only our own record (`labelledWorkspaces`) is ever removed below, so a badge host loses just our labels.
+        const desired = policy.workspaceLabels && this.rowBadges !== true ? desiredLabels(state.pauses) : new Map<string, string>();
         const managed = state.labelledWorkspaces ?? [];
         // A label whose reason changed comes off before the new one goes on.
         const remove = managed.find(id => desired.get(id) !== managedName(state, id));

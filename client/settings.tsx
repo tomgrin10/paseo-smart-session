@@ -20,6 +20,7 @@ import { HistoryShedSection } from "./history-shed";
 import { Button, errorText } from "./kit";
 import { refreshPills } from "./pill-store";
 import { openReportSheet } from "./report-request";
+import { rowBadgesSupported } from "./row-badges";
 
 const PLACEMENT_HINT = {
   off: "Off. ZeroSub places and moves sessions on its own.",
@@ -53,6 +54,8 @@ function percent(value: string): number | null {
  */
 export function makeSettings(client: PluginClientContext) {
   const openPaused = () => client.openScreen({ screenId: "overview", params: { focus: "paused" } });
+  // Paseo 0.17.1+ draws the held badge, and the server stops labelling there (`server/guard/labels.ts`).
+  const badges = rowBadgesSupported(client);
   return function SmartSessionSettings({ theme }: PluginSurfaceProps) {
     const c = theme.colors;
     const toast = useToast();
@@ -250,7 +253,9 @@ export function makeSettings(client: PluginClientContext) {
                 value={guard.values.autoResume} disabled={guardBusy || !guard.values.enabled} onValueChange={(autoResume) => changeGuard({ autoResume }, autoResume ? "Held sessions continue after the reset" : "Held sessions wait for you")} />
               <SettingsSwitch label="Include native subagents" hint="On Linux, freeze Claude and Codex sessions together with their nested workers. Off, only the foreground turn is interrupted."
                 value={guard.values.includeNativeSubagents} disabled={guardBusy || !guard.values.enabled} onValueChange={(includeNativeSubagents) => changeGuard({ includeNativeSubagents }, includeNativeSubagents ? "Subagents pause too" : "Only the foreground turn pauses")} />
-              <SettingsSwitch label="Label held workspaces" hint="An amber Held label in the sidebar until every session in the workspace continues."
+              <SettingsSwitch label="Label held workspaces" hint={badges
+                ? "This Paseo shows an amber Held badge with the time on the workspace row instead (Show menu in the sidebar). This label is for older Paseo versions."
+                : "An amber Held label in the sidebar until every session in the workspace continues."}
                 value={guard.values.workspaceLabels} disabled={guardBusy || !guard.values.enabled} onValueChange={(workspaceLabels) => changeGuard({ workspaceLabels }, workspaceLabels ? "Paused workspaces are labelled" : "No workspace labels")} />
               <SettingsSwitch label="Retry transient API errors" hint="On by default, even with quota pausing off. Retries interrupted work after 1, 3, then 10 minutes, at most three times. Idle and closed sessions stay asleep."
                 value={guard.values.retryTransientErrors} disabled={guardBusy} onValueChange={(retryTransientErrors) => changeGuard({ retryTransientErrors }, retryTransientErrors ? "Transient API errors retry automatically" : "Transient API errors wait for you")} />

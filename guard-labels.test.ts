@@ -90,3 +90,41 @@ test("held-background-work: a held workspace's label says why it's still held, a
   assert.deepEqual(f.calls.slice(3).map(c => [c.assigned, c.label.name]), [[false, "Held · until reset"], [true, "Held"]]);
   assert.deepEqual((await f.store.read()).workspaceLabelNames, { w: "Held" });
 });
+
+// row-badges: on a Paseo that draws row badges (0.17.1+, read from the daemon's `server_info`), the held badge says
+// what the label said, with a time, so the label comes off: only ours (`labelledWorkspaces`), never another's.
+const onHost = (client: GuardClient, version: string | null | undefined) => {
+  (client as GuardClient & { getLastServerInfoMessage(): unknown }).getLastServerInfoMessage = () => (version === undefined ? null : { status: "server_info", serverId: "s", version });
+};
+test("row-badges: a badge host gets no held label, and the label we assigned before comes off", async t => {
+  const f = await fixture(t); onHost(f.client, "0.17.4");
+  const s = await f.store.read(); s.labelledWorkspaces = ["w"]; s.workspaceLabelNames = { w: "Held" }; await f.store.write(s);
+  await f.labels().refresh();
+  assert.deepEqual(f.calls.map(c => [c.workspaceId, c.assigned, c.label.name]), [["w", false, "Held"]]);
+  assert.deepEqual((await f.store.read()).labelledWorkspaces, []);
+  await f.labels().refresh();
+  assert.equal(f.calls.length, 1, "nothing goes back on");
+});
+test("row-badges: a label someone else gave a workspace is never touched", async t => {
+  const f = await fixture(t); onHost(f.client, "0.17.4");
+  // Workspace "x" carries a Held label we never journaled (another plugin's, or the person's own).
+  await f.labels().refresh();
+  assert.deepEqual(f.calls, [], "no label goes on and none comes off");
+});
+test("row-badges: an older host, or one that doesn't say its version, keeps the label", async t => {
+  for (const version of ["0.17.0", "0.16.3", "0.17.1-beta.2", null, undefined]) {
+    const f = await fixture(t); onHost(f.client, version);
+    await f.labels().refresh();
+    assert.deepEqual(f.calls.map(c => [c.assigned, c.label.name]), [[true, "Held"]], String(version));
+  }
+  const f = await fixture(t); // a client with no server info at all (Paseo 0.14's typed slice)
+  await f.labels().refresh();
+  assert.deepEqual(f.calls.map(c => [c.assigned, c.label.name]), [[true, "Held"]]);
+});
+test("row-badges: with nothing held and nothing labelled, the host isn't asked", async t => {
+  const f = await fixture(t); let asked = 0;
+  (f.client as GuardClient & { getLastServerInfoMessage(): unknown }).getLastServerInfoMessage = () => { asked++; return { version: "0.17.4" }; };
+  const s = await f.store.read(); for (const p of s.pauses) { p.phase = "cancelled"; p.settledAt = new Date().toISOString(); } await f.store.write(s);
+  await f.labels().refresh();
+  assert.equal(asked, 0); assert.deepEqual(f.calls, []);
+});

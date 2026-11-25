@@ -7,7 +7,11 @@ import { auditRuntimeBoundaries, buildOptions, instantiateBundle } from "./check
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 
-async function runClientBundle(code) {
+/** Row badge items and their icons, checked to exist in Paseo's Lucide set (an unknown name throws in the app). */
+const ROW_BADGE_ITEMS = { held: "Pause", account: "UserRound" };
+
+/** `rowBadges`: run as Paseo 0.17.1+, which has `addWorkspaceRowBadgeItem` and `WorkspaceRowBadge`. */
+async function runClientBundle(code, { rowBadges = false } = {}) {
   const zod = await import("zod");
   const contracts = {
     defineSettings: (definition) => definition,
@@ -26,6 +30,7 @@ async function runClientBundle(code) {
       SettingsInput: () => null, SettingsRow: () => null, SidebarRow: () => null, Icon: () => null, ScrollView: () => null,
       Modal: Object.assign(() => null, { Content: () => null }), TextInput: () => null,
       useToast: () => ({ show() {}, error() {} }),
+      ...(rowBadges ? { WorkspaceRowBadge: () => null } : {}),
     },
     "@getpaseo/plugin": contracts,
     "@getpaseo/plugin/client": { useRpc: () => async () => ({}), useSettings: () => ({ status: "loading" }), openExternalUrl: async () => undefined },
@@ -125,6 +130,14 @@ async function runClientBundle(code) {
       summary.push(`addSurface(${id})`);
       return removable();
     },
+    ...(rowBadges ? { addWorkspaceRowBadgeItem(item) {
+      requireText(item?.id, "row badge id");
+      requireText(item?.title, `row badge ${item.id} title`);
+      requireFunction(item?.Component, `row badge ${item.id}`);
+      if (ROW_BADGE_ITEMS[item.id] === undefined || item.icon !== ROW_BADGE_ITEMS[item.id]) throw new Error(`row badge ${item.id} has an unchecked icon ${JSON.stringify(item.icon)}`);
+      summary.push(`addWorkspaceRowBadgeItem(${item.id})`);
+      return removable();
+    } } : {}),
     addScreen(screen) {
       requireText(screen?.id, "screen id");
       if (typeof screen.title !== "function") requireText(screen?.title, `screen ${screen.id} title`);
@@ -257,6 +270,11 @@ async function runClientBundle(code) {
   for (const kind of ["smart-session-tool", "smart-session-prompt"]) {
     if (!summary.includes(`addTimelineRenderer(${kind})`)) throw new Error(`chat rows of kind ${kind} need a renderer`);
   }
+  const badges = summary.filter((item) => item.startsWith("addWorkspaceRowBadgeItem(")).sort();
+  const wanted = rowBadges ? Object.keys(ROW_BADGE_ITEMS).map((id) => `addWorkspaceRowBadgeItem(${id})`).sort() : [];
+  if (badges.join() !== wanted.join()) {
+    throw new Error(rowBadges ? `a 0.17.1+ host must get the row badges ${wanted.join(", ")}; got ${badges.join(", ") || "none"}` : "an older host has no row badges, so none may register");
+  }
   agentObserver.snapshot({
     entries: [{ agent: { id: "agent-opus-5-5", workspaceId: "workspace-1" } }],
   });
@@ -298,6 +316,8 @@ for (const target of ["client", "server"]) {
         throw new Error("client entry did not register its composer pill");
       }
       console.log(`  ✓ client: ${summary.join(", ")}`);
+      const badged = await runClientBundle(built.outputFiles[0].text, { rowBadges: true });
+      console.log(`  ✓ client on Paseo 0.17.1+: ${badged.filter((item) => item.startsWith("addWorkspaceRowBadgeItem(")).join(", ")}`);
     } else {
       const usage = await esbuild.build({ entryPoints: [resolve(DIR, "server/usage-source.ts")], write: false, format: "cjs", platform: "node" });
       const zod = await import("zod");
