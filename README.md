@@ -148,7 +148,7 @@ Everything is on one screen, **Settings → Plugins → Smart Session**, in the 
 | | Sessions | Every session | Or only the ones you turn on from their pill |
 | | Continue after the reset | On | Off, you continue each one by hand |
 | | Include native subagents | On | Freeze nested workers too (Linux) |
-| | Label held workspaces | On | An amber Held label in the sidebar |
+| | Label held workspaces | On | An amber Held label in the sidebar (Paseo before 0.17.1; later versions show a Held badge with the time instead) |
 | Artifacts | Publish artifacts as the main account | On | With ZeroSub: pages from sessions on other Claude accounts are published on the main one |
 | | Publish as | Main account | Shown with more than one Claude account |
 | | Use the main account's Extra usage when it's out | Off | While the account pages are published as is out of usage, publish on its Extra usage (billed). Off, publishing stops with the reason |

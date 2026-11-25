@@ -11,6 +11,7 @@ import { contributeHistoryShedTimeline } from "./client/history-shed";
 import { createLive } from "./client/live";
 import { OVERVIEW_SCREEN, PAUSED_SCREEN, SMART_COMPACT_SETTINGS, makeOverview } from "./client/overview";
 import { contributeClient } from "./client/pill";
+import { contributeRowBadges } from "./client/row-badges";
 import { makeSettings } from "./client/settings";
 import { ReportSheetHost, openReportSheet, setReportFallback } from "./client/report-issue";
 import { reportSendRpc } from "./shared/report-issue";
@@ -58,6 +59,8 @@ export default function contribute(host: PluginClientContext) {
   const stopSubscriptions = watchSubscriptions(client, (next) => live.setSubscriptions(next));
   // The pill registers on the host's own client: a paused session keeps it even when pills are hidden.
   const removeClient = contributeClient(host, agents);
+  // Paseo 0.17.1+: the held badge (and, with ZeroSub, the account) on each sidebar workspace row; nothing on older hosts.
+  removers.push(...contributeRowBadges(host, agents));
   // Paseo 0.16, web and desktop: Paseo's own Claude usage card steps aside for ours.
   const stopUsageCards = watchUsageCards(client);
   return () => {
