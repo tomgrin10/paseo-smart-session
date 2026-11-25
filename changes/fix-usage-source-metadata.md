@@ -1,1 +1,0 @@
-- Keep Smart Session usage visible for Claude, with reading times and quota periods available to Paseo’s usage forecasts.
