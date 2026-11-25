@@ -6,8 +6,9 @@ import { toolRow } from "./shared/chat.ts";
 import { reportInput, trustedMainRow } from "./server/accounts-report.ts";
 import type { UsageSample } from "./shared/usage.ts";
 import {
-  DEFAULT_REPORT_SETTINGS, LIMIT_PCT, STEP_MS, accountsReport, normalizeReportSettings, paceWithGate, replay, reportBasis, reportLines,
+  DEFAULT_REPORT_SETTINGS, LIMIT_PCT, STEP_MS, accountsReport, normalizeReportSettings, replay, reportBasis, reportLines,
   type AccountSeries, type HoldSpan, type PlacementSample, type ReplayAccount, type ReplaySpec, type ReportInput,
+  REPLAY_POLICY, spreading, zerosubRanking,
 } from "./shared/accounts-report.ts";
 
 /**
@@ -88,17 +89,28 @@ test("Used is each weekly window's share by its reset; the open one is shown apa
   assert.equal(a.strip.length, 14);
 });
 
+/** What ZeroSub 1.31 writes to the moves log, a day apart: a new agent spread, and an `auto` move. */
+const spreadRows = (reason = "balance:headroom") => {
+  const rows = [];
+  for (let t = NOW - 14 * DAY; t < NOW; t += DAY) {
+    rows.push({ t, from: null, to: "bob", reason });
+    rows.push({ t: t + HOUR, from: "alice", to: "bob", reason: "auto" });
+  }
+  return rows;
+};
+
 test("Misplaced: session-hours at a limit while another account had room, with its cause and a Switch earlier", () => {
   const anchor = NOW - 20 * DAY;
   // alice hits 100% at about 83h into her window and stays there; bob idles at 20%.
   const alice = series("alice", { anchor, main: true, weekly: steady(1.2) });
   const bob = series("bob", { anchor: anchor + 3 * DAY, weekly: () => 20 });
-  // Two sessions kept running on alice the whole time; moves were logged and pacing ran.
+  // Two sessions kept running on alice the whole time; moves were logged and ZeroSub 1.31 spread new
+  // agents (it binds them `balance:headroom`) and made its pacing and failover moves (`auto`).
   const placement: PlacementSample[] = [];
   for (let t = NOW - 14 * DAY; t < NOW; t += 5 * MIN) placement.push({ t, running: { alice: 2, bob: 0 } });
   const report = accountsReport(input([alice, bob], {
     placement,
-    moves: [{ t: NOW - 14 * DAY, from: null, to: "bob", reason: "pace" }],
+    moves: spreadRows(),
     since: { holds: null, placement: NOW - 14 * DAY, moves: NOW - 14 * DAY },
   }));
   const a = report.accounts.find((m) => m.id === "alice")!;
@@ -123,46 +135,103 @@ test("Misplaced before moves were logged says the cause is unknown, never a gues
   const a = report.accounts.find((m) => m.id === "alice")!;
   assert.ok(a.misplacedDollars > 0, "Extra usage paid at the limit while bob had room is misplaced money");
   assert.ok(a.extraDollars >= a.misplacedDollars);
-  const better = report.suggestions.find((s) => s.kind === "use-better")!;
-  assert.equal(better.numbers.cause, "not-logged");
+  assert.ok(a.misplacedHours > 0);
+  // Before moves were logged nothing says why: no "Switch earlier", headline or otherwise.
+  assert.equal(report.suggestions.find((s) => s.kind === "use-better"), undefined, JSON.stringify(report.recommendation));
+  assert.notEqual(report.recommendation?.kind, "use-better");
+  assert.doesNotMatch(reportLines(report).join("\n"), /Switch earlier|cause is unknown/);
 });
 
-test("the 5-hour edge: past the gate an account ranks last, and a full 5-hour window spills work to the next", () => {
-  const acct = (id: string, weeklyPct: number, sessionPct: number, resetIn: number): ReplayAccount =>
-    ({ id, size: 1, ratio: 10, weeklyPct, weeklyResetAt: NOW + resetIn, sessionPct, sessionResetAt: NOW + HOUR, usable: true });
-  // alice has more weekly room per hour but is past 80% of her 5-hour window.
-  const order = paceWithGate([acct("alice", 10, 85, DAY), acct("bob", 60, 10, 5 * DAY)], NOW);
-  assert.deepEqual(order, [1, 0]);
-  // Under the gate, the pace score decides: alice's room expires sooner.
-  assert.deepEqual(paceWithGate([acct("alice", 10, 10, DAY), acct("bob", 60, 10, 5 * DAY)], NOW), [0, 1]);
-  // A full one is never offered.
-  assert.deepEqual(paceWithGate([acct("alice", 10, 100, DAY), acct("bob", 60, 10, 5 * DAY)], NOW), [1]);
+test("Switch earlier stands only on the stretches with a known cause, never on the ones before moves were logged", () => {
+  // alice is at her limit with bob free for days; moves were logged only for the last two, and the
+  // stretch before that is longer. The suggestion names only the logged hours and their cause.
+  const anchor = NOW - 20 * DAY;
+  const alice = series("alice", { anchor, main: true, weekly: steady(1.2) });
+  const bob = series("bob", { anchor: anchor + 3 * DAY, weekly: () => 20 });
+  const placement: PlacementSample[] = [];
+  for (let t = NOW - 14 * DAY; t < NOW; t += 5 * MIN) placement.push({ t, running: { alice: 2, bob: 0 } });
+  const logged = NOW - 2 * DAY;
+  const report = accountsReport(input([alice, bob], {
+    placement,
+    moves: spreadRows().filter((m) => m.t >= logged),
+    since: { holds: null, placement: NOW - 14 * DAY, moves: logged },
+  }));
+  const a = report.accounts.find((m) => m.id === "alice")!;
+  const better = report.suggestions.find((s) => s.kind === "use-better")!;
+  assert.ok(better, "the logged stretch is long enough to suggest it");
+  assert.equal(better.numbers.cause, "late-switch");
+  assert.ok(Date.parse(String(better.numbers.from)) >= logged, `from ${better.numbers.from}`);
+  assert.ok(Number(better.numbers.misplacedHours) <= 2 * 2 * 24 + 0.5, `only the logged hours: ${better.numbers.misplacedHours}`);
+  assert.ok(a.misplacedHours > Number(better.numbers.misplacedHours) + 24, "the metric still counts every stretch");
+});
 
+test("pacing-off reads ZeroSub 1.31's rows: balance bindings mean spreading was on, auto moves don't", () => {
+  // The old fork wrote `pace`; 1.31 writes `balance:headroom` for an agent it spread and `auto` for
+  // failover, its pacing moves and move_before_limit alike. Keyed on `pace`, every 1.31 stretch said
+  // "pacing was off" while spreading was on.
+  const anchor = NOW - 20 * DAY;
+  const alice = series("alice", { anchor, main: true, weekly: steady(1.2) });
+  const bob = series("bob", { anchor: anchor + 3 * DAY, weekly: () => 20 });
+  const placement: PlacementSample[] = [];
+  for (let t = NOW - 14 * DAY; t < NOW; t += 5 * MIN) placement.push({ t, running: { alice: 2, bob: 0 } });
+  const causeWith = (moves: ReturnType<typeof spreadRows>) => accountsReport(input([alice, bob], {
+    placement, moves, since: { holds: null, placement: NOW - 14 * DAY, moves: NOW - 14 * DAY },
+  })).suggestions.find((s) => s.kind === "use-better")?.numbers.cause;
+  assert.equal(causeWith(spreadRows()), "late-switch");
+  assert.equal(causeWith(spreadRows("balance:weekly_reset")), "late-switch");
+  assert.equal(causeWith(spreadRows("pace")), "late-switch", "the old fork's rows still count");
+  // Only auto moves: spreading was off, whatever moved sessions at the limit.
+  assert.equal(causeWith(spreadRows().filter((m) => m.reason === "auto")), "pacing-off");
+  assert.ok(spreading("balance") && spreading("balance:headroom") && spreading("pace"));
+  assert.ok(!spreading("auto") && !spreading("limit") && !spreading("user") && !spreading("balanced") && !spreading("pacer"));
+});
+
+test("the replay ranks accounts as ZeroSub 1.31 does for a new agent", () => {
+  const acct = (id: string, weeklyPct: number, sessionPct: number, resetIn: number, sessionResetIn = HOUR): ReplayAccount =>
+    ({ id, size: 1, ratio: 10, weeklyPct, weeklyResetAt: NOW + resetIn, sessionPct, sessionResetAt: NOW + sessionResetIn, usable: true });
+  assert.equal(REPLAY_POLICY, "ZeroSub 1.31 ranking");
+  // Past the 5-hour gate an account ranks after every account under it.
+  assert.deepEqual(zerosubRanking([acct("alice", 10, 85, DAY), acct("bob", 60, 10, 5 * DAY)], NOW), [1, 0]);
+  // Under the gate, the lower pace score first: alice at 10% of a week that is 6/7 gone beats bob at 60% of 2/7.
+  assert.deepEqual(zerosubRanking([acct("alice", 10, 10, DAY), acct("bob", 60, 10, 5 * DAY)], NOW), [0, 1]);
+  // A full one is never offered.
+  assert.deepEqual(zerosubRanking([acct("alice", 10, 100, DAY), acct("bob", 60, 10, 5 * DAY)], NOW), [1]);
+  // What the old fork's pace score (weekly room per hour to the reset) got the other way round:
+  // a week at 92% that resets in an hour is held back (90% or more)…
+  assert.deepEqual(zerosubRanking([acct("alice", 92, 0, HOUR), acct("bob", 30, 0, 5 * DAY)], NOW), [1, 0]);
+  // …and 70% of a 5-hour window only 30 minutes old projects past the gate an hour ahead.
+  assert.deepEqual(zerosubRanking([acct("alice", 5, 70, DAY, 4.5 * HOUR), acct("bob", 30, 10, 5 * DAY)], NOW), [1, 0]);
+  // A window not open yet (no reset): its percent stands as is.
+  assert.deepEqual(zerosubRanking([{ ...acct("alice", 0, 0, DAY), weeklyResetAt: null, sessionResetAt: null }, acct("bob", 1, 0, 5 * DAY)], NOW), [0, 1]);
+});
+
+test("the 5-hour edge: a full 5-hour window spills work to the next", () => {
   // One step asks for 6 points; alice's 5-hour window has room for 2.2 (22% at ratio 10), the rest spills to bob.
   const spec = (id: string, sessionPct: number, resets: number[]): ReplaySpec => ({
     id, size: 1, ratio: 10, usable: true, resets,
     start: { weeklyPct: 0, weeklyResetAt: resets[0] ?? null, sessionPct, sessionResetAt: NOW + HOUR },
   });
-  const result = replay([{ t: NOW, used: 6, held: 0, extra: 0 }], [spec("alice", 78, [NOW + DAY]), spec("bob", 0, [NOW + 5 * DAY])], paceWithGate, { sessionRate: 1, dollarsPerPoint: null });
+  const result = replay([{ t: NOW, used: 6, held: 0, extra: 0 }], [spec("alice", 78, [NOW + DAY]), spec("bob", 0, [NOW + 5 * DAY])], zerosubRanking, { sessionRate: 1, dollarsPerPoint: null });
   assert.equal(result.short.used, 0);
   assert.equal(result.waitingHours, 0);
   // With bob gone 3.8 points have nowhere to go: 3.8 session-hours of waiting at 1 point a session-hour.
-  const alone = replay([{ t: NOW, used: 6, held: 0, extra: 0 }], [spec("alice", 78, [NOW + DAY])], paceWithGate, { sessionRate: 1, dollarsPerPoint: null });
+  const alone = replay([{ t: NOW, used: 6, held: 0, extra: 0 }], [spec("alice", 78, [NOW + DAY])], zerosubRanking, { sessionRate: 1, dollarsPerPoint: null });
   assert.ok(Math.abs(alone.short.used - 3.8) < 1e-6, `${alone.short.used}`);
   assert.ok(Math.abs(alone.waitingHours - 3.8) < 1e-6);
 });
 
-test("different reset times: the replay spends what expires first and counts what expired", () => {
+test("different reset times: the replay counts what expired at each reset", () => {
   const spec = (id: string, reset: number): ReplaySpec => ({
     id, size: 1, ratio: 1, usable: true, resets: [reset, reset + WEEK],
     start: { weeklyPct: 0, weeklyResetAt: reset, sessionPct: 0, sessionResetAt: null },
   });
-  // 1 point an hour for 2 days, hourly steps of 15 minutes.
+  // 1 point an hour for 2 days, in steps of 15 minutes.
   const demand = [];
   for (let t = NOW; t < NOW + 2 * DAY; t += STEP_MS) demand.push({ t, used: 0.25, held: 0, extra: 0 });
-  const result = replay(demand, [spec("alice", NOW + 6 * DAY), spec("bob", NOW + DAY)], paceWithGate, { sessionRate: 1, dollarsPerPoint: null });
-  // bob resets first: his room went to work instead of expiring.
-  assert.ok(result.expired.bob! < 80, `bob expired ${result.expired.bob}`);
+  const result = replay(demand, [spec("alice", NOW + 6 * DAY), spec("bob", NOW + DAY)], zerosubRanking, { sessionRate: 1, dollarsPerPoint: null });
+  // ZeroSub 1.31 spreads by pace, not by which week expires first: bob took part of the work, and
+  // what he left expired at his reset.
+  assert.ok(result.expired.bob! > 0 && result.expired.bob! < 100, `bob expired ${result.expired.bob}`);
   assert.equal(result.expired.alice, 0, "alice has not reset within the demand");
   assert.equal(result.waitingHours, 0);
 });
@@ -335,7 +404,7 @@ test("the text report carries every account, the pooled line, the replay and the
   assert.match(text, /- Bob \[bob\]/);
   assert.match(text, /^All accounts: /m);
   assert.match(text, /Waiting isn't measured yet/);
-  assert.match(text, /Replay \(pace-5h-gate\), the accounts you have now: with 2: .*; with 3: /);
+  assert.match(text, /Replay \(ZeroSub 1\.31 ranking\), the accounts you have now: with 2: .*; with 3: /);
   assert.match(text, /^Recommendation: Keep 2 accounts\./m);
   assert.ok(LIMIT_PCT > 99 && LIMIT_PCT <= 100);
 });
@@ -347,6 +416,7 @@ test("agent parity: smart_accounts_report gives an agent the same report as text
   const report = accountsReport(input([series("alice", { anchor, main: true, weekly: steady(0.5) }), series("bob", { anchor: anchor + 3 * DAY, weekly: steady(0.5) })]));
   const calls: string[] = [];
   const tools = agentTools({ agentId: null, call: async (method: string) => { calls.push(method); return { reports: [report], lines: reportLines(report), error: null }; } });
+  assert.deepEqual(tools.accounts_report.inputSchema.properties, {}, "it only reads: no setting rides on it");
   const text = await tools.accounts_report.run({});
   assert.deepEqual(calls, ["smart-session.accounts.report"]);
   assert.equal(text, reportLines(report).join("\n"));

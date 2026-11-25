@@ -13,9 +13,9 @@
  * - `used`: each account's weekly increase (× its size), the work that ran;
  * - `held`: Session Guard hold time × the burn rate before the hold, work that waited;
  * - `extra`: time an account spent paying Extra usage × its burn rate before the limit.
- * The replay places that demand on N-1, N or N+1 accounts with a placement policy (a plain
- * function, so the next PR can score a new one against `paceWithGate`). Demand with nowhere to
- * go is waiting (session-hours) when it was work, or Extra usage ($) when it was paid for.
+ * The replay places that demand on N-1, N or N+1 accounts in the order ZeroSub 1.31 ranks them
+ * for a new agent (`zerosubRanking`). Demand with nowhere to go is waiting (session-hours) when it
+ * was work, or Extra usage ($) when it was paid for.
  *
  * The replay is fluid: a step's demand may split across accounts, and moving work costs
  * nothing. Real placement keeps a session on its account, so the replay is a lower bound on
@@ -23,8 +23,6 @@
  */
 
 import { ZEROSUB_FIVE_HOUR_GATE } from "./subscriptions.ts";
-import { EXPIRING_FIRST, expiringFirst, poolForecast, type PlacementContext } from "./placement.ts";
-import type { PlacementSummary } from "./placement-shadow.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -326,42 +324,58 @@ export interface ReplayAccount {
   readonly usable: boolean;
 }
 
-/**
- * A placement policy: the accounts to fill, best first. Accounts it leaves out get nothing;
- * full ones are skipped by the replay. Pure: same state, same answer. `ctx` carries the forecast
- * burn (`shared/placement.ts`); a policy that ignores it is today's kind.
- */
-export type PlacementPolicy = (accounts: ReplayAccount[], now: number, ctx?: PlacementContext) => number[];
+/** The accounts to fill, best first. Accounts it leaves out get nothing; full ones are skipped by the replay. Pure. */
+export type ReplayPolicy = (accounts: ReplayAccount[], now: number) => number[];
 
 export const hasRoom = (a: ReplayAccount) => a.usable && a.weeklyPct < LIMIT_PCT && a.sessionPct < LIMIT_PCT;
 
-/**
- * Today's behaviour, approximated: ZeroSub's pace score (weekly room left ÷ hours to its reset;
- * a window not open yet counts as a whole week), and an account past the 5-hour gate only after
- * every account under it.
- */
-export const paceWithGate: PlacementPolicy = (accounts, now) => {
-  const score = (a: ReplayAccount) => (100 - a.weeklyPct) / Math.max(0.25, ((a.weeklyResetAt ?? now + WEEK) - now) / HOUR);
-  const gated = (a: ReplayAccount) => (a.sessionPct >= ZEROSUB_FIVE_HOUR_GATE ? 1 : 0);
-  return accounts
-    .map((a, i) => ({ a, i }))
-    .filter(({ a }) => hasRoom(a))
-    .sort((x, y) => gated(x.a) - gated(y.a) || score(y.a) - score(x.a) || x.i - y.i)
-    .map(({ i }) => i);
-};
+// ZeroSub 1.31's pacing constants (`server/routing.ts`, `shared/model.ts` at v1.31.0).
+/** How far ahead the 5-hour use is projected. */
+const PACE_HORIZON_MS = HOUR;
+/** A young 5-hour window's burn is measured over at least this long. */
+const MIN_FIVE_HOUR_ELAPSED_MS = 30 * MINUTE;
+/** The least share of the week counted as elapsed. */
+const MIN_WEEK_SHARE = 1 / 7;
+/** A week used this much ranks behind the rest, like an account past the 5-hour gate. */
+export const WEEK_NEARLY_USED_PCT = 90;
 
 /**
- * Every rule the replay can score. `expiring-first` is the new placement (`docs/placement.md`); the
- * others are its variants, kept so the report can say which part earns its keep.
+ * ZeroSub 1.31's pace score for an account in the replay (`paceScore` in its `server/routing.ts`),
+ * lower is better: the larger of the 5-hour use projected an hour ahead and the weekly use against
+ * the share of the week gone. The replay's state is current at every step, so no agent is pending.
  */
-export const POLICIES: Readonly<Record<string, PlacementPolicy>> = {
-  "pace-5h-gate": paceWithGate,
-  "expiring-first": expiringFirst(),
-  "expiring-first:look-ahead": expiringFirst({ ...EXPIRING_FIRST, lookAhead: true }),
-  "expiring-first:any-wall": expiringFirst({ ...EXPIRING_FIRST, wallHours: Infinity }),
-  "expiring-first:gate-80": expiringFirst({ ...EXPIRING_FIRST, feasibility: "gate" }),
-  "expiring-first:edf": expiringFirst({ ...EXPIRING_FIRST, score: "edf" }),
-};
+export function paceScore(a: ReplayAccount, now: number): { score: number; gated: boolean; weekHeld: boolean } {
+  let fiveHour = a.sessionPct;
+  if (a.sessionResetAt !== null) {
+    const elapsed = Math.max(MIN_FIVE_HOUR_ELAPSED_MS, now - (a.sessionResetAt - FIVE_HOURS));
+    const ahead = Math.max(0, Math.min(now + PACE_HORIZON_MS, a.sessionResetAt) - now);
+    fiveHour = a.sessionPct + (a.sessionPct / elapsed) * ahead;
+  }
+  let weekly = a.weeklyPct;
+  if (a.weeklyResetAt !== null) {
+    const share = 1 - (a.weeklyResetAt - now) / WEEK;
+    weekly = a.weeklyPct / Math.min(1, Math.max(MIN_WEEK_SHARE, share));
+  }
+  return {
+    score: Math.max(fiveHour, weekly),
+    gated: a.sessionPct >= ZEROSUB_FIVE_HOUR_GATE || fiveHour >= ZEROSUB_FIVE_HOUR_GATE,
+    weekHeld: a.weeklyPct >= WEEK_NEARLY_USED_PCT,
+  };
+}
+
+/**
+ * How ZeroSub 1.31 picks the account for a new agent with "Spread new agents across accounts" on
+ * (`mostAvailable` with pacing): every account under the 5-hour gate and under 90% of its week
+ * before any other, then the lowest pace score. Ties keep the accounts' order.
+ */
+export const zerosubRanking: ReplayPolicy = (accounts, now) => accounts
+  .map((a, i) => ({ i, a, pace: paceScore(a, now) }))
+  .filter(({ a }) => hasRoom(a))
+  .sort((x, y) => Number(x.pace.gated || x.pace.weekHeld) - Number(y.pace.gated || y.pace.weekHeld) || x.pace.score - y.pace.score || x.i - y.i)
+  .map(({ i }) => i);
+
+/** The name the report gives the replay's ranking. */
+export const REPLAY_POLICY = "ZeroSub 1.31 ranking";
 
 export interface DemandStep {
   readonly t: number;
@@ -403,7 +417,7 @@ const EPS = 1e-9;
 export function replay(
   demand: DemandStep[],
   specs: ReplaySpec[],
-  policy: PlacementPolicy,
+  policy: ReplayPolicy,
   rates: { sessionRate: number; dollarsPerPoint: number | null },
 ): ReplayResult {
   const accounts: ReplayAccount[] = specs.map((s) => ({ id: s.id, size: s.size, ratio: s.ratio, usable: s.usable, ...s.start }));
@@ -412,11 +426,7 @@ export function replay(
   const short = { used: 0, held: 0, extra: 0 };
   let allOut = 0;
   const joined = (i: number, t: number) => (specs[i]!.from ?? -Infinity) <= t;
-  // The forecast a policy sees: each account's burn over the last two hours of this replay.
-  const burnSteps = Math.round((2 * HOUR) / STEP_MS);
-  const took: number[][] = specs.map(() => []);
-  const pool = poolForecast(demand);
-  for (const [k, step] of demand.entries()) {
+  for (const step of demand) {
     const t = step.t;
     accounts.forEach((a, i) => {
       if (a.weeklyResetAt !== null && t >= a.weeklyResetAt) {
@@ -429,9 +439,7 @@ export function replay(
       if (a.sessionResetAt !== null && t >= a.sessionResetAt) { a.sessionPct = 0; a.sessionResetAt = null; }
     });
     if (!accounts.some((a, i) => joined(i, t) && hasRoom(a))) allOut += STEP_MS / HOUR;
-    const burn = took.map((h) => h.slice(-burnSteps).reduce((s, x) => s + x, 0) / (Math.max(1, Math.min(burnSteps, h.length)) * (STEP_MS / HOUR)));
-    const order = policy(accounts, t, { sessionRate: rates.sessionRate, burn, poolRate: pool(k) });
-    const stepTook = specs.map(() => 0);
+    const order = policy(accounts, t);
     for (const origin of ["used", "held", "extra"] as const) {
       let left = step[origin];
       for (const i of order) {
@@ -445,12 +453,10 @@ export function replay(
         a.sessionPct += (take * a.ratio) / a.size;
         a.weeklyResetAt ??= t + WEEK;
         a.sessionResetAt ??= t + FIVE_HOURS;
-        stepTook[i]! += take;
         left -= take;
       }
       if (left > EPS) short[origin] += left;
     }
-    stepTook.forEach((x, i) => took[i]!.push(x));
   }
   const waitingHours = (short.used + short.held) / rates.sessionRate;
   return {
@@ -555,7 +561,7 @@ export interface AccountsReport {
     readonly extraDollars: number;
   };
   readonly rates: { readonly sessionRate: number; readonly dollarsPerPoint: number | null };
-  /** Today's policy against the logged demand with one account fewer (each one dropped), the same, and one more. */
+  /** ZeroSub 1.31's ranking (`REPLAY_POLICY`) against the logged demand with one account fewer (each one dropped), the same, and one more. */
   readonly replay: {
     readonly policy: string;
     readonly fewer: (ReplayResult & { readonly without: string })[];
@@ -568,8 +574,6 @@ export interface AccountsReport {
   readonly suggestions: Suggestion[];
   /** The one to show: add, use-better, drop or keep, in that order. */
   readonly recommendation: Suggestion | null;
-  /** Smart placement beside what happened (`shared/placement-shadow.ts`); Claude only, set by the server. */
-  readonly placement?: PlacementSummary & { readonly line: string };
 }
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
@@ -746,17 +750,19 @@ function prepare(input: ReportInput, settings: ReportSettings) {
   return { days, now, steps, t0, tls, running, demand, sessionRate, dollarsPerPoint, heldOn, extraOn, pooledRatio, specs, historyStart };
 }
 
-/** The replay's inputs for one report, so another rule (or the session replay) can score the same demand. */
-export function replayInputs(input: ReportInput, settings: ReportSettings = DEFAULT_REPORT_SETTINGS) {
-  const p = prepare(input, settings);
-  return { demand: p.demand, specs: p.specs, rates: { sessionRate: p.sessionRate, dollarsPerPoint: p.dollarsPerPoint }, pooledRatio: p.pooledRatio };
-}
+/**
+ * A move row that shows ZeroSub spreading and pacing agents: the old fork's `pace` binding, or
+ * 1.31's `balance` (`balance:headroom`, `balance:weekly_reset`), which it binds only with "Spread
+ * new agents across accounts" on, the same switch its pacing moves need. `auto` is not one: ZeroSub
+ * binds it for a failover at a limit, a pacing move and `move_before_limit` alike.
+ */
+export const spreading = (reason: string) => /^(?:pace|balance)(?::|$)/.test(reason);
 
 /** The report for one family. */
-export function accountsReport(input: ReportInput, settings: ReportSettings = DEFAULT_REPORT_SETTINGS, policyName = "pace-5h-gate"): AccountsReport {
+export function accountsReport(input: ReportInput, settings: ReportSettings = DEFAULT_REPORT_SETTINGS): AccountsReport {
   const { days, now, steps, t0, tls, running, demand, sessionRate, dollarsPerPoint, heldOn, extraOn, pooledRatio, specs, historyStart } = prepare(input, settings);
   const stepH = STEP_MS / HOUR;
-  const policy = POLICIES[policyName] ?? paceWithGate;
+  const policy = zerosubRanking;
   const window = { from: iso(t0), to: iso(now), days };
   const byIndex = (id: string) => input.accounts.findIndex((a) => a.id === id);
 
@@ -775,7 +781,7 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
       const last = [...series.readings].reverse().find((r) => r.t <= at);
       if (last !== undefined && at - last.t > 30 * MINUTE) return "stale-reading";
     }
-    if (!movesSorted.some((m) => m.reason === "pace" && m.t <= at)) return "pacing-off";
+    if (!movesSorted.some((m) => spreading(m.reason) && m.t <= at && m.t >= at - WEEK)) return "pacing-off";
     return "late-switch";
   };
 
@@ -804,6 +810,9 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
       const h = sessions * stepH;
       misplacedHours += h;
       misplacedDollars += tl.spent[i]! / 100;
+      // A stretch that runs into the time moves began to be logged starts again there, with a cause.
+      const loggedFrom = input.since.moves;
+      if (open !== null && loggedFrom !== null && open.from < loggedFrom && t0 + i * STEP_MS >= loggedFrom) flush(t0 + i * STEP_MS);
       if (open === null) {
         const roomOn = tls.find((other, j) => j !== k && !input.accounts[j]!.disabled && other.known[i] && !other.atLimit[i])!.id;
         open = { from: t0 + i * STEP_MS, hours: 0, dollars: 0, roomOn, cause: causeOf(k, i) };
@@ -929,22 +938,27 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
   }
 
   const misplacedTotal = metrics.reduce((s, m) => s + m.misplacedHours, 0);
-  if (perWeek(misplacedTotal) > settings.misplacedHoursPerWeek && episodes.length > 0) {
-    const worst = [...metrics].sort((a, b) => b.misplacedHours - a.misplacedHours)[0]!;
-    const episode = episodes.filter((e) => e.accountId === worst.id).sort((a, b) => b.hours - a.hours)[0]!;
+  // "Switch earlier" stands only on stretches whose cause is known: after moves were logged. A
+  // stretch from before says nothing anyone can act on, so it never becomes a suggestion.
+  const explained = episodes.filter((e) => e.cause !== "not-logged");
+  const explainedOn = (id: string) => explained.filter((e) => e.accountId === id).reduce((s, e) => s + e.hours, 0);
+  const explainedTotal = explained.reduce((s, e) => s + e.hours, 0);
+  if (perWeek(explainedTotal) > settings.misplacedHoursPerWeek && explained.length > 0) {
+    const worst = [...metrics].sort((a, b) => explainedOn(b.id) - explainedOn(a.id))[0]!;
+    const episode = explained.filter((e) => e.accountId === worst.id).sort((a, b) => b.hours - a.hours)[0]!;
+    const misplaced = round1(explainedOn(worst.id));
     const cause = {
       "manual-pin": "a manual pin kept sessions there",
       "stale-reading": `${nameOf(episode.roomOn)}'s reading was stale`,
-      "pacing-off": "pacing was off",
+      "pacing-off": "ZeroSub's spreading was off",
       "late-switch": "sessions switched only at the limit",
-      "not-logged": "before moves were logged, so the cause is unknown",
-    }[episode.cause];
+    }[episode.cause as Exclude<MisplacedEpisode["cause"], "not-logged">];
     suggestions.push({
       kind: "use-better",
       title: "Switch earlier",
-      reason: `${hours(worst.misplacedHours)} on ${worst.name} at its limit while ${nameOf(episode.roomOn)} had room. The longest stretch began ${shortDay(Date.parse(episode.from))}; likely cause: ${cause}.`,
+      reason: `${hours(misplaced)} on ${worst.name} at its limit while ${nameOf(episode.roomOn)} had room. The longest stretch began ${shortDay(Date.parse(episode.from))}; likely cause: ${cause}.`,
       accountId: worst.id,
-      numbers: { misplacedHours: worst.misplacedHours, misplacedHoursPerWeek: round1(perWeek(worst.misplacedHours)), misplacedDollars: worst.misplacedDollars, roomOn: episode.roomOn, from: episode.from, to: episode.to, cause: episode.cause },
+      numbers: { misplacedHours: misplaced, misplacedHoursPerWeek: round1(perWeek(misplaced)), misplacedDollars: worst.misplacedDollars, roomOn: episode.roomOn, from: episode.from, to: episode.to, cause: episode.cause },
       window,
     });
   }
@@ -1044,7 +1058,7 @@ export function accountsReport(input: ReportInput, settings: ReportSettings = DE
       extraDollars: Math.round(metrics.reduce((s, m) => s + m.extraDollars, 0) * 100) / 100,
     },
     rates: { sessionRate: Math.round(sessionRate * 1000) / 1000, dollarsPerPoint: dollarsPerPoint === null ? null : Math.round(dollarsPerPoint * 1000) / 1000 },
-    replay: { policy: policyName in POLICIES ? policyName : "pace-5h-gate", fewer, same, more, historical },
+    replay: { policy: REPLAY_POLICY, fewer, same, more, historical },
     suggestions,
     recommendation,
   };
@@ -1090,6 +1104,5 @@ export function reportLines(report: AccountsReport): string[] {
   if (Math.abs(r.historical.waitingHours - r.same.waitingHours) >= 0.05) lines.push(`  as it happened (accounts from when they joined): ${fmt(r.historical)}.`);
   for (const f of r.fewer) lines.push(`  without ${f.without}: ${fmt(f)}.`);
   for (const s of report.suggestions) lines.push(`${s === report.recommendation ? "Recommendation" : "Also"}: ${s.title}. ${s.reason}`);
-  if (report.placement !== undefined) lines.push(report.placement.line);
   return lines;
 }

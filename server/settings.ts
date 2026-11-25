@@ -5,7 +5,6 @@
  * approach paseo-defer takes.
  */
 
-import { DEFAULT_PLACEMENT_MODE, placementMode, type PlacementMode } from "../shared/placement-shadow.ts";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { statSync } from "node:fs";
@@ -92,8 +91,6 @@ export interface Settings {
    * adding or dropping an account or placing work better, and each account's relative plan size.
    */
   readonly accountsReport: ReportSettings;
-  /** Smart placement: `off`, `shadow` (log only; the default) or `live` (`server/placement.ts`). */
-  readonly placement: { readonly mode: PlacementMode };
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -109,7 +106,6 @@ export const DEFAULT_SETTINGS: Settings = {
   shedHistory: false,
   shedThresholds: DEFAULT_SHED_THRESHOLDS,
   accountsReport: DEFAULT_REPORT_SETTINGS,
-  placement: { mode: DEFAULT_PLACEMENT_MODE },
 };
 
 const filePath = () => join(dataDir(), "settings.json");
@@ -136,7 +132,6 @@ export async function readSettings(): Promise<Settings> {
       shedHistory: raw.shedHistory === true,
       shedThresholds: normalizeShedThresholds(raw.shedThresholds),
       accountsReport: normalizeReportSettings(raw.accountsReport),
-      placement: { mode: placementMode(raw.placement?.mode) },
     };
   } catch {
     cached = DEFAULT_SETTINGS;
@@ -159,7 +154,6 @@ export async function writeSettings(patch: Partial<Settings>): Promise<Settings>
     shedHistory: next.shedHistory === true,
     shedThresholds: normalizeShedThresholds(next.shedThresholds),
     accountsReport: normalizeReportSettings(next.accountsReport),
-    placement: { mode: placementMode(next.placement?.mode) },
   };
   await mkdir(dataDir(), { recursive: true });
   const target = filePath();

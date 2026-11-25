@@ -5,5 +5,4 @@
 - A Codex plan that reports only a weekly limit says so in its details, instead of "No readings of the open window yet" and "None recorded yet".
 - The Accounts recommendation no longer repeats its verdict date or says "account Account 3": "Account 3 is new. It would have covered 15 h of the waiting."
 - An account that has been there since the history began is no longer called new. It says "Not enough history yet".
-- The Smart placement line folds zero counts ("It saw no new sessions" instead of "placed 0 of 0 new sessions elsewhere") and shows the same facts as `smart_accounts_report`, rebalances included.
 - When the readings cover fewer days than the report's 14, the page and the text report both say how many ("Based on 6,099 readings over 12 days (since Nov 8)"), matching "Replay over 12 days".
