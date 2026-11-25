@@ -1,7 +1,0 @@
-- Moving old history aside keeps a line written to the transcript at any moment of the change: if the old file was written to after the last check, it's put back as it was, with anything written meanwhile.
-- Backups now live in Smart Session's data folder, outside Claude Code's cleanup and out of sight of transcript search. Backups from 3.8.0-beta.1 are copied over and checked; the old copies are left where they were.
-- A backup is never deleted, even one that ended up unused. An agent with two unused backups isn't copied again until you remove one.
-- A subagent transcript that the kept history still mentions stays where it is.
-- Restore runs at the agent's next load even with the setting turned off, and a change interrupted by a crash can still be restored.
-- The open of an agent never waits on a change past its time limit, and an open Paseo canceled never changes files afterwards.
-- A second Smart Session loaded against another Paseo home no longer adds its Claude Code hooks to the main install's settings file.

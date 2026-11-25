@@ -2,6 +2,75 @@
 
 What changed in each version of Smart Session, newest first.
 
+## 3.8.0 (2026-11-25)
+
+Smart Session now tells you how well your Claude accounts are used and whether to add or drop one, shows every account the way it shows the main one, and lets you report a bug from inside Paseo. Held sessions move sooner and say why they wait, and Smart Compact never loses its "carry on" note.
+
+### How your accounts are used (ZeroSub)
+
+- New on the Smart Session page, "How your accounts were used": for each Claude account over 14 days, its weekly use, hours waiting, hours at a limit while another had room, Extra usage, and a day strip.
+- Agents can read the same report with the read-only `smart_accounts_report` tool.
+- One recommendation leads it with its reason and numbers: add an account, drop one, switch earlier, or keep what you have. It replays your own logged usage with one account fewer and one more, against the accounts you have now.
+- An account under two weeks old shows how much of the waiting it would have covered and the date its verdict is ready, instead of a guess. When the readings cover fewer than 14 days, the report says how many.
+- New setting Settings → Accounts → Smart placement. Shadow (the default) only logs where a placement rule would have put and moved your sessions, with one line comparing it to what happened.
+- Live is offered only when ZeroSub isn't pacing or spreading new agents itself; otherwise the setting says which ZeroSub option is in the way.
+- Smart Session keeps a local record of which account each agent runs on, its pauses and ZeroSub's moves, which is what the report reads.
+
+### Every account shows what Main shows
+
+- Every Claude account on the Smart Session page shows the session chart, earlier windows, per-model weekly limits, Extra usage and where its history comes from.
+- The main account is called Main everywhere and listed first. With several accounts, its history and charts no longer pick up another account's readings, and Pause at the limit measures it on its own usage.
+- The page is cleaner: one row per account with a details toggle, one meter key, a Features heading. Session context is folded and sits lower.
+- Clearer account lines: "starts at first use" for a window that hasn't started, a date for a reset a week away, and no "runs out within the hour" from a single 1% step.
+- Each account is named once in "takes over", and a Codex plan with only a weekly limit says so.
+
+### Held sessions (Session Guard)
+
+- A held session that could move to an account with room no longer waits indefinitely for its background jobs: after 10 minutes they are stopped and it moves, unless its own account resets sooner.
+- The agent is told exactly which jobs were stopped. Settings → Limit timing → "Stop background work to move a held session after" sets the wait.
+- Held workspaces and the Held sessions list say why a session is still held and when it moves, with Move now. Agents can do the same with `guard_move_now`.
+- On Paseo 0.17.1 and later, a workspace's sidebar row shows an amber Held badge with when the hold ends ("Held · 5:58 PM", "2 held · 5:06 PM"), replacing the Held label there.
+- With several accounts, a muted badge names the account ("Main", "Account 2", "2 accounts"). Each badge has its own switch in the sidebar's Show menu. Older Paseo keeps the label.
+- Works with newer ZeroSub releases that no longer queue a move: a held session moves as soon as its turn or job ends. A move that landed on a different account than the one with room is never reported as moved.
+- Session Guard retries working turns cut off by temporary API errors (after 1, 3 and 10 minutes, at most three times). The new switch is on by default and independent of quota pausing.
+- Running harness-slot commands are let finish during a quota pause, so they release shared slots.
+
+### Smart Compact
+
+- A message you send right after a compaction now carries the agent's "carry on" note: it answers you first, then picks the task back up. Before, the task stopped there.
+- A session that stays busy after compacting still gets its continuation at the next idle moment. One still waiting two hours later is dropped rather than restarting old work.
+- After two compactions in a row, only the newest continuation is sent.
+- The popover's Last compaction line says how the continuation went: sent, added to the next message, still waiting, or dropped as stale.
+
+### Report a bug
+
+- Report a bug, idea or feedback from Settings → Help → Report a bug, ⌘K, or /report-smart-session in a chat. An agent writes it up, shows you the exact issue with private names removed, and files it on GitHub only after your yes.
+
+### Publishing as Main
+
+- A session that moved to another account can still update the pages it published; reads and updates run on the account that owns the page, and a page changed since the session saw it is handed back to merge instead of overwritten.
+- A signed-out main account stops a publish with the reason instead of landing on the session's own account. A quota maximum set in ZeroSub is named plainly; Extra usage doesn't lift it.
+- Settings → Artifacts shows whether publishing as Main is ready and your recent publishes; the session popover says "Publish as Main".
+
+### Move old history aside (new, off by default)
+
+- Settings → Smart Session → Chat history → Move old history aside. Claude agents past 50 MB or 10 compactions then open with only the history since their last compaction. The agent keeps its id and everything it knows.
+- The older part moves into a checked, never-deleted backup in Smart Session's data folder, so those transcripts take about twice the disk.
+- Each moved agent is listed with Restore. Move now does one large closed agent at once, even with the setting off.
+- A change interrupted at any point (a crash, a full disk, a write during the move) is finished or undone safely at the agent's next load.
+
+### Under the hood
+
+- Smart Session keeps one connection to the Paseo daemon instead of opening one for every read (about 15 a minute before).
+- A second Smart Session on another Paseo home (a test setup sharing your Claude settings) no longer adds or removes Claude Code hooks for the main install, and a custom `PASEO_HOME` keeps its hooks after upgrading.
+- Paseo's usage forecasts get Smart Session's reading times and quota periods.
+
+### Upgrading from 3.7
+
+- No manual steps. Smart placement starts in Shadow and Move old history aside starts off, so neither changes anything until you turn it on.
+- Background jobs of a held session are now stopped after 10 minutes when another account has room. Set "Stop background work to move a held session after" to 0 to keep the old behavior.
+- Works with Paseo 0.14 and later; the sidebar badges need Paseo 0.17.1.
+
 ## 3.7.0 (2026-11-16)
 
 Pause at the limit now really holds a session until its account has room again, and under ZeroSub it lets ZeroSub move the session to another account first. Smart Session also shows its usage forecast in Paseo's own usage card and can publish pages from your main account.

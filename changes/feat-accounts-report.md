@@ -1,4 +1,0 @@
-- New on the Smart Session page, "How your accounts were used": for each Claude account over 14 days, how much of each week it used, hours waiting, hours at a limit while another had room, Extra usage, and a day strip.
-- One recommendation leads the section with its reason and numbers: add an account, drop the cheapest one, switch earlier, or keep what you have. It replays your own logged usage with one account fewer and one more.
-- An account with less than two weeks of history shows the date its verdict will be ready instead of a guess.
-- Agents can read the same report with the new read-only smart_accounts_report tool.

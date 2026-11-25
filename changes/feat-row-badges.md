@@ -1,3 +1,0 @@
-- On Paseo 0.17.1 and later, a workspace with a held session shows an amber Held badge on its sidebar row with when the hold ends, for example "Held · 5:58 PM" or "2 held · 5:06 PM". It replaces the Held workspace label there.
-- With ZeroSub and more than one account, each workspace row also shows which account its sessions run on ("Main", "Account 2" or "2 accounts").
-- Each badge has its own switch in the sidebar's Show menu: "Held sessions" and "Accounts". Older Paseo versions keep the Held label as before.

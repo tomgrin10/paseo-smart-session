@@ -1,3 +1,0 @@
-- When you send a message right after Smart Compact compacts a session, the agent now gets its "carry on" note with your message: it answers you first, then picks the task back up. Before, the task stopped there.
-- A session that stays busy after compacting still gets its continuation at the next idle moment, however long that takes. One still waiting two hours later is dropped rather than restarting old work.
-- The popover's Last compaction line says how the continuation went: sent, added to the next message, still waiting, or dropped as stale.
