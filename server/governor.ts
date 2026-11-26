@@ -13,7 +13,7 @@
  * an agent.
  */
 
-import { readAgents, sendToAgent, withDaemon } from "./daemon.ts";
+import { daemonVersion, readAgents, sendToAgent, withDaemon } from "./daemon.ts";
 import { flush, resetTick } from "./compaction-tick.ts";
 import { queue } from "./compaction-queue.ts";
 import { lifecycle } from "../shared/lifecycle.ts";
@@ -30,7 +30,7 @@ function startGovernor(): void {
     if (running || stopped) return;
     running = true;
     try {
-      await flush({ withDaemon, readAgents, sendToAgent });
+      await flush({ withDaemon, readAgents, sendToAgent, daemonVersion });
     } catch (error) {
       console.error("[smart-session] governor tick failed", String(error));
     } finally {

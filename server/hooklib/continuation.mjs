@@ -22,7 +22,7 @@ function claimPath(requestId) {
 }
 
 /**
- * Claims the continuation of `requestId` for `by` ("governor", "prompt" or "stale"). True only for the one caller
+ * Claims the continuation of `requestId` for `by` ("governor", "queued", "prompt" or "stale"). True only for the one caller
  * that created the claim; false when someone already has it or the claim could not be written (then nobody
  * delivers it from here, which is better than twice).
  */

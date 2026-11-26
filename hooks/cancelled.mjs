@@ -1,7 +1,8 @@
 /**
  * Notices a delivered `/compact` that Claude Code cancelled, so the governor can retry it.
  *
- * Paseo 0.16 cannot steer a message into a slash-command turn. A message that reaches an agent
+ * Paseo 0.16 cannot steer a message into a slash-command turn (0.17.0 holds a steer until the compaction ends;
+ * an interrupt or a Stop still cancels, RESEARCH.md §3.6.1). A message that reaches an agent
  * while its `/compact` runs (an agent notification, a person's message) replaces the turn instead,
  * and Claude Code cancels the compaction: it writes `<local-command-stdout>Compaction canceled.`
  * to the transcript and the new prompt starts milliseconds later. No hook fires for the cancel
@@ -44,14 +45,30 @@ const CANCEL_LINE = /<local-command-stdout>\s*Compaction canceled\.?\s*<\/local-
 const textOf = (content) =>
   typeof content === "string" ? content : Array.isArray(content) ? content.map((part) => (typeof part?.text === "string" ? part.text : "")).join("") : "";
 
+/** Mirrors `QUEUED_PREFIX` in `shared/governor.ts` (tested): how the default queued continuation starts. */
+export const QUEUED_PREFIX = "Smart Compact queued this behind the /compact you asked for, to run once it finishes.";
+
+/**
+ * Whether `text` is the continuation the governor queued behind this request's `/compact` (`resumedVia: "queued"`).
+ * Paseo 0.17 holds that steered message until the compaction ends, so it never cancels one: after a Stop it may
+ * still run, and must not make the Stop read as a message that replaced the turn.
+ */
+export function isQueuedContinuation(item, text) {
+  if (item?.resumedVia !== "queued" || typeof text !== "string") return false;
+  const body = text.trim();
+  if (body === "") return false;
+  if (body.startsWith(QUEUED_PREFIX)) return true;
+  return typeof item.continuationMessage === "string" && item.continuationMessage.trim() !== "" && body === item.continuationMessage.trim();
+}
+
 /** A transcript row that is a new prompt, as opposed to the `/compact` command's own rows or a tool result. */
-function isPrompt(row) {
-  if (row.type === "queue-operation") return row.operation === "enqueue";
-  if (row.type === "attachment") return row.attachment?.type === "queued_command";
+function isPrompt(row, ours = () => false) {
+  if (row.type === "queue-operation") return row.operation === "enqueue" && !ours(typeof row.content === "string" ? row.content : "");
+  if (row.type === "attachment") return row.attachment?.type === "queued_command" && !ours(textOf(row.attachment?.prompt));
   if (row.type !== "user" || row.isMeta === true) return false;
   const content = row.message?.content;
   if (Array.isArray(content) && content.some((part) => part?.type === "tool_result")) return false;
-  return !/<command-name>|<local-command-caveat>|<local-command-stdout>/.test(textOf(content));
+  return !/<command-name>|<local-command-caveat>|<local-command-stdout>/.test(textOf(content)) && !ours(textOf(content));
 }
 
 /**
@@ -59,7 +76,7 @@ function isPrompt(row) {
  * "replaced" when a prompt followed within `REPLACED_WITHIN_MS` (or this hook is that prompt, while
  * it is still that soon), else "stopped".
  */
-export function cancelInTranscript(text, sinceMs, { prompting = false, now = Date.now() } = {}) {
+export function cancelInTranscript(text, sinceMs, { prompting = false, now = Date.now(), ours = () => false } = {}) {
   const rows = text.split("\n").flatMap((line) => {
     if (!line.includes("Compaction canceled") && !line.includes('"timestamp"')) return [];
     try {
@@ -82,7 +99,7 @@ export function cancelInTranscript(text, sinceMs, { prompting = false, now = Dat
   const cancelled = Date.parse(at);
   const followed = rows.slice(found + 1).some((row) => {
     const t = Date.parse(row.timestamp ?? row.attachment?.timestamp);
-    return Number.isFinite(t) && t >= cancelled && t - cancelled <= REPLACED_WITHIN_MS && isPrompt(row);
+    return Number.isFinite(t) && t >= cancelled && t - cancelled <= REPLACED_WITHIN_MS && isPrompt(row, ours);
   });
   const cause = followed || (prompting && now - cancelled <= REPLACED_WITHIN_MS) ? "replaced" : "stopped";
   return { at, cause };
@@ -142,7 +159,10 @@ export function noteCancelledCompaction(event, { prompting = false, now = Date.n
     if (item === null) return null;
     const text = readTail(event.transcript_path, TRANSCRIPT_TAIL);
     if (text === null) return null;
-    const cancel = cancelInTranscript(text, Math.max(Date.parse(item.createdAt), Date.parse(item.settledAt) - DELIVERY_SKEW_MS), { prompting, now });
+    // The continuation queued behind this /compact is never what cancelled it (`isQueuedContinuation`).
+    const ours = (body) => isQueuedContinuation(item, body);
+    const replacing = prompting && !ours(event.prompt);
+    const cancel = cancelInTranscript(text, Math.max(Date.parse(item.createdAt), Date.parse(item.settledAt) - DELIVERY_SKEW_MS), { prompting: replacing, now, ours });
     if (cancel === null) return null;
     mkdirSync(pluginDir(), { recursive: true });
     writeFileSync(
@@ -150,7 +170,7 @@ export function noteCancelledCompaction(event, { prompting = false, now = Date.n
       `${JSON.stringify({ at: cancel.at, event: CANCEL_EVENT, sessionId: event.session_id ?? null, agentId, requestId: item.id, cause: cancel.cause, recordedAt: new Date(now).toISOString() })}\n`,
       { flag: "a" },
     );
-    return prompting ? cancelNotice(retryVerdict(items, item, cancel.cause, now)) : null;
+    return replacing ? cancelNotice(retryVerdict(items, item, cancel.cause, now)) : null;
   } catch {
     // Bookkeeping must never break the turn it is describing.
     return null;

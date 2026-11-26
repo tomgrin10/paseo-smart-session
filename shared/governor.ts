@@ -50,11 +50,12 @@ export const CompactionRequestSchema = z.object({
    */
   resumedAt: z.string().nullable(),
   /**
-   * How the continuation went: `sent` by the governor at an idle moment, `prompt` added to the next message that
+   * How the continuation went: `sent` by the governor at an idle moment, `queued` sent right behind the `/compact` on a
+   * daemon that holds it until the compaction ends (`queuesContinuation`), `prompt` added to the next message that
    * reached the session (`hooks/continuation.mjs`), `stale` dropped because the session stayed busy past
    * `CONTINUATION_CAP_MS` after the compaction. Null while it waits, when none was asked for, and on older rows.
    */
-  resumedVia: z.enum(["sent", "prompt", "stale"]).nullable(),
+  resumedVia: z.enum(["sent", "queued", "prompt", "stale"]).nullable(),
   /** 0 for a request an agent or person made; n for the governor's nth retry of a cancelled one. */
   attempt: z.number(),
   /** The cancelled request this one retries, or null. */
@@ -175,6 +176,7 @@ export function continuationNote(item: Pick<CompactionRequest, "continueAfterCom
   if (!item.continueAfterCompaction) return null;
   switch (item.resumedVia) {
     case "sent": return "continuation sent";
+    case "queued": return "continuation queued behind it";
     case "prompt": return "continuation added to the next message";
     case "stale": return "continuation dropped as stale";
   }
@@ -230,7 +232,8 @@ export function retryRequest(item: CompactionRequest, id: string, createdAt: str
     agentId: item.agentId,
     reason: item.reason,
     statePath: item.statePath,
-    continueAfterCompaction: item.continueAfterCompaction,
+    // A continuation already queued behind the cancelled /compact stays the only one: the retry sends none.
+    continueAfterCompaction: item.continueAfterCompaction && item.resumedVia !== "queued",
     continuationMessage: item.continuationMessage,
     createdAt,
     state: "pending",
@@ -415,4 +418,52 @@ export function continuationInstructions(request: {
 }): string | null {
   if (!request.continueAfterCompaction) return null;
   return request.continuationMessage ?? resumeInstructions({ statePath: request.statePath });
+}
+
+/** The first Paseo whose Claude session takes a steered message during a compaction and holds it until it ends. */
+export const QUEUED_CONTINUATION_SINCE = [0, 17, 0] as const;
+
+/**
+ * Whether a daemon of this version holds a steered message until a running `/compact` finishes, from
+ * `server_info.version` ("0.17.4"). Paseo 0.17.0 (getpaseo/paseo#10028) made `steerActiveTurn` accept a steer while
+ * Claude compacts; before it the steer was refused, the turn replaced, and the compaction cancelled. Unknown,
+ * unreadable or a prerelease of 0.17.0: no, so the continuation waits for the compaction as before.
+ */
+export function queuesContinuation(version: string | null | undefined): boolean {
+  const match = typeof version === "string" ? /^v?(\d+)\.(\d+)\.(\d+)(-[\w.-]+)?/.exec(version.trim()) : null;
+  if (!match) return false;
+  const have = [Number(match[1]), Number(match[2]), Number(match[3])];
+  for (let i = 0; i < 3; i++) if (have[i] !== QUEUED_CONTINUATION_SINCE[i]) return have[i]! > QUEUED_CONTINUATION_SINCE[i]!;
+  return match[4] === undefined;
+}
+
+/** How the default queued continuation starts; the chat card reads it back (`promptCard`). */
+export const QUEUED_PREFIX = "Smart Compact queued this behind the /compact you asked for, to run once it finishes.";
+
+/**
+ * The default continuation sent right behind the `/compact` (`queuesContinuation`). It is written before anyone knows
+ * whether the compaction lands, so it reads right either way: a compaction cancelled or failed leaves no summary.
+ */
+export function queuedResumeInstructions(request: { statePath: string | null }): string {
+  if (request.statePath === null || request.statePath === "") {
+    return (
+      `${QUEUED_PREFIX} Pick the task back up from the compaction summary above (or from where you were, if no compaction ran) and carry on from its next action — ` +
+      "and write your task state to disk with the checkpoint tool now, so the next one costs nothing."
+    );
+  }
+  return (
+    `${QUEUED_PREFIX} Re-read ${request.statePath} and continue from its "Current step" section. ` +
+    "Where the file disagrees with the compaction summary, the file is correct — it was written deliberately; the summary was compressed automatically. " +
+    "Carry on from there without asking what to do next."
+  );
+}
+
+/** The continuation to queue behind the `/compact`, or null when none was asked for. The agent's own text is sent as is. */
+export function queuedContinuationInstructions(request: {
+  continueAfterCompaction: boolean;
+  continuationMessage: string | null;
+  statePath: string | null;
+}): string | null {
+  if (!request.continueAfterCompaction) return null;
+  return request.continuationMessage ?? queuedResumeInstructions({ statePath: request.statePath });
 }

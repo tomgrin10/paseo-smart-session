@@ -349,12 +349,23 @@
   (2 h) after the compaction passes, when it is dropped and logged. Whoever creates
   `continuations/<requestId>.json` (exclusive create, `server/hooklib/continuation.mjs`) delivers it, so the hook and
   the governor never both do; only the agent's newest delivered compaction can owe one (`supersededBy`; an older owed
-  row is dropped as `stale`: beta.19 sent an agent two after its install); the queue records which (`resumedVia`: `sent`, `prompt`, `stale`) and the popover's
+  row is dropped as `stale`: beta.19 sent an agent two after its install); the queue records which (`resumedVia`: `sent`, `queued`, `prompt`, `stale`) and the popover's
   Last compaction says it (`continuationNote`). Only queue rows owe one: a `/compact` a person typed is followed by
   nothing, and a hook record more than `LANDS_WITHIN_MS` after a delivery the governor never saw land doesn't confirm
   it. Root cause it fixes (2026-11-23): landing was checked only while the agent was idle, within 5 minutes of
   delivery; a person's message right after the compaction kept it busy, the watch ran out, `settleUnlanded`
   confirmed it from the hook's record and the continuation was never sent (`continuation.test.ts`).
+- **Invariant (`queued-continuation`): on a daemon that holds a steered message through a compaction, the continuation
+  goes right behind the `/compact`, once, and never as a second one.** Paseo 0.17.0+ (`queuesContinuation`, from
+  `server_info.version`; unknown, a 0.17.0 prerelease or older keeps the idle route exactly) holds a steer until a
+  running `/compact` ends (`RESEARCH.md` §3.6.1). In the tick that delivers the `/compact`, the governor claims the
+  continuation (`queued`) and sends it with `activeTurnBehavior: "steer"` (never without it: Paseo sends a plugin's
+  plain message as `interrupt`, which cancels the compaction). It is the same second message, through the same send
+  (`sendContinuation`). It is written before anyone knows whether the compaction lands, so its default text reads right
+  either way (`queuedResumeInstructions`); the agent's own text goes as is. The claim keeps the idle route and the prompt
+  hook out; a cancelled request's retry carries no continuation (`retryRequest`); and `hooks/cancelled.mjs` never takes
+  the queued continuation for the message that replaced the turn (`isQueuedContinuation`), so a Stop stays a Stop.
+  Only queue rows get one. Tests: `continuation-queued.test.ts`.
 - Deliver only at a turn boundary, only when task state on disk is current, and never retry a `/compact` whose send
   a restart interrupted (`recoverInterrupted`): it is destructive and not idempotent, and nobody knows whether it ran.
   A `/compact` Claude Code reports cancelled is different: no compaction ran, so it is retried (below).
@@ -367,7 +378,8 @@
   compaction. A delivery that never lands is settled with `NOT_COMPACTED` when its watch runs out. 2026-11-11: a
   cancelled `/compact` was read as a compaction and the Stop hook told the session compacting again "would not help".
 - **Invariant: a requested compaction either lands, or is retried and visibly reported; never silently dropped.**
-  Paseo (0.16) can't steer a message into a slash-command turn, so a message that reaches an agent while its
+  Paseo (0.16) can't steer a message into a slash-command turn (0.17.0 can for a steer, `RESEARCH.md` §3.6.1; an
+  interrupt or a Stop still cancels), so a message that reaches an agent while its
   `/compact` runs (an agent notification, a person's message) replaces the turn and Claude Code writes
   "Compaction canceled." (`RESEARCH.md` §3.6). No hook fires for the cancel and Paseo offers plugins no way to hold a
   prompt, so it can't be prevented from here. `hooks/cancelled.mjs`, on `UserPromptSubmit` (the replacing prompt) and

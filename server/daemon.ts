@@ -26,7 +26,9 @@ export interface DaemonClient {
   close(): Promise<void>;
   fetchAgents(): Promise<unknown>;
   listProviderUsage(): Promise<unknown>;
-  sendMessage(agentId: string, text: string): Promise<unknown>;
+  sendMessage(agentId: string, text: string, options?: { activeTurnBehavior?: "steer" }): Promise<unknown>;
+  /** The daemon's hello; its `version` says whether a steered message waits out a compaction (`queuesContinuation`). */
+  getLastServerInfoMessage?(): { version?: string | null } | null;
   /** The publish-as helper's lifecycle (`server/publish-as.ts`). */
   createAgent(options: {
     agentId: string;
@@ -346,6 +348,16 @@ export async function sendToAgent(
   client: DaemonClient,
   agentId: string,
   text: string,
+  options?: { steer?: boolean },
 ): Promise<void> {
-  await client.sendMessage(agentId, text);
+  // Without a behaviour Paseo sends a plugin's message as `interrupt`, which replaces a running turn. `steer` is
+  // passed only on a daemon that waits out a compaction for it (`queuesContinuation`); older ones never see it.
+  if (options?.steer === true) await client.sendMessage(agentId, text, { activeTurnBehavior: "steer" });
+  else await client.sendMessage(agentId, text);
+}
+
+/** The daemon's version from its hello (`server_info.version`), or null when the client doesn't say. */
+export function daemonVersion(client: DaemonClient): string | null {
+  const version = client.getLastServerInfoMessage?.()?.version;
+  return typeof version === "string" ? version : null;
 }
