@@ -97,14 +97,16 @@
     (read only; we don't own ZeroSub): `{at, agentId, family, from, to, reason, openedAt}`; `from` null is a new
     placement; `reason` is ZeroSub's binding source (`pace`, `auto`, `balance[:<selectionReason>]`, `thread`, `user`),
     else `limit` when `from` was limited, else `unknown`. A process's first tick is a baseline, so a move during a
-    reload gap is missed.
+    reload gap is missed. `pace` is only the old fork's (history by Dec 2026); ZeroSub 1.31 binds `balance:*` for an
+    agent it spread and `auto` for a failover at a limit, its own pacing moves and `move_before_limit` alike.
+  - **Invariant: an `auto` move is not a forced one.** Only a move after a limit hold (or off an account whose
+    `limitedUntil` was still ahead, `reason: limit`) was forced. Root cause it fixes (2026-11): the placement shadow
+    counted every `auto` row as forced, so ZeroSub's pacing moves before any limit read as limits it failed to see.
   - `credits-YYYY-MM.jsonl`, per ZeroSub account (the CLI login included) when its Extra usage, credits or limit state
     changes: `{at, accountId, family, fetchedAt, extraUsage: {enabled, spend, limit, currency}|null, credits: {balance,
     unlimited}|null, limitedUntil, limitKind, signedIn, disabled}`; money in minor units.
-  - `decisions-YYYY-MM.jsonl`, the placement rule's decisions while `placement.mode` isn't `off` (written by
-    `server/placement.ts`, rules in `shared/placement-shadow.ts`), each with `{at, kind, mode, agentId}`: `place` (a
-    new session: ZeroSub's `actual` and the rule's `pick`), `move` (`from`, `to`, `reason`, `gain`, `cost`, live only
-    `outcome`), `forced` (a limit move: `from`, `to`, `foreseen` when the rule flagged it in the hour before).
+  - `decisions-YYYY-MM.jsonl`: written by the Smart placement shadow in the 3.8.0 betas, removed before 3.8.0. Old
+    files stay on disk; nothing writes or reads them.
   - Read back with `readAccountLog`, which skips a torn line or a row without a valid `at`.
 - **The Accounts report: how well the accounts were used (`accounts-report`).** `shared/accounts-report.ts` is pure and
   deterministic (no clock, file or setting inside; `accounts-report.test.ts` uses small fictional histories);
@@ -115,54 +117,47 @@
     Extra usage time × the burn rate before the limit. Whose readings are whose follows `usage-account-identity`: the
     main account is only `login: "cli"` rows, or `src: "upstream"` rows from before the labels (`trustedMainRow`);
     the `paseo` source mixed logins and is never read here.
-  - The replay places that demand on N-1, N and N+1 accounts through a `PlacementPolicy` (a pure function: accounts
-    in, preference order out). Add, drop and keep are judged against the accounts there now, each present for the whole
+  - The replay places that demand on N-1, N and N+1 accounts in the order ZeroSub 1.31 ranks them for a new agent
+    with "Spread new agents across accounts" on (`zerosubRanking`, its `paceScore` and `mostAvailable` at v1.31.0:
+    under the 5-hour gate and under 90% of the week first, then the lower of max(5-hour use projected an hour
+    ahead, weekly use ÷ share of the week gone)). No agent is pending in the replay: its state is current each step.
+    When ZeroSub's ranking changes, re-model `zerosubRanking` and rename `REPLAY_POLICY`; never label a stale model
+    as today's behaviour. Add, drop and keep are judged against the accounts there now, each present for the whole
     window (`presentAllAlong`; an account added mid-window counts as there all along). `replay.historical` replays the
-    accounts as they joined and only describes what happened; it never drives a suggestion. Today's behaviour is `paceWithGate` (pace score, the 5-hour gate at 80%); a new placement
-    rule is scored by adding it to `POLICIES` and replaying the same demand. The replay is fluid (work splits and moves
+    accounts as they joined and only describes what happened; it never drives a suggestion. The replay is fluid (work splits and moves
     for free), so it is a lower bound on waiting for every account count alike; compare counts, not absolutes.
   - A reading stands for 6 h (`CARRY_MS`); past that an account is unknown, never at a limit, never room. An account
     added later is not room before its first reading. Waiting exists only since the holds log began, and the page says
-    so ("waiting measured since"). A misplaced stretch from before the moves log has cause `not-logged`, never a guess.
+    so ("waiting measured since"). A misplaced stretch from before the moves log has cause `not-logged`, never a guess;
+    a stretch that runs into the moves log's start is split there.
+  - **Invariant: "Switch earlier" stands only on stretches with a known cause.** Its hours, its stretch and its
+    threshold count only stretches after moves were logged; a `not-logged` stretch never makes it, headline or not
+    (the per-account Misplaced metric still counts every stretch). Root cause it fixes (2026-11): the headline cited
+    a stretch from before moves were logged, "likely cause: … unknown", which nobody could act on.
+  - **Invariant: `pacing-off` keys on what ZeroSub writes now.** A stretch's cause is `pacing-off` only when no move
+    row in the week before it shows spreading (`spreading`: `pace` or `balance[:*]`); `auto` never counts. Root cause
+    it fixes (2026-11): it keyed on the old fork's `pace` only, so once those rows aged out every stretch said
+    "pacing was off" while 1.31's spreading was on.
+  - **Invariant: the replay never counts an account as room before its first reading** (`ReplaySpec.from`). Root
+    cause it fixes (2026-11): `specOf` started an account added mid-period as empty and usable from the period's
+    start, so with a seat added two days ago the report replayed 14 days with it and showed no waiting.
   - An account with fewer than two full weekly windows is never suggested for dropping; it shows "verdict on <date>".
     It is "new" only when its first reading came after the family's history began (more than `CARRY_MS` later); one
     there from the first readings just lacks history ("Not enough history yet"). The verdict date lives in the
     suggestion's title, never repeated in its body. Every span the report names (the replay, the page's basis line,
     the text header) is `historyDays`, the days the readings cover, so a history younger than 14 days reads alike.
   - **Invariant: the page and `smart_accounts_report` say the same words.** Suggestions, the basis line
-    (`reportBasis`) and the placement line (`placementFacts`, which `placementLine` wraps) are built in `shared/`
-    and only drawn by the client. Root cause it fixes (2026-11): the client had its own placement sentence, which
-    said "placed 0 of 0 new sessions elsewhere" and left out the rebalances the text reported.
+    (`reportBasis`) are built in `shared/` and only drawn by the client. Root cause it fixes (2026-11): the client had
+    its own sentence for a report line, which said "placed 0 of 0 new sessions elsewhere" and left out what the text
+    reported.
     While one added mid-window awaits its verdict, "add" never fires: the report says how much of the waiting that
     account alone would have covered and its verdict date. Every suggestion carries its numbers and its data window.
     One is shown: add, then use-better, then drop, then keep.
-- **Placing sessions (`placement`).** `shared/placement.ts` is pure like the report; `docs/placement.md` has the math
-  and the benchmark (`placement-bench.ts`, fictional scenarios only). The shipped rule is `expiring-first`: the pace
-  score, with an account whose 5-hour wall comes within `WALL_HOURS` (1 h, by `forecastWindow`) behind the rest, and
-  the pace score deciding again when none passes. Moves: a session ahead of an imminent wall (gain beats the cost),
-  otherwise today's 1.5x rebalance, under today's guards. Rules:
-  - A new rule or variant is scored in both replays before it ships: the fluid `replay` (free moves, a lower bound)
-    and `replaySessions` (sessions stay put; a session its account can't serve is cut off and moved, a forced move
-    costing Session Guard's grace). Compare against `pace-5h-gate` with the 1.5x rebalance, on fictional scenarios in
-    tests and on the real logs locally; real numbers never go into the repository.
-  - **Invariant: a 5-hour wall never outranks expiring weekly budget.** The 5-hour check only reorders accounts
-    within the pace score's tiers, and only for a wall within `WALL_HOURS`; the strict check (any wall before the
-    window resets) kept work off expiring budget and lost far more waiting than the moves it saved
-    (`placement.test.ts`).
-  - **Invariant: the replay never counts an account as room before its first reading** (`ReplaySpec.from`). Root
-    cause it fixes (2026-11): `specOf` started an account added mid-period as empty and usable from the period's
-    start, so with a seat added two days ago the report replayed 14 days with it and showed no waiting.
-  - The rule runs beside ZeroSub on the recorder's minute tick (`server/placement.ts`), `settings.placement.mode`
-    `off`, `shadow` (default) or `live`. The Accounts section and `smart_accounts_report` set its decisions beside
-    what happened over the report's window (`placementSummary`): turns cut off at a limit, forced moves and how many
-    the rule saw coming, waiting.
-  - **Invariant: shadow mode changes nothing.** It reads the snapshot and the agent listing it is given and writes
-    only `decisions-*.jsonl`; no RPC, no pin, no ZeroSub file (`placement-shadow.test.ts`).
-  - **Invariant: live acts only through `move_before_limit`, one agent at a time, under the same guards, never a
-    default flip or a reconcile.** New sessions keep ZeroSub's pick (Paseo's create config carries no metadata).
-    Live is refused (the setting keeps its old value and says why) unless the installed ZeroSub has the lever, found
-    by its RPC name in its files, not by version, and ZeroSub's own pacing is off (the fork's `paceWeeklyUsage`,
-    default on; upstream's `balanceNewAgents`, "Spread new agents across accounts", default off): two rebalancers would fight. A refusal found later runs the tick as shadow.
+- **No placement of our own.** ZeroSub picks each new agent's account and moves idle agents off a paced account
+  (1.31's "Spread new agents across accounts"); Session Guard moves a session only through `move_before_limit`. Smart
+  placement (a shadow rule beside ZeroSub, and a live mode) was removed before 3.8.0: it disagreed with ZeroSub's
+  spread on a third of new agents, its 5-hour lever never fired, and two rebalancers fight. A `placement` key in an
+  old `settings.json` is ignored and dropped at the next save. Ideas for placement go to ZeroSub.
 - `server/store.ts` owns the one-time v0.1 `super-session` to `smart-session` directory migration.
   The old name is allowed only in that migration, its regression tests, and upgrade documentation.
 

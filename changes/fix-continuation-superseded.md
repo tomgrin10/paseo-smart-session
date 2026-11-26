@@ -1,1 +1,0 @@
-- After two compactions in a row, an agent gets only the newest one's continuation, never an older one as well.

@@ -1,5 +1,0 @@
-- New setting, off by default: Settings → Smart Session → Chat history → Move old history aside. Claude agents past 50 MB or 10 compactions then load a shorter chat that opens faster.
-- What moves is the history from before an agent's last compaction, into a full backup in Smart Session's data folder. The agent keeps its id, its session and everything it knows.
-- The backup is checked before anything changes and is never deleted, so those transcripts take about twice the disk.
-- Each moved agent is listed under Chat history with Restore, which puts the full history back at its next load. Its chat shows one row saying where the older history went, until Paseo restarts.
-- A second Smart Session loaded against another Paseo home (a test setup sharing your Claude settings) no longer removes the main install's Claude Code hooks.

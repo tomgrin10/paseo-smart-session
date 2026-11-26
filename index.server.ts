@@ -1,5 +1,4 @@
 import { contributeGuard } from "./server/guard/index.ts";
-import { checkPlacementPatch } from "./server/placement.ts";
 import { zerosubBudgetAccount } from "./server/guard/zerosub.ts";
 import { contributeSessionMcp } from "./server/session-mcp.ts";
 import { contributeHistoryShed } from "./server/history-shed-host.ts";
@@ -236,9 +235,7 @@ export default function contribute(host: PluginServerContext) {
     enrolledAgents: await countEnrolled(),
   }));
 
-  server.handle(setSettings, async (asked) => {
-    // Live placement only where ZeroSub can take it; otherwise the mode stays and the reason goes back.
-    const { patch, refused } = await checkPlacementPatch(asked);
+  server.handle(setSettings, async (patch) => {
     const settings = await writeSettings(patch);
     // New plan sizes or thresholds: the next report is computed with them, not served from cache.
     if (patch.accountsReport !== undefined) forgetAccountsReport();
@@ -247,8 +244,7 @@ export default function contribute(host: PluginServerContext) {
     if (patch.installHooks !== undefined || patch.enabled !== undefined || patch.publishAsMain !== undefined) {
       void install().catch(() => undefined);
     }
-    if (patch.placement !== undefined) forgetAccountsReport();
-    return refused === null ? { settings } : { settings, refused };
+    return { settings };
   });
 
   server.handle(installStatus, async () => ({ report: await install() }));

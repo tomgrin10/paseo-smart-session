@@ -1,5 +1,0 @@
-- A session that moves to another Claude account can still update the artifacts it published, and updates go to whichever account owns the page.
-- Reading a page, its data or its comments from a session on another account now runs on the account that owns the page.
-- When a page changed since a session last saw it, Smart Session hands back the live copy to merge instead of overwriting someone else's changes.
-- If the main account is signed out, a publish stops with the reason instead of quietly landing on the session's own account. A failed sign-in is retried once.
-- With "Use the main account's Extra usage when it's out" on, a publish tries even before ZeroSub has reported the Extra usage balance.
