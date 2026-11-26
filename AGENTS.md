@@ -367,6 +367,13 @@
   own `compactionLine` in the popover and the card says "retry n" (`compact-retry.test.ts` walks them). A retry is the
   agent's own request again, not the plugin deciding to compact. 2026-11-11 11:27: a notification cancelled a
   delivered `/compact` nine seconds in; nothing retried it and the agent read it as a person cancelling.
+- **Invariant: one `/compact` in flight per agent.** An agent has at most one `pending` request: `queue.add` joins
+  the one already waiting (its own earlier ask, or a retry `settleCancelled` queued) with the newest reason, state path
+  and continuation, keeps its id, `attempt` and `retryOf`, and `request_compaction` tells the agent it joined. The tick
+  delivers at most one `/compact` per agent per tick and none while one it delivered (`grading`) has neither landed nor
+  been settled as cancelled. Root cause it fixes (2026-11-12): `add` always appended, so an agent that re-asked after a
+  cancel had its retry and its new request delivered 0.8 s apart, and the second cancelled the first
+  (`compact-retry.test.ts`).
 - **Invariant: no agent ends a turn idle while a job the restart killed was never rerun or reported.** Paseo (0.16)
   closes the Claude process on every session reopen (the first prompt after a plugin reload, any refresh such as a
   ZeroSub account move), and that kills its `run_in_background` shells and Monitors (`RESEARCH.md` §3.7). Claude Code's

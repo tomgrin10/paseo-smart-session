@@ -1,0 +1,1 @@
+- Asking to compact again while a cancelled compaction's retry is waiting now joins that retry, so the session gets one /compact instead of two that cancel each other.

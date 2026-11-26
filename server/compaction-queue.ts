@@ -71,15 +71,35 @@ async function writeAll(items: CompactionRequest[]): Promise<void> {
 export const queue = {
   list: (): Promise<CompactionRequest[]> => serialize(readAll),
 
+  /**
+   * Queues an agent's request, or joins the one it already has waiting.
+   *
+   * Invariant: an agent has at most one undelivered (`pending`) request. A second ask while one waits (its own earlier
+   * ask, or the retry `settleCancelled` queued after a cancel) updates that request with the newest reason, state
+   * path and continuation, the agent's latest intent, and keeps its id, attempt and `retryOf`. Root cause it fixes
+   * (2026-11-12): `add` always appended, so an agent that re-asked after a cancel had its retry and its new request
+   * both delivered under a second apart, and the second `/compact` cancelled the first.
+   */
   add: (input: {
     agentId: string;
     reason: string;
     statePath: string | null;
     continueAfterCompaction: boolean;
     continuationMessage: string | null;
-  }): Promise<CompactionRequest> =>
+  }): Promise<{ request: CompactionRequest; joined: boolean }> =>
     serialize(async () => {
       const items = await readAll();
+      const waiting = items.find((item) => item.agentId === input.agentId && item.state === "pending");
+      if (waiting !== undefined) {
+        Object.assign(waiting, {
+          reason: input.reason,
+          statePath: input.statePath,
+          continueAfterCompaction: input.continueAfterCompaction,
+          continuationMessage: input.continuationMessage,
+        });
+        await writeAll(items);
+        return { request: waiting, joined: true };
+      }
       const request: CompactionRequest = {
         id: randomUUID(),
         agentId: input.agentId,
@@ -104,7 +124,7 @@ export const queue = {
       };
       items.push(request);
       await writeAll(items);
-      return request;
+      return { request, joined: false };
     }),
 
   update: (id: string, patch: Partial<CompactionRequest>): Promise<CompactionRequest | null> =>

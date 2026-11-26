@@ -289,7 +289,8 @@ export const requestCompaction = defineRpc({
     continueAfterCompaction: z.boolean().optional(),
     continuationMessage: z.string().min(1).nullable().optional(),
   }),
-  output: z.object({ request: CompactionRequestSchema }),
+  // `joined`: the agent already had a request waiting (a retry, or its own earlier ask), which now carries this one.
+  output: z.object({ request: CompactionRequestSchema, joined: z.boolean().optional() }),
 });
 
 export const listCompactions = defineRpc({
