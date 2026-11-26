@@ -79,6 +79,8 @@ export interface PublishResult {
   readonly versionId?: string | null;
   /** A copy of the live page the caller can read (a routed read, or a conflict). */
   readonly livePath?: string | null;
+  /** A conflict on the very version the caller last saw: nothing to merge, just publish again. */
+  readonly unchanged?: boolean;
   /** The routed tool, for what the model is told. */
   readonly tool?: string;
 }
@@ -221,6 +223,8 @@ async function runHelperOnce(
       return done("done", { ok: true, url, resultText: output, versionId: reading.liveVersion, livePath });
     }
 
+    let view: { path: string; lines: number | null } | undefined;
+    let viewedVersion: string | null = null;
     if (url) {
       // View the live version first: that is what lets the publish through, and the check against
       // the version the caller last saw is what keeps a concurrent change.
@@ -235,10 +239,23 @@ async function runHelperOnce(
         const livePath = await keepLiveCopy(reading.savedPath, job.liveDir, url, reading.liveVersion);
         return done("conflict", { url, versionId: reading.liveVersion, livePath, error: "the page changed since this session last saw it" });
       }
+      viewedVersion = reading.liveVersion;
+      // Since 2026-11-24 a read alone doesn't count as viewing a page the session didn't publish: its
+      // saved file must be Read in full. Only once the live version is the one the caller last saw,
+      // so this never waves through a change the caller didn't see.
+      if (reading.readToView && reading.savedPath && job.expectedVersion !== undefined) view = { path: reading.savedPath, lines: reading.readToView.lines };
     }
-    const ran = await step(publishPrompt(job.input));
+    const ran = await step(publishPrompt(job.input, view));
     if ("stop" in ran) return ran.stop;
     const { finished, reading } = ran;
+    if (!reading.url && url && reading.refusal) {
+      // The Artifact tool refused because the live version wasn't viewed: hand the caller that
+      // version and its source, and record it as seen, so one publish after the merge goes through.
+      const liveVersion = reading.refusal.version ?? viewedVersion;
+      const livePath = await keepLiveCopy(reading.refusal.savedPath, job.liveDir, url, liveVersion);
+      const unchanged = liveVersion !== null && liveVersion === job.expectedVersion;
+      return done("conflict", { url, versionId: liveVersion, livePath, unchanged, error: unchanged ? "the helper couldn't mark the live version viewed" : "the page changed since this session last saw it" });
+    }
     if (!reading.url) {
       if (url && isNoAccess(reading.error)) return done("not-owner", { error: reading.error });
       return done("failed", { error: reading.error ?? finished.error ?? (finished.status === "permission" ? "the helper was asked for a permission" : "the helper reported no url") });
@@ -637,7 +654,7 @@ export function describeWait(result: PublishResult, native: boolean): { text: st
     return { allow: true, text: `Smart Session tried this on ${result.owner}, but it isn't a page the main Claude account can open, so it runs on this session's own account as asked.` };
   }
   if (result.outcome === "conflict" && result.url) {
-    return { allow: false, text: conflictReason({ owner: result.owner, url: result.url, livePath: result.livePath ?? null, liveVersion: result.versionId ?? null }) };
+    return { allow: false, text: conflictReason({ owner: result.owner, url: result.url, livePath: result.livePath ?? null, liveVersion: result.versionId ?? null, unchanged: result.unchanged === true }) };
   }
   if (result.outcome === "done") {
     return { allow: false, text: accessReason({ owner: result.owner, tool: result.tool ?? "Artifact", output: result.resultText ?? "", savedPath: result.livePath ?? null }) };
