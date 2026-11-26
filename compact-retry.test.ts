@@ -283,3 +283,91 @@ test("the governor settles a cancel and queues its retry in one write, once", as
     else process.env.PASEO_HOME = previous;
   }
 });
+
+/**
+ * Invariant: an agent has at most one undelivered compaction request, and the governor never sends a second `/compact`
+ * while one it delivered has neither landed nor been settled as cancelled.
+ *
+ * 2026-11-12 live: a message cancelled a delivered `/compact`, the governor queued its retry, and the agent, told of
+ * the cancel, called `request_compaction` again 102 ms later. `queue.add` appended a second row; one tick delivered
+ * both 0.8 s apart, and the second `/compact` cancelled the first.
+ */
+test("an agent that re-asks while its retry waits joins it: exactly one more /compact", async () => {
+  const home = mkdtempSync(join(tmpdir(), "compact-retry-join-"));
+  const previous = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const { queue } = await import("./server/compaction-queue.ts");
+  const { flush, resetTick } = await import("./server/compaction-tick.ts");
+  resetTick();
+  try {
+    const data = join(home, "plugin-data", "smart-session");
+    mkdirSync(data, { recursive: true });
+    const sends: string[] = [];
+    const agent = { status: "idle", usedTokens: 300_000 };
+    const io = {
+      withDaemon: <T,>(work: (client: null) => Promise<T>) => work(null),
+      readAgents: async () => [{ id: AGENT, ...agent }] as never,
+      sendToAgent: async (_client: null, _agentId: string, text: string) => void sends.push(text),
+    };
+
+    await queue.add({ agentId: AGENT, reason: "Context is at 30%.", statePath: "/state/task.md", continueAfterCompaction: true, continuationMessage: null });
+    await flush(io);
+    assert.equal(sends.length, 1, "the first /compact goes out");
+    const [first] = await queue.list();
+
+    // A message reaches the agent mid-compaction and replaces the turn; the session's hook records the cancel.
+    agent.status = "running";
+    writeFileSync(join(data, "compaction-events.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), event: "CompactCanceled", agentId: AGENT, requestId: first.id, cause: "replaced" })}\n`, "utf8");
+    await flush(io);
+    const retry = (await queue.list()).find((item) => item.retryOf === first.id);
+    assert.equal(retry?.state, "pending", "the retry is queued");
+
+    // The agent, told of the cancel, asks again with a newer intent.
+    const again = await queue.add({ agentId: AGENT, reason: "Re-asking after the cancel.", statePath: "/state/newer.md", continueAfterCompaction: false, continuationMessage: null });
+    assert.equal((await queue.list()).filter((item) => item.state === "pending").length, 1, "one request waits, not two");
+    assert.equal(again.request.id, retry?.id, "it joins the retry rather than adding a row");
+    assert.equal(again.joined, true);
+    assert.deepEqual([again.request.reason, again.request.statePath, again.request.continueAfterCompaction, again.request.attempt], ["Re-asking after the cancel.", "/state/newer.md", false, 1]);
+
+    agent.status = "idle";
+    await flush(io);
+    await flush(io);
+    assert.equal(sends.length, 2, "exactly one more /compact");
+    assert.match(sends[1], /Re-asking after the cancel\./, "it carries the newest reason");
+  } finally {
+    resetTick();
+    if (previous === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = previous;
+  }
+});
+
+test("two waiting rows of one agent are never delivered in one tick, nor while the first is unsettled", async () => {
+  const home = mkdtempSync(join(tmpdir(), "compact-retry-one-"));
+  const previous = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const { queue } = await import("./server/compaction-queue.ts");
+  const { flush, resetTick } = await import("./server/compaction-tick.ts");
+  resetTick();
+  try {
+    const data = join(home, "plugin-data", "smart-session");
+    mkdirSync(data, { recursive: true });
+    // Two waiting rows, as a queue written before `add` joined could hold.
+    const pending = { state: "pending" as const, settledAt: null, createdAt: new Date().toISOString(), preTokens: null };
+    writeFileSync(join(data, "compactions.json"), JSON.stringify({ version: 1, items: [request({ id: "a", ...pending }), request({ id: "b", ...pending })] }), "utf8");
+    const sends: string[] = [];
+    const io = {
+      withDaemon: <T,>(work: (client: null) => Promise<T>) => work(null),
+      readAgents: async () => [{ id: AGENT, status: "idle", usedTokens: 300_000 }] as never,
+      sendToAgent: async (_client: null, _agentId: string, text: string) => void sends.push(text),
+    };
+    await flush(io);
+    assert.equal(sends.length, 1, "one per agent per tick");
+    await flush(io);
+    assert.equal(sends.length, 1, "none while the delivered /compact has neither landed nor been cancelled");
+    assert.deepEqual((await queue.list()).map((item) => item.state), ["sent", "pending"]);
+  } finally {
+    resetTick();
+    if (previous === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = previous;
+  }
+});
