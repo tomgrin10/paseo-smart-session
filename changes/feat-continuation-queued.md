@@ -1,2 +1,0 @@
-- On Paseo 0.17 or later, when an agent asks Smart Compact to compact and carry on, the follow-up message is sent right after the compaction starts and Paseo holds it until the compaction finishes, so the agent picks the task back up at once.
-- The popover's Last compaction says "continuation queued behind it" for these.

@@ -2,6 +2,15 @@
 
 What changed in each version of Smart Session, newest first.
 
+## 3.8.1 (2026-11-26)
+
+Smart Compact's "carry on" message now reaches the agent the moment a compaction finishes, and updating a page as the main account works again.
+
+- On Paseo 0.17 or later, the carry-on message is sent right after /compact starts and Paseo holds it until the compaction finishes, so the agent picks the task back up at once. The popover says "continuation queued behind it".
+- Updating a page published as the main account no longer fails with "You hadn't viewed the live version". If the page changed in between, you get its live copy to merge, and the next publish goes through.
+- Asking to compact again while a cancelled compaction's retry is waiting now joins that retry, so the session gets one /compact instead of two that cancel each other.
+- On the Paseo desktop app, the fallback command for detached Smart Session tools now works for every tool, including publishing as the main account. It rejects a misspelt or missing argument and lists the valid ones.
+
 ## 3.8.0 (2026-11-25)
 
 Smart Session now tells you how well your Claude accounts are used and whether to add or drop one, shows every account the way it shows the main one, and lets you report a bug from inside Paseo. Held sessions move sooner and say why they wait, and Smart Compact never loses its "carry on" note.

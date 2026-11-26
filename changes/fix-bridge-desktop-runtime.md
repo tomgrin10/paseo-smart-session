@@ -1,2 +1,0 @@
-- On the Paseo desktop app, the fallback command agents are given while Smart Session tools are detached after an update now works for every tool, and publishing as the main account works from the desktop app too.
-- The fallback command now rejects a misspelt or missing argument with the list of valid ones, instead of silently ignoring it.
