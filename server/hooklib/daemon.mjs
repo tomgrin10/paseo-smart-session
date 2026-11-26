@@ -10,6 +10,7 @@ import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { resolveDaemonPassword } from "../daemon-password.mjs";
+import { bridgeCommand, recordedRuntime } from "./runtime.mjs";
 
 const PLUGIN_ID = "smart-session";
 
@@ -72,7 +73,12 @@ function desktopHint() {
   if (process.versions.electron !== undefined) return "";
   const cliPath = findPaseoCli();
   if (cliPath === null || !existsSync(join(dirname(cliPath), "..", "app.asar"))) return "";
-  return ". The paseo CLI is the desktop app's, whose client only its own runtime can load: reload the smart-session plugin so it re-registers this MCP server on that runtime, then restart the Claude Code session";
+  const runtime = recordedRuntime();
+  const script = process.argv[1];
+  const run = runtime !== null && typeof script === "string" && script !== ""
+    ? ` Run it on that runtime: ${bridgeCommand(script, runtime)}${process.argv[2] === "call" ? " call ..." : ""}. Or reload`
+    : " Reload";
+  return `. The paseo CLI is the desktop app's, whose client only its own runtime can load.${run} the smart-session plugin so it re-registers this MCP server on that runtime, then restart the Claude Code session`;
 }
 
 /** Finds `paseo` on PATH and resolves symlinks, the way a shell's `which` would. */

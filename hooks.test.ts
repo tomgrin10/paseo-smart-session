@@ -369,7 +369,7 @@ test("after a plugin update mid-turn, a detached session is pointed at the bridg
   writeFileSync(join(dir, "tools", `native-${AGENT}.json`), JSON.stringify({ instance: "old" }));
   const detached = await adviceFrom(await stopHook(home, 340_000, {}, { SMART_SESSION_TOOLS: "native" }));
   assert.match(detached, /smart_\* tools are detached/);
-  assert.match(detached, /mcp\.mjs" call <tool>/);
+  assert.match(detached, /mcp\.mjs' call <tool>/);
   assert.match(detached, /Call checkpoint/);
   assert.doesNotMatch(detached, /Call smart_checkpoint/);
   // Reopened under the new worker: native names, no notice.
@@ -445,7 +445,7 @@ test("the detached notice is true for a busy agent", async () => {
   assert.doesNotMatch(notice, /before your next prompt/);
   assert.match(notice, /until this session reopens/);
   assert.match(notice, /prompt that arrives while you are idle/);
-  assert.match(notice, /mcp\.mjs" call <tool>/, "the bridge works meanwhile");
+  assert.match(notice, /mcp\.mjs' call <tool>/, "the bridge works meanwhile");
 });
 
 test("the bridge runs one tool call as the calling agent", async () => {

@@ -20,9 +20,49 @@ import { join } from "node:path";
 
 import { dataDir } from "./store.ts";
 
+/** The runtime this plugin runs on, as `install.ts` registers the MCP server on it. */
+export interface McpRuntime {
+  electron: string | undefined;
+  execPath: string;
+  appImage: string | undefined;
+}
+
+export const currentRuntime = (): McpRuntime => ({
+  electron: process.versions.electron,
+  execPath: process.execPath,
+  appImage: process.env.APPIMAGE,
+});
+
+/** A command plus the environment it needs, to run a script on the runtime that can reach the daemon. */
+export interface Launcher {
+  command: string;
+  env: Record<string, string>;
+}
+
+/**
+ * The runtime a script must run on to load Paseo's daemon client, or null for plain `node`.
+ *
+ * Under the desktop app the client lives inside `app.asar`, which only Electron reads, so scripts run on the app's
+ * own Electron runtime in node mode, the way the app launches its bundled `paseo` CLI. An AppImage mounts at a fresh
+ * path on every launch, so its stable `$APPIMAGE` stands in for the mounted executable. `mcpDefinition` registers the
+ * MCP server with exactly this, and the pointer records it for the shims and the bridge notice.
+ */
+export function launcherFor(runtime: McpRuntime): Launcher | null {
+  if (runtime.electron === undefined) return null;
+  return { command: runtime.appImage ?? runtime.execPath, env: { ELECTRON_RUN_AS_NODE: "1" } };
+}
+
 /** The scripts that get a shim: the hooks, and the agent-facing MCP server. */
 export const SHIMMED = ["context-threshold.mjs", "ask-compact.mjs", "post-compact.mjs", "publish-as.mjs", "detached.mjs", "mcp.mjs"] as const;
 export type Shimmed = (typeof SHIMMED)[number];
+
+/**
+ * The shimmed scripts that call the Paseo daemon (`server/hooklib/daemon.mjs`). Started under plain `node` while the
+ * pointer records an Electron runtime (the desktop app), their shim runs them on that runtime instead: an agent's
+ * bridge call typed as `node .../mcp.mjs call ...`, and the `publish-as` hook, which Claude Code starts with `node`.
+ * The other hooks never reach the daemon and stay in-process, so the hot `PostToolUse` path starts no second process.
+ */
+export const NEEDS_DAEMON: readonly Shimmed[] = ["mcp.mjs", "publish-as.mjs"];
 
 /** Where each script lives inside an install. */
 export function scriptIn(pluginDir: string, script: Shimmed): string {
@@ -43,25 +83,43 @@ export function pointerPath(): string {
  * target, or a target that disappears between the check and the import all end in a
  * silent exit 0. The real script runs in this same process through `import()`, so it
  * keeps its own `import.meta.url` (and with it its siblings) and the hot `PostToolUse`
- * path pays for no second Node start.
+ * path pays for no second Node start. A script in `NEEDS_DAEMON` started under plain
+ * `node` while the pointer records an Electron runtime runs on that runtime instead, with
+ * the same arguments, stdin, stdout and exit code; if that runtime can't start it runs
+ * here as before.
  */
 export function shimSource(script: Shimmed): string {
   const relative = script === "mcp.mjs" ? ["mcp.mjs"] : ["hooks", script];
+  const reexec = NEEDS_DAEMON.includes(script);
+  const spawnImport = reexec ? `import { spawnSync } from "node:child_process";\n` : "";
+  const runtimeDecl = reexec ? "let runtime = null;\n" : "";
+  const runtimeRead = reexec ? `  if (typeof pointer.runtime?.command === "string" && pointer.runtime.command !== "") runtime = pointer.runtime;\n` : "";
+  const runtimeRun = reexec
+    ? `// Plain node can't load the desktop app's daemon client (inside app.asar): run on the app's runtime instead.
+// SMART_SESSION_ON_RUNTIME marks the second start, so a runtime that isn't Electron after all can't loop.
+if (runtime !== null && process.versions.electron === undefined && process.env.SMART_SESSION_ON_RUNTIME !== "1" && existsSync(runtime.command)) {
+  const env = { ...process.env, ...(runtime.env !== null && typeof runtime.env === "object" ? runtime.env : {}), SMART_SESSION_ON_RUNTIME: "1" };
+  const child = spawnSync(runtime.command, [target, ...process.argv.slice(2)], { stdio: "inherit", env });
+  if (child.error === undefined) process.exit(child.status ?? 1);
+}
+`
+    : "";
   return `#!/usr/bin/env node
 // Written by the Smart Session Paseo plugin, rewritten on every load. Do not edit.
 // Runs ${script} from the install named in current.json, or exits 0 if there is none.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-
+${spawnImport}
 let target = null;
-try {
-  const { dir } = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "current.json"), "utf8"));
+${runtimeDecl}try {
+  const pointer = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "current.json"), "utf8"));
+  const dir = pointer.dir;
   const candidate = typeof dir === "string" && dir !== "" ? join(dir, ...${JSON.stringify(relative)}) : null;
   if (candidate !== null && existsSync(candidate)) target = candidate;
-} catch {}
+${runtimeRead}} catch {}
 if (target === null) process.exit(0);
-try {
+${runtimeRun}try {
   await import(pathToFileURL(target).href);
 } catch {
   process.exit(0);
@@ -107,12 +165,17 @@ export async function complete(pluginDir: string): Promise<boolean> {
  * Writes the shims and points them at `pluginDir`. Touches nothing that is already
  * right, so the common case (every load after the first) reads five small files and
  * writes none. Returns the shim directory, and whether the pointer moved.
+ *
+ * The pointer also records the runtime that can reach the daemon (`launcherFor`, the one
+ * the MCP server is registered on), when it isn't plain `node`: the shims of `NEEDS_DAEMON`
+ * and the detached-tools notice (`bridgeCommand` in `server/hooklib/context.mjs`) read it.
  */
-export async function pointShimsAt(pluginDir: string): Promise<{ dir: string; moved: boolean }> {
+export async function pointShimsAt(pluginDir: string, runtime: McpRuntime = currentRuntime()): Promise<{ dir: string; moved: boolean }> {
   const dir = shimDir();
   await mkdir(dir, { recursive: true });
   for (const script of SHIMMED) await writeIfChanged(join(dir, script), shimSource(script));
-  const moved = await writeIfChanged(pointerPath(), `${JSON.stringify({ dir: pluginDir })}\n`);
+  const launcher = launcherFor(runtime);
+  const moved = await writeIfChanged(pointerPath(), `${JSON.stringify(launcher === null ? { dir: pluginDir } : { dir: pluginDir, runtime: launcher })}\n`);
   return { dir, moved };
 }
 

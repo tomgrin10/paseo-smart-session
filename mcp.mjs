@@ -15,7 +15,7 @@
  * JSON-RPC, which is small enough to speak directly.
  */
 
-import { AGENT_SCOPED, agentTools } from "./server/agent-tools.mjs";
+import { AGENT_SCOPED, agentTools, argumentProblem } from "./server/agent-tools.mjs";
 import { callPlugin } from "./server/hooklib/daemon.mjs";
 
 const AGENT_ID = process.env.PASEO_AGENT_ID ?? null;
@@ -91,8 +91,14 @@ async function handle(request) {
       fail(id, `Unknown tool: ${params?.name}`);
       return;
     }
+    const args = params.arguments ?? {};
+    const problem = argumentProblem(params.name, tool, args);
+    if (problem !== null) {
+      respond(id, { content: [{ type: "text", text: problem }], isError: true });
+      return;
+    }
     try {
-      const text = await tool.run(params.arguments ?? {});
+      const text = await tool.run(args);
       respond(id, { content: [{ type: "text", text }] });
     } catch (error) {
       // Reported as a tool result, not a protocol error, so the model can read it
@@ -140,6 +146,8 @@ if (process.argv[2] === "call") {
   }
   let args = {};
   try { args = JSON.parse(process.argv[4] ?? "{}"); } catch { console.error("The arguments must be one JSON object."); process.exit(2); }
+  const problem = argumentProblem(name, tool, args);
+  if (problem !== null) { console.error(problem); process.exit(2); }
   tool.run(args).then(
     (text) => { process.stdout.write(`${text}\n`); process.exit(0); },
     (error) => { console.error(`Failed: ${error instanceof Error ? error.message : String(error)}`); process.exit(1); },
