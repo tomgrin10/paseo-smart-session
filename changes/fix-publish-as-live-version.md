@@ -1,0 +1,2 @@
+- Updating a page published as the main account no longer fails with "You hadn't viewed the live version": the helper now views the version you last saw before it publishes.
+- If the page changed in between, you get its live copy and version to merge, and the next publish goes through instead of failing again.

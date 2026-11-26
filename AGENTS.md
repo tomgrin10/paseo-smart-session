@@ -780,6 +780,16 @@ no tools, the stdio server and native tools (local only; needs a logged-in `clau
   change between the two turns. Rows without `versionId` (older ones) aren't checked. Root cause (2026-11-17): the old
   prompt read the page in full first, which marked the newest version viewed and switched the native guard off, so two
   helpers overwrote a concurrent change within a minute (class 3).
+- **Invariant: a refusal for an unviewed live version is a conflict, and one publish after it goes through.** Since
+  2026-11-24 the Artifact tool counts a read as viewing a page the session didn't publish only once its saved file is
+  Read in full ("counts as viewed only once you have Read every line"). So once the version check passes, and only
+  then, `publishPrompt` has the helper Read that file before it publishes (`readToView` in `readTurn`). A publish
+  refused with "You hadn't viewed the live version" (`liveRefusal`, every known wording) is outcome `conflict`, never
+  `failed`: the live copy from the refusal is kept under `publish-as/live/`, its version goes on the caller's row,
+  and the caller is told to merge (or, when it is the version the caller saw, `unchanged`, to publish again as is).
+  Root cause (2026-11-24 to 11-26): the read prompt forbids Reading the saved file, so every republish was refused,
+  logged `failed`, and each retry was a fresh helper refused the same way; after 2-3 tries callers published a new
+  page instead (`publish-as-routing.test.ts`, class 6, the real refusal text).
 - **Invariant: a publish-as helper runs none of Smart Session.** Every hook returns at once for
   `SMART_SESSION_PUBLISH_HELPER=1` (`isPublishHelper` in `server/hooklib/context.mjs`); `session_open` gives a helper
   (by label or env) no tools, and the helper is created with `plugin-tools/enabled=false`. What a helper did is read
