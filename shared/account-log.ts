@@ -219,7 +219,8 @@ export interface MoveRow {
   /**
    * ZeroSub's binding source when it bound the agent to `to` (`pace`, `auto`, `balance`,
    * `thread`, `user`, plus `balance:<selectionReason>`), else `limit` when `from` was
-   * limited, else `unknown`.
+   * limited, else `unknown`. `auto` is not "forced": ZeroSub 1.31 binds it for a failover at a
+   * limit, its own pacing moves and `move_before_limit` alike. `pace` is only the old fork's.
    */
   readonly reason: string;
   /** When ZeroSub opened the session on `to`. */

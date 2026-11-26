@@ -1,3 +1,0 @@
-- Works with newer ZeroSub releases that no longer queue a move while a turn or background job runs: a held session now moves as soon as its turn or job ends, as its Held line says.
-- A move ZeroSub opened on a different account than the one with room is no longer reported as moved, and Move now says so.
-- Publishing as the main account now says plainly when the main account reached the quota maximum set in ZeroSub's Accounts, which Extra usage does not lift.

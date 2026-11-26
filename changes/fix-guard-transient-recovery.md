@@ -1,1 +1,0 @@
-- Session Guard retries working turns interrupted by temporary API errors, with 1, 3 and 10 minute delays and at most three retries. The new default-on switch works independently of quota pausing; idle and closed sessions stay asleep.

@@ -1,1 +1,0 @@
-- Report a bug, idea or feedback from Settings → Help → Report a bug, ⌘K, or /report-smart-session in a chat. An agent writes it up, shows you the exact issue with private names removed, and files it on GitHub only after your yes.
