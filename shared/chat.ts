@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MOVED_LEAD } from "./guard/hold.ts";
+import { QUEUED_PREFIX } from "./governor.ts";
 
 /**
  * Smart Session's agent tools and plugin-sent messages as they appear in a chat,
@@ -212,6 +213,11 @@ export function promptCard(text: string): PromptCard | null {
   }
   if (body.startsWith(CONTINUE_PREFIX)) {
     const statePath = /^That compaction was the one you asked for\. Re-read (.+?) and continue from/.exec(body)?.[1]?.trim() ?? "";
+    return { kind: "continue", reason: "", statePath, text: body };
+  }
+  // The same continuation, sent right behind the /compact on a daemon that holds it until the compaction ends.
+  if (body.startsWith(QUEUED_PREFIX)) {
+    const statePath = /\/compact you asked for, to run once it finishes\. Re-read (.+?) and continue from/.exec(body)?.[1]?.trim() ?? "";
     return { kind: "continue", reason: "", statePath, text: body };
   }
   if (body.startsWith(GUARD_DEFAULT_PREFIX)) return { kind: "guard-continue", reason: "", statePath: "", text: body };

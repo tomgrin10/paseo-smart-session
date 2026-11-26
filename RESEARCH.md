@@ -292,6 +292,28 @@ The same `UserPromptSubmit` `additionalContext` carries a compaction's continuat
 after the compaction and before the governor could send it (`hooks/continuation.mjs`). Re-checked against 2.1.323's
 binary (2026-11-23): its hook-output schema still has `{ hookEventName: "UserPromptSubmit", additionalContext }`.
 
+#### 3.6.1 Paseo 0.17.0: a steered message waits out the compaction (2026-11-26, from source)
+
+Paseo 0.17.0-beta.1 shipped two changes that move this. getpaseo/paseo#9757 (merged 2026-11-16) queues messages from
+other agents and finish notifications until the recipient's turn ends, so they no longer reach a running `/compact`.
+getpaseo/paseo#10028 (merged 2026-11-18) makes the Claude session's `steerActiveTurn` accept a steer while compacting:
+it pushes the message with `priority: "next"`, Claude Code holds it until the compaction ends, and after a manual
+`/compact` it ends the `/compact` turn and answers the message in its own turn on the compacted context. The PR's real
+e2e (`claude-steer-during-compaction.real.e2e.test.ts`, Haiku) shows `compaction completed` before the steered message
+is answered, where main showed `Compaction canceled.`. In the 0.17.4 install: `agent/providers/claude/agent.js`
+`steerActiveTurn` (no compacting check; a slash command is still refused), `agent/agent-manager.js`
+`steerOrReplaceActiveTurn` (waits for a turn still starting before it steers).
+
+- **Only `steer`.** A plugin's `sendMessage` with no `activeTurnBehavior` and no source agent is sent as `interrupt`
+  (`session.js`, `send_agent_message_request`), which still replaces the turn and cancels the compaction. So the
+  continuation queued behind a `/compact` is sent with `activeTurnBehavior: "steer"`, and only to a daemon whose
+  `server_info.version` is 0.17.0 or later (`queuesContinuation`).
+- **Interrupt and Stop still cancel.** Whether Claude Code then runs the held message is not measured here; the cancel
+  hook treats the queued continuation as never the message that replaced the turn (`isQueuedContinuation`).
+- **Live data agrees:** `CompactCanceled` (`replaced`) appeared most days until 2026-11-22 and not after; the last was
+  another agent's message reaching a running `/compact`, the case #9757 fixed. Not re-measured with a real Claude in the
+  harness: that needs a harness-only login.
+
 ### 3.7 A session reopen kills background jobs — measured on Paseo 0.16.0-beta.1 and Claude Code 2.1.322 (2026-11-11)
 
 - Paseo closes the agent's Claude process whenever it reopens a session (`reloadAgentSessionInternal`:

@@ -18,6 +18,8 @@ import {
   continuationOwed,
   landed,
   NOT_COMPACTED,
+  queuedContinuationInstructions,
+  queuesContinuation,
   type CompactionRequest,
 } from "../shared/governor.ts";
 import { claimContinuation, readClaim, releaseClaim } from "./hooklib/continuation.mjs";
@@ -29,7 +31,9 @@ import { dataDir } from "./store.ts";
 export interface TickIo<C> {
   withDaemon<T>(work: (client: C) => Promise<T>): Promise<T>;
   readAgents(client: C): Promise<AgentRow[]>;
-  sendToAgent(client: C, agentId: string, text: string): Promise<void>;
+  sendToAgent(client: C, agentId: string, text: string, options?: { steer?: boolean }): Promise<void>;
+  /** The daemon's `server_info.version`, or null; decides whether the continuation can go right behind the /compact. */
+  daemonVersion?(client: C): string | null;
 }
 
 
@@ -106,6 +110,8 @@ export async function flush<C>(io: TickIo<C>): Promise<void> {
 
     // Continue what landed: at the next idle moment, unless a prompt that came first already carried it.
     const sentTo = await continueOwed(io, client, agents, events);
+    // A daemon that holds a steered message until a running /compact finishes gets the continuation right behind it.
+    const queues = queuesContinuation(io.daemonVersion?.(client));
 
     for (const item of pending) {
       const agent = agents.get(item.agentId);
@@ -129,7 +135,7 @@ export async function flush<C>(io: TickIo<C>): Promise<void> {
       try {
         await io.sendToAgent(client, item.agentId, compactionInstructions(claimed ?? item));
         const deliveredAt = new Date().toISOString();
-        await queue.update(item.id, { state: "sent", settledAt: deliveredAt });
+        const sent = await queue.update(item.id, { state: "sent", settledAt: deliveredAt });
         grading.set(item.agentId, {
           requestId: item.id,
           deliveredAt,
@@ -137,6 +143,7 @@ export async function flush<C>(io: TickIo<C>): Promise<void> {
           until: Date.now() + GRADE_WINDOW_MS,
         });
         console.log(`[smart-session] compacted ${item.agentId.slice(0, 8)} (${item.reason})`);
+        if (queues) await queueContinuation(io, client, sent ?? item);
       } catch (error) {
         await queue.update(item.id, {
           state: "failed",
@@ -203,7 +210,7 @@ async function continueOwed<C>(io: TickIo<C>, client: C, agents: Map<string, Age
     // Someone already has it: record who, and never deliver it again.
     const claim = readClaim(item.id);
     if (claim !== null) {
-      const via = claim.by === "prompt" ? "prompt" : claim.by === "stale" ? "stale" : "sent";
+      const via = claim.by === "prompt" ? "prompt" : claim.by === "stale" ? "stale" : claim.by === "queued" ? "queued" : "sent";
       await queue.update(item.id, { resumedVia: via, resumedAt: via === "stale" ? null : (claim.at ?? new Date().toISOString()) });
       if (via === "prompt") console.log(`[smart-session] ${who}'s continuation rode the next message after compacting`);
       continue;
@@ -224,20 +231,38 @@ async function continueOwed<C>(io: TickIo<C>, client: C, agents: Map<string, Age
 
     // A manual /compact leaves the session idle with the task abandoned: no hook fires afterwards that can start a
     // turn. Send one only when the requesting agent explicitly or implicitly chose to continue.
-    try {
-      sentTo.add(item.agentId);
-      await io.sendToAgent(client, item.agentId, continuation);
-      await queue.update(item.id, { resumedAt: new Date().toISOString(), resumedVia: "sent" });
-      console.log(`[smart-session] sent ${who} its continuation after compacting`);
-    } catch (error) {
-      // The compaction itself succeeded. Not sent again from here (it may have arrived), but the next prompt may
-      // still carry it, so the claim goes back.
-      sendFailed.add(item.id);
-      releaseClaim(item.id);
-      console.error(`[smart-session] could not continue ${who}`, String(error));
-    }
+    sentTo.add(item.agentId);
+    await sendContinuation(io, client, item, continuation, "sent");
   }
   return sentTo;
+}
+
+/**
+ * Sends the continuation right behind a delivered `/compact`, on a daemon that holds a steered message until the
+ * compaction finishes (`queuesContinuation`, Paseo 0.17.0+). Claimed first (`queued`), so neither the idle route
+ * above nor the prompt hook can deliver it too, and a retry of this request sends none (`retryRequest`). The text
+ * reads right whether or not the compaction lands (`queuedResumeInstructions`). Only queue rows reach here, so a
+ * `/compact` a person typed is still followed by nothing.
+ */
+async function queueContinuation<C>(io: TickIo<C>, client: C, item: CompactionRequest): Promise<void> {
+  const continuation = queuedContinuationInstructions(item);
+  if (continuation === null || !claimContinuation(item.id, "queued")) return;
+  await sendContinuation(io, client, item, continuation, "queued");
+}
+
+/** The continuation's one send, for both routes. A failed send is never retried from here; the next prompt may carry it. */
+async function sendContinuation<C>(io: TickIo<C>, client: C, item: CompactionRequest, text: string, via: "sent" | "queued"): Promise<void> {
+  const who = item.agentId.slice(0, 8);
+  try {
+    await io.sendToAgent(client, item.agentId, text, via === "queued" ? { steer: true } : undefined);
+    await queue.update(item.id, { resumedAt: new Date().toISOString(), resumedVia: via });
+    console.log(via === "queued" ? `[smart-session] queued ${who}'s continuation behind its /compact` : `[smart-session] sent ${who} its continuation after compacting`);
+  } catch (error) {
+    // Not sent again from here (it may have arrived), but the next prompt may still carry it, so the claim goes back.
+    sendFailed.add(item.id);
+    releaseClaim(item.id);
+    console.error(`[smart-session] could not continue ${who}`, String(error));
+  }
 }
 
 type CompactionEvent = { agentId?: unknown; event?: unknown; at?: unknown; requestId?: unknown; cause?: unknown };
