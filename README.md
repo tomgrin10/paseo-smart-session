@@ -105,7 +105,7 @@ Without ZeroSub, with one Claude account, or for a session already on the main a
 
 ## Pause at the limit (Session Guard)
 
-When the provider's session window is spent, Smart Session pauses running sessions instead of letting them fail, and continues the same conversations once the window resets, even with the app closed. It is **off by default**: turn it on from the overview or in settings. It was the standalone [Session Guard](https://github.com/tomgrin10/paseo-session-guard) plugin, and its per-session choices and waiting pauses carry over.
+When the provider's session window is spent, Smart Session pauses running sessions instead of letting them fail, and continues the same conversations once the window resets, even with the app closed. It is **off by default**: turn it on from the overview or in settings.
 
 On Linux, Claude and Codex sessions pause in place together with their native subagents; elsewhere the turn is interrupted and one continuation is sent after the reset. A paused session's pill, its chat and its workspace say so: the chat gets a card with the time it resumes, **Resume now** and **Release**, which folds into one line once the pause ends. For Claude, a reset is confirmed from whichever is fresher, Paseo's cached usage or Smart Session's own recorder.
 
@@ -113,7 +113,7 @@ On Linux, Claude and Codex sessions pause in place together with their native su
 
 With ZeroSub, a held session moves to an account with room. If its background jobs hold the move back, it waits up to 10 minutes for them to end (or for its own reset, when that comes sooner), then the jobs are stopped and it moves. The agent is told which jobs to start again. Its workspace label and row say why it's still held, and **Move now** does it at once ([details](docs/session-guard.md#with-zerosub)).
 
-If the standalone Session Guard plugin is still enabled, it keeps doing the pausing and Smart Session says so in one line, so a session is never paused twice. Disable or uninstall it to hand over. See the [guide](docs/session-guard.md) for timing and limits.
+See the [guide](docs/session-guard.md) for timing and limits.
 
 On a phone, the pill opens as a sheet and every screen fits one column.
 
@@ -192,7 +192,6 @@ paseo plugin reload smart-session   # after changes
 - [Defer](https://github.com/tomgrin10/paseo-defer) — Schedule messages for later delivery.
 - [Follow-up](https://github.com/tomgrin10/paseo-follow-up) — Track workspace PRs, remaining tasks and completion.
 - [Send to Paseo](https://github.com/tomgrin10/send-to-paseo) — Send GitHub and Graphite PRs to Paseo from Chrome.
-- [Session Guard](https://github.com/tomgrin10/paseo-session-guard) — Pause at session limits and continue after reset.
 - [Transcript Search](https://github.com/tomgrin10/paseo-transcript-search) — Search conversations across connected hosts.
 - [Transfer](https://github.com/tomgrin10/paseo-transfer) — Copy or move workspaces between hosts.
 - [Vitals](https://github.com/tomgrin10/paseo-vitals) — Host, process, agent and Docker monitoring.
